@@ -13,6 +13,7 @@ environment-variable support.
 
 from __future__ import annotations
 
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -229,9 +230,94 @@ def _detect_factorio_interactively() -> factorio.FactorioInstall | None:
     return factorio.derive_from_root(Path(root_str.strip()).expanduser(), platform)
 
 
+# The bundled examples (scenarios / tech-orders / maps / run manifests) used to
+# seed a working directory. Input dirs copy their file contents; runs copy only
+# the tracked manifest.yaml (the per-run solve outputs are regenerated locally).
+_EXAMPLE_INPUT_DIRS = ("scenarios", "tech-orders", "maps")
+
+
+def _examples_dir() -> Path | None:
+    """Locate the bundled ``examples/`` directory. fplan is clone-first, so it
+    sits at the repo root alongside ``src/``; resolve it relative to the package
+    (works from any cwd in an editable clone), with a cwd fallback."""
+    candidates = [
+        Path(__file__).resolve().parents[3] / "examples",  # …/src/fplan/cli/main.py
+        Path.cwd() / "examples",
+    ]
+    for c in candidates:
+        if c.is_dir():
+            return c
+    return None
+
+
+def _copy_examples(dest: Path, *, dry_run: bool) -> None:
+    """Copy the bundled example inputs into ``dest`` so a run is ready to solve
+    without the user juggling the working directory. Existing files are left
+    untouched (never clobber the user's edits); reports what it did."""
+    src = _examples_dir()
+    if src is None:
+        typer.echo(
+            "note: examples/ not found (run from a cloned fplan repo) — "
+            "skipping --copy-examples."
+        )
+        return
+
+    pairs: list[tuple[Path, Path]] = []
+    for sub in _EXAMPLE_INPUT_DIRS:
+        srcdir = src / sub
+        if srcdir.is_dir():
+            for f in sorted(srcdir.iterdir()):
+                if f.is_file() and not f.name.startswith("."):  # skip .gitkeep
+                    pairs.append((f, dest / sub / f.name))
+    runs_src = src / "runs"
+    if runs_src.is_dir():
+        for rundir in sorted(p for p in runs_src.iterdir() if p.is_dir()):
+            man = rundir / "manifest.yaml"
+            if man.is_file():
+                pairs.append((man, dest / "runs" / rundir.name / "manifest.yaml"))
+
+    copied = skipped = 0
+    for srcf, target in pairs:
+        if target.exists():
+            skipped += 1
+            continue
+        copied += 1
+        if not dry_run:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(srcf, target)
+
+    verb = "Would copy" if dry_run else "Copied"
+    tail = f" ({skipped} already present, left as-is)" if skipped else ""
+    typer.echo(f"{verb} {copied} example file(s) into {dest}{tail}.")
+    if copied or skipped:
+        typer.echo(
+            "  Next: fplan rates solve steelaxe --seed 1 --time-limit-s 120  "
+            "&&  fplan rates viz steelaxe --open"
+        )
+
+
+CopyExamplesOpt = Annotated[
+    bool,
+    typer.Option(
+        "--copy-examples",
+        help="Also copy the bundled example scenarios / tech-orders / maps / run "
+        "manifests into the working directory, ready to solve.",
+    ),
+]
+
+
 @app.command()
-def init(ctx: typer.Context, dry_run: DryRun = False) -> None:
-    """Detect Factorio and write the default config file (.fplan-config.yaml)."""
+def init(
+    ctx: typer.Context,
+    copy_examples: CopyExamplesOpt = False,
+    dry_run: DryRun = False,
+) -> None:
+    """Detect Factorio and write the default config file (.fplan-config.yaml).
+
+    With --copy-examples, also copy the bundled examples into the current
+    directory so you can immediately solve one and visualize it — no need to
+    change directories.
+    """
     state: CLIState = ctx.obj
     target = state.config_file or cfg.default_config_path()
 
@@ -239,28 +325,29 @@ def init(ctx: typer.Context, dry_run: DryRun = False) -> None:
         typer.echo(
             f"{target} already exists; delete it to regenerate. Nothing written."
         )
-        return
-    if dry_run:
+    elif dry_run:
         typer.echo(f"Would create {target} (dry run; nothing written).")
-        return
-
-    install = _detect_factorio_interactively()
-    try:
-        target.write_text(
-            cfg.render_config(
-                str(install.data_dir) if install else None,
-                str(install.binary) if install else None,
-            )
-        )
-    except OSError as exc:
-        typer.echo(f"error: could not write {target}: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
-    if install is None:
-        typer.echo(f"Created {target} as a template — fill in the Factorio paths.")
-    elif install.data_dir.exists():
-        typer.echo(f"Created {target} with detected Factorio paths.")
     else:
-        typer.echo(
-            f"Created {target} with candidate Factorio paths — verify them; the "
-            "data directory was not found on disk."
-        )
+        install = _detect_factorio_interactively()
+        try:
+            target.write_text(
+                cfg.render_config(
+                    str(install.data_dir) if install else None,
+                    str(install.binary) if install else None,
+                )
+            )
+        except OSError as exc:
+            typer.echo(f"error: could not write {target}: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        if install is None:
+            typer.echo(f"Created {target} as a template — fill in the Factorio paths.")
+        elif install.data_dir.exists():
+            typer.echo(f"Created {target} with detected Factorio paths.")
+        else:
+            typer.echo(
+                f"Created {target} with candidate Factorio paths — verify them; the "
+                "data directory was not found on disk."
+            )
+
+    if copy_examples:
+        _copy_examples(Path.cwd(), dry_run=dry_run)

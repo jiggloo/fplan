@@ -2,10 +2,13 @@
 
 Factorio production and placement planner.
 
-> **Status: early scaffolding.** The CLI command surface is complete and
-> navigable, but most stages are stubs being migrated incrementally — the
-> structure, conventions, and packaging baseline are in place ahead of the
-> planning logic that fills them in.
+> **Status: early — and tested only on macOS so far.** The CLI surface is
+> complete and navigable, and the front of the pipeline runs end-to-end today:
+> **L1** (`tech-order`) and **L2** (`rates` — solve, viz, post). **L3**
+> (`layout`) and **L4** (`execution`) are still stubs, filled in incrementally
+> (each unbuilt command says so in its `--help`). Factorio integration is
+> exercised on macOS only; on Windows/Linux it's untested — detection warns and
+> you confirm the paths yourself.
 
 fplan is **clone-first**: the documentation and example/reference material live
 in the repository and come with a `git clone`. Start with this README, then see
@@ -13,7 +16,13 @@ in the repository and come with a `git clone`. Start with this README, then see
 
 ## Install
 
-Requires Python 3.11+. Clone, then install into an isolated environment:
+### Prerequisites
+
+- **Python 3.11+**.
+- **A Factorio installation** — fplan reads its game data to compute plans. See
+  [Configuration](docs/usage.md#configuration) to point fplan at it.
+
+Clone, then install into an isolated environment:
 
 ```bash
 git clone https://github.com/jiggloo/fplan.git
@@ -22,52 +31,70 @@ python3 -m venv .venv
 .venv/bin/pip install -e .
 ```
 
-## Usage
+## Quickstart
 
-The CLI is the primary interface. After installing into the virtualenv (above),
-invoke it via `.venv/bin/fplan` (or activate the venv and type `fplan`):
+Go from a fresh clone to a solved plan and an interactive visualization. The CLI
+is the primary interface; invoke it via `.venv/bin/fplan` (or activate the venv
+with `source .venv/bin/activate` and type `fplan`).
+
+After [installing](#install), from the repository root:
 
 ```bash
-.venv/bin/fplan                 # working directory + config status
-.venv/bin/fplan --help          # the full command tree
-.venv/bin/fplan init            # create the config file
+# Detect Factorio and copy the bundled examples into the working directory.
+.venv/bin/fplan init --copy-examples
+
+# Solve the steelaxe example's production plan (needs Factorio).
+.venv/bin/fplan rates solve steelaxe
+
+# Open an interactive visualization of the result.
+.venv/bin/fplan rates viz steelaxe --open
 ```
 
-The command tree mirrors the planning pipeline — `tech-order` (L1), `rates`
-(L2), `map`, `layout` (L3), `execution` (L4), plus `inspect`, `init`, and `run`
-(which manages whole L2→L4 executions). The surface is complete; the stages are
-being filled in incrementally, and an un-built command prints a clear notice
-with a reserved exit code rather than failing cryptically.
+`viz` opens a zoomable timeline and a capacity-saturation heatmap (written under
+`runs/steelaxe/viz/`).
+
+Ready to plan a goal of your own? Follow
+[Plan your own factory](docs/usage.md#plan-your-own-factory).
+
+Orient yourself any time with:
+
+```bash
+.venv/bin/fplan                 # where am I, and is Factorio configured?
+.venv/bin/fplan --help          # the full command tree
+```
 
 **See [docs/usage.md](docs/usage.md) for the full command reference** —
 invocation, configuration, exit codes, and per-command examples.
 
 ## Concepts
 
-A few words fplan uses in a specific way. They map directly onto the
-[top-level directories](#repository-layout), so knowing them makes the layout
-self-explanatory:
+fplan plans a factory in four stages, each feeding the next:
 
-- **scenario** — the *problem*: the world you start from and the world you
-  want, as a `GoalState` (techs to research, items to produce, rockets to
-  launch) plus an optional `initial_state` (what exists at t₀). An authored
-  **input**. → `scenarios/`
-- **tech-order** — the *research plan*: the order techs get researched in,
-  layered. It's L1's **output** (or hand-authored), built from a scenario and
-  consumed by L2. It records a lightweight reference to the scenario it came
-  from, not the scenario's content. → `tech-orders/`
-- **map** — the *environment*: resources, water, and oil around spawn, derived
-  from a Factorio seed/save. An **input**, orthogonal to the scenario. →
-  `maps/`
-- **run** — one *execution* of the L2→L4 pipeline. A run binds a scenario, a
-  tech-order, and a map in `runs/<name>/`, described by a `manifest.yaml`; as the
-  L2–L4 stages land it will apply their solver settings and collect the per-level
-  outputs there. → `runs/`
+- **L1** (`tech-order`) — the order to research technologies in.
+- **L2** (`rates`) — how much of each item to produce, over time.
+- **L3** (`layout`) — where to place the machines.
+- **L4** (`execution`) — the action steps a TAS generator replays.
 
-The shape of it: scenario, tech-order, and map are **reusable inputs** that
-exist on their own (one scenario → many tech-orders → many runs); a **run** is
-the thing that ties a specific combination together and produces results.
-**L1 (the tech-order) is an input to a run, not part of it** — a run is L2→L4.
+Three authored **inputs** feed the stages, and a **run** ties a specific
+combination together. These are the words fplan uses precisely (each maps to a
+[top-level directory](#repository-layout)):
+
+- **run** — one *execution* of the L2→L4 pipeline: binds a scenario, a
+  tech-order, and a map in `runs/<name>/` (described by a `manifest.yaml`) and
+  collects each stage's output there. → `runs/`
+- **scenario** — the *problem*: the world you start from and the world you want
+  — a `GoalState` (techs to research, items to produce, rockets to launch) plus
+  an optional `initial_state` (what exists at t₀). → `scenarios/`
+- **tech-order** — the *research plan*: the layered order techs are researched
+  in. L1's output (or hand-authored); records a reference to the scenario it was
+  built from, not the scenario's content. → `tech-orders/`
+- **map** — the *environment*: resources, water, and oil around spawn, from a
+  Factorio seed/save. Orthogonal to the scenario. → `maps/`
+
+So scenario, tech-order, and map are **reusable inputs** that exist on their own
+(one scenario → many tech-orders → many runs); a **run** ties a specific
+combination together and produces results. The tech-order (L1) is an *input* to
+a run, not part of it — a run is L2→L4.
 
 ## Testing
 
@@ -80,104 +107,9 @@ Install the development dependencies and run the suite:
 
 ### Manual integration tests
 
-Some functionality needs a real Factorio installation and can't run in CI, so
-the automated suite covers the pure logic and these steps cover the rest. Run
-them by hand after changes that touch the loaders; configure the relevant path
-first with `fplan init` (see
-[Configuration](docs/usage.md#configuration)) — the model-load step needs
-`data_dir`, the map step needs `binary`.
-
-- **Game model load** — parse the installed Factorio prototype data and print a
-  summary (item/recipe/building/technology counts):
-
-  ```bash
-  .venv/bin/python -m fplan.model
-  ```
-
-  Confirm it succeeds and the counts look sane (e.g. hundreds of recipes/items).
-  The automated tests exercise the model *cleaning* against a small captured
-  prototype fixture; this step exercises the live Lua load that fixture stands
-  in for.
-
-- **Map extraction** — run a headless extraction against a save and confirm the
-  artifact (and that the source save is untouched):
-
-  ```bash
-  .venv/bin/fplan map from-save path/to/save.zip --out maps/save.yaml
-  .venv/bin/fplan map show maps/save.yaml
-  ```
-
-- **L2 solve** — the SCIP optimize needs the full model and is a per-seed primal
-  coin flip, so it's exercised here rather than in CI (the automated tests cover
-  the solver-*neutral* L2 layer — config, scenario, instance build, deployment —
-  against the fixture). Solve the committed **steelaxe** example run in place
-  (the quickest smoke):
-
-  ```bash
-  cd examples
-  ../.venv/bin/fplan --config-file ../.fplan-config.yaml \
-      rates solve steelaxe --seed 1 --time-limit-s 120
-  ../.venv/bin/fplan --config-file ../.fplan-config.yaml run show steelaxe
-  ```
-
-  Confirm it reports a feasible `t_FINAL` and writes `rates.yaml`; `run show
-  steelaxe` then lists `rates.yaml` under artifacts, and
-  `runs/steelaxe/manifest.yaml` has gained an `l2:` block
-  (mode/seed/objective_s/status/solve_time_s/config). (The committed `fishminer`
-  run binds the full `default-victory` campaign — solvable the same way, but
-  larger and may need several seeds to land an incumbent.)
-
-  For the larger run, drive several seeds in one command (solved in parallel,
-  up to one process per seed, capped at your CPU count) and promote the best:
-
-  ```bash
-  ../.venv/bin/fplan --config-file ../.fplan-config.yaml \
-      rates solve fishminer --seeds 8 --time-limit-s 300   # add -j N to cap workers
-  ```
-
-  Each seed's candidate lands under `runs/fishminer/rates-search/` (with a
-  `summary.yaml` index); the best is promoted to `runs/fishminer/rates.yaml`
-  after a prompt (`--force` to skip). The `rates-search/` scratch is ephemeral
-  (ignored like the rest of `runs/`).
-
-- **L2 viz** — render a solved run's `rates.yaml` as interactive HTML
-  (timeline + capacity-saturation heatmap) under `runs/<run>/viz/`:
-
-  ```bash
-  cd examples
-  ../.venv/bin/fplan --config-file ../.fplan-config.yaml rates viz steelaxe --open
-  ```
-
-  Confirm it writes `viz/rates-timeline.html` + `viz/rates-heatmap.html` and (with
-  `--open`) opens the timeline. It's a pure consumer of `rates.yaml` — the model
-  load is best-effort, so it also runs without a Factorio install (just without
-  the legend's facility-count breakdown). The `viz/` outputs are ephemeral
-  (gitignored like the rest of the run directory — here `examples/runs/steelaxe/`).
-
-- **L2 post** — post-process a solved `rates.yaml` into the layout-stage input
-  and auto-generate the visualization. `post` is the L2→L3 stage (still under
-  development); its current operation is rate-flattening. Needs the game model
-  (the unmet-input diagnostics and the `mrp` method use the recipe graph), so it
-  runs here rather than in CI:
-
-  ```bash
-  cd examples
-  ../.venv/bin/fplan --config-file ../.fplan-config.yaml rates post steelaxe --force
-  ../.venv/bin/fplan rates viz steelaxe --from runs/steelaxe/rates-post.yaml
-  ```
-
-  `rates-post.yaml` is the **provisional** L2→L3 input — both its role and its
-  schema are temporary while L2→L3 is explored (see
-  [L2 rate-flattening](docs/L2-rate-flattening.md)); don't build anything
-  downstream that assumes the schema is stable.
-
-  Confirm `rates post` writes `rates-post.yaml` (with a `post:` block) and
-  `viz/rates-post-timeline.html`, and prints a revisits summary. The second
-  command regenerates the diff view *without* a model (a pure render of the post
-  file + its source `rates.yaml`) — it auto-detects the flatten view from the
-  `post:` block. `rates-post.yaml` and `viz/` are ephemeral; `rates post` also
-  grows the tracked `examples/runs/steelaxe/manifest.yaml` with a `post:` block,
-  so `git checkout examples/runs/steelaxe/manifest.yaml` afterward to discard it.
+Some checks need a real Factorio install and can't run in CI — run them by hand
+after changes to the loaders or solver. See
+[Manual integration tests](docs/integration_tests.md#manual-integration-tests).
 
 ## Development
 
@@ -187,18 +119,22 @@ Install the dev toolchain (above) and the pre-commit hooks:
 .venv/bin/pre-commit install
 ```
 
-Run the checks locally — these mirror what CI enforces:
+Each commit then auto-runs the hygiene, lint/format (ruff), and secret-detection
+checks on the staged files — or run them across the whole repo at any time:
 
 ```bash
-.venv/bin/ruff check .        # lint
-.venv/bin/ruff format .       # format
-.venv/bin/mypy                # type-check
-.venv/bin/pytest              # tests + coverage
+.venv/bin/pre-commit run --all-files
 ```
 
-Pre-commit runs the hygiene, lint/format, and secret-detection checks on each
-commit; CI re-runs them (plus the test matrix and a build check) as the
-authoritative gate.
+The two checks pre-commit doesn't cover — run them yourself before pushing:
+
+```bash
+.venv/bin/mypy       # type-check
+.venv/bin/pytest     # tests + coverage
+```
+
+CI is the authoritative gate: it re-runs everything above across the Python
+3.11–3.14 matrix, plus a packaging build check.
 
 ## Repository layout
 
@@ -234,9 +170,13 @@ obvious without reading the docs.
 ## Documentation
 
 - [Usage reference](docs/usage.md) — the full CLI reference
+- [Integration tests](docs/integration_tests.md) — manual checks that need a real
+  Factorio install (model load, map extraction, L2 solve/viz/post)
 - [Repository structure & conventions](docs/structure.md)
 - [Stage enrichment](docs/stage-enrichment.md) — why per-stage knowledge (e.g.
   L2 deployment) enriches downward and never lives in the base model layer
+- [L2 rate-flattening](docs/L2-rate-flattening.md) — the `rates post` design:
+  the causal-tube flattening methods and the diff visualization
 
 ## License
 

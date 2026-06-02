@@ -179,6 +179,89 @@ def test_init_honors_config_file_target(tmp_path, monkeypatch) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# `fplan init --copy-examples`
+# --------------------------------------------------------------------------- #
+
+
+def _make_examples(root: Path) -> Path:
+    """A stand-in bundled examples/ dir: input subdirs (one carrying a .gitkeep)
+    plus a run with a manifest and a generated rates.yaml."""
+    ex = root / "examples"
+    for sub, files in {
+        "scenarios": ["steelaxe.yaml", ".gitkeep"],
+        "tech-orders": ["steelaxe.yaml"],
+        "maps": ["zaspar.yaml"],
+    }.items():
+        (ex / sub).mkdir(parents=True)
+        for f in files:
+            (ex / sub / f).write_text("x: 1\n")
+    rd = ex / "runs" / "steelaxe"
+    rd.mkdir(parents=True)
+    (rd / "manifest.yaml").write_text("run: steelaxe\n")
+    (rd / "rates.yaml").write_text("generated: true\n")  # must NOT be copied
+    return ex
+
+
+@pytest.fixture
+def examples(tmp_path, monkeypatch):
+    ex = _make_examples(tmp_path)
+    monkeypatch.setattr(cli_main, "_examples_dir", lambda: ex)
+    monkeypatch.setattr(cli_main, "_stdin_is_interactive", lambda: False)
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    return work
+
+
+def test_copy_examples_seeds_working_dir(examples) -> None:
+    r = runner.invoke(app, ["init", "--copy-examples"])
+    assert r.exit_code == 0
+    assert (examples / "scenarios" / "steelaxe.yaml").exists()
+    assert (examples / "tech-orders" / "steelaxe.yaml").exists()
+    assert (examples / "maps" / "zaspar.yaml").exists()
+    assert (examples / "runs" / "steelaxe" / "manifest.yaml").exists()
+    # dotfiles and a run's generated outputs are not copied
+    assert not (examples / "scenarios" / ".gitkeep").exists()
+    assert not (examples / "runs" / "steelaxe" / "rates.yaml").exists()
+    assert "Copied 4 example file(s)" in r.stdout
+
+
+def test_copy_examples_dry_run_writes_nothing(examples) -> None:
+    r = runner.invoke(app, ["init", "--copy-examples", "--dry-run"])
+    assert "Would copy 4 example file(s)" in r.stdout
+    assert not (examples / "scenarios").exists()
+
+
+def test_copy_examples_never_clobbers(examples) -> None:
+    (examples / "scenarios").mkdir()
+    (examples / "scenarios" / "steelaxe.yaml").write_text("MINE\n")
+    r = runner.invoke(app, ["init", "--copy-examples"])
+    assert (examples / "scenarios" / "steelaxe.yaml").read_text() == "MINE\n"
+    assert "already present" in r.stdout
+
+
+def test_copy_examples_runs_even_when_config_exists(examples) -> None:
+    (examples / cfg.DEFAULT_CONFIG_NAME).write_text("keep\n")
+    r = runner.invoke(app, ["init", "--copy-examples"])
+    assert "already exists" in r.stdout  # config untouched
+    assert (examples / "scenarios" / "steelaxe.yaml").exists()  # but still copies
+
+
+def test_copy_examples_missing_dir_is_a_clean_note(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cli_main, "_examples_dir", lambda: None)
+    monkeypatch.setattr(cli_main, "_stdin_is_interactive", lambda: False)
+    monkeypatch.chdir(tmp_path)
+    r = runner.invoke(app, ["init", "--copy-examples"])
+    assert r.exit_code == 0 and "examples/ not found" in r.stdout
+
+
+def test_examples_dir_finds_the_bundled_examples() -> None:
+    # The real examples/ ships with the clone, located relative to the package.
+    d = cli_main._examples_dir()
+    assert d is not None and (d / "scenarios").is_dir()
+
+
+# --------------------------------------------------------------------------- #
 # require helper (fatal-to-stderr)
 # --------------------------------------------------------------------------- #
 
