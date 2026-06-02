@@ -99,106 +99,8 @@ Install the development dependencies and run the suite:
 .venv/bin/pytest
 ```
 
-### Manual integration tests
-
-Some functionality needs a real Factorio installation and can't run in CI, so
-the automated suite covers the pure logic and these steps cover the rest. Run
-them by hand after changes that touch the loaders; configure the relevant path
-first with `fplan init` (see
-[Configuration](docs/usage.md#configuration)) — the model-load step needs
-`data_dir`, the map step needs `binary`.
-
-- **Game model load** — parse the installed Factorio prototype data and print a
-  summary (item/recipe/building/technology counts):
-
-  ```bash
-  .venv/bin/python -m fplan.model
-  ```
-
-  Confirm it succeeds and the counts look sane (e.g. hundreds of recipes/items).
-  The automated tests exercise the model *cleaning* against a small captured
-  prototype fixture; this step exercises the live Lua load that fixture stands
-  in for.
-
-- **Map extraction** — run a headless extraction against a save and confirm the
-  artifact (and that the source save is untouched):
-
-  ```bash
-  .venv/bin/fplan map from-save path/to/save.zip --out maps/save.yaml
-  .venv/bin/fplan map show maps/save.yaml
-  ```
-
-- **L2 solve** — the SCIP optimize needs the full model and is a per-seed primal
-  coin flip, so it's exercised here rather than in CI (the automated tests cover
-  the solver-*neutral* L2 layer — config, scenario, instance build, deployment —
-  against the fixture). Solve the committed **steelaxe** example run in place
-  (the quickest smoke):
-
-  ```bash
-  cd examples
-  ../.venv/bin/fplan --config-file ../.fplan-config.yaml \
-      rates solve steelaxe --seed 1 --time-limit-s 120
-  ../.venv/bin/fplan --config-file ../.fplan-config.yaml run show steelaxe
-  ```
-
-  Confirm it reports a feasible `t_FINAL` and writes `rates.yaml`; `run show
-  steelaxe` then lists `rates.yaml` under artifacts, and
-  `runs/steelaxe/manifest.yaml` has gained an `l2:` block
-  (mode/seed/objective_s/status/solve_time_s/config). (The committed `fishminer`
-  run binds the full `default-victory` campaign — solvable the same way, but
-  larger and may need several seeds to land an incumbent.)
-
-  For the larger run, drive several seeds in one command (solved in parallel,
-  up to one process per seed, capped at your CPU count) and promote the best:
-
-  ```bash
-  ../.venv/bin/fplan --config-file ../.fplan-config.yaml \
-      rates solve fishminer --seeds 8 --time-limit-s 300   # add -j N to cap workers
-  ```
-
-  Each seed's candidate lands under `runs/fishminer/rates-search/` (with a
-  `summary.yaml` index); the best is promoted to `runs/fishminer/rates.yaml`
-  after a prompt (`--force` to skip). The `rates-search/` scratch is ephemeral
-  (ignored like the rest of `runs/`).
-
-- **L2 viz** — render a solved run's `rates.yaml` as interactive HTML
-  (timeline + capacity-saturation heatmap) under `runs/<run>/viz/`:
-
-  ```bash
-  cd examples
-  ../.venv/bin/fplan --config-file ../.fplan-config.yaml rates viz steelaxe --open
-  ```
-
-  Confirm it writes `viz/rates-timeline.html` + `viz/rates-heatmap.html` and (with
-  `--open`) opens the timeline. It's a pure consumer of `rates.yaml` — the model
-  load is best-effort, so it also runs without a Factorio install (just without
-  the legend's facility-count breakdown). The `viz/` outputs are ephemeral
-  (gitignored like the rest of the run directory — here `examples/runs/steelaxe/`).
-
-- **L2 post** — post-process a solved `rates.yaml` into the layout-stage input
-  and auto-generate the visualization. `post` is the L2→L3 stage (still under
-  development); its current operation is rate-flattening. Needs the game model
-  (the unmet-input diagnostics and the `mrp` method use the recipe graph), so it
-  runs here rather than in CI:
-
-  ```bash
-  cd examples
-  ../.venv/bin/fplan --config-file ../.fplan-config.yaml rates post steelaxe --force
-  ../.venv/bin/fplan rates viz steelaxe --from runs/steelaxe/rates-post.yaml
-  ```
-
-  `rates-post.yaml` is the **provisional** L2→L3 input — both its role and its
-  schema are temporary while L2→L3 is explored (see
-  [L2 rate-flattening](docs/L2-rate-flattening.md)); don't build anything
-  downstream that assumes the schema is stable.
-
-  Confirm `rates post` writes `rates-post.yaml` (with a `post:` block) and
-  `viz/rates-post-timeline.html`, and prints a revisits summary. The second
-  command regenerates the diff view *without* a model (a pure render of the post
-  file + its source `rates.yaml`) — it auto-detects the flatten view from the
-  `post:` block. `rates-post.yaml` and `viz/` are ephemeral; `rates post` also
-  grows the tracked `examples/runs/steelaxe/manifest.yaml` with a `post:` block,
-  so `git checkout examples/runs/steelaxe/manifest.yaml` afterward to discard it.
+Some functionality needs a real Factorio install and is verified by hand — see
+[Integration tests](docs/integration_tests.md).
 
 ## Development
 
@@ -255,9 +157,13 @@ obvious without reading the docs.
 ## Documentation
 
 - [Usage reference](docs/usage.md) — the full CLI reference
+- [Integration tests](docs/integration_tests.md) — manual checks that need a real
+  Factorio install (model load, map extraction, L2 solve/viz/post)
 - [Repository structure & conventions](docs/structure.md)
 - [Stage enrichment](docs/stage-enrichment.md) — why per-stage knowledge (e.g.
   L2 deployment) enriches downward and never lives in the base model layer
+- [L2 rate-flattening](docs/L2-rate-flattening.md) — the `rates post` design:
+  the causal-tube flattening methods and the diff visualization
 
 ## License
 
