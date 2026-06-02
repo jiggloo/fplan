@@ -24,15 +24,27 @@ python3 -m venv .venv
 
 ## Usage
 
-The project is early scaffolding; the only thing wired up so far is the package
-version:
+The CLI is the primary interface. Installing the package puts `fplan` on your
+PATH. Run it with no arguments to see the working directory it operates from,
+and `--help` to explore the command tree:
+
+```bash
+fplan                 # prints the working directory
+fplan --help          # the full command tree
+fplan tech-order --help
+```
+
+The command tree mirrors the planning pipeline — `tech-order` (L1), `rates`
+(L2), `map`, `layout` (L3), `execution` (L4), plus `inspect`, `init`, and
+`full-run`. The surface is complete, but the stages are being migrated
+incrementally: a command that isn't ported yet prints a clear notice and exits
+with a reserved code rather than failing cryptically.
+
+The package version is also importable directly:
 
 ```bash
 .venv/bin/python -c "import fplan; print(fplan.__version__)"
 ```
-
-The planning pipeline (and its command-line interface) lands in subsequent
-tiers.
 
 ## Testing
 
