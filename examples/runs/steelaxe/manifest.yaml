@@ -1,0 +1,13 @@
+fplan_version: 0.0.8
+run: steelaxe
+created: '2026-06-02T11:43:13+00:00'
+inputs:
+  scenario:
+    path: scenarios/steelaxe.yaml
+    sha256: e0ac1baefd1e6401b97673f9cd17bbf12793b1a1c3d2837cc3e0d885dd1279a9
+  tech-order:
+    path: tech-orders/steelaxe.yaml
+    sha256: ed48117865a6b508d8a860987f7078d14599b6ec7e47d2268779a693a1d4ab51
+  map:
+    path: maps/zaspar-wr.yaml
+    sha256: de56f6de28a094c537899aa8b87f939b0b913f442439e98eec846681a7ff20c1

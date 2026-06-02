@@ -106,12 +106,12 @@ def load_model_or_exit(config_file: Path | None):
 def confirm_overwrite_or_exit(target: Path) -> None:
     """Guard an artifact write: if ``target`` exists, confirm the overwrite when
     interactive, refuse fatally when not. Shared by the artifact-producing
-    commands (``map from-save``, ``tech-order build``)."""
+    commands (``map from-save``, ``tech-order build``, ``rates solve``)."""
     if not target.exists():
         return
     if not _stdin_is_interactive():
         typer.echo(
-            f"error: {target} already exists; remove it or choose another --out.",
+            f"error: {target} already exists; remove it or choose another target.",
             err=True,
         )
         raise typer.Exit(code=1)

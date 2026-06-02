@@ -1,0 +1,114 @@
+# L2 tuning defaults — the packaged, override-able knobs for `rates solve`.
+#
+# This file is the source of truth for L2's tunable values. A power user can
+# override any subset via `rates solve <run> --l2-config my.yaml`: their file is
+# DEEP-MERGED on top of this one, so they need only specify the keys they want
+# to change (e.g. one building's footprint, or just caps.burner_drill).
+#
+# Out of scope here (kept in code): game-physics facts (boiler/rocket constants),
+# the constraint formulation, and the SCIP random seed (a per-invocation flag).
+version: "1.0.0"
+
+# Per-building deployment: the persistent infrastructure (placed alongside the
+# building, NOT consumed per cycle) and the total tile footprint of one deployed
+# instance (the building plus its share of belts/poles/inserters/pipes). Drawn
+# from community optimal-packing knowledge. Buildings absent here contribute no
+# infrastructure and fall back to the prototype's bare footprint (no spatial cap).
+deployment:
+  electric-mining-drill:        # drill row → central belt, 4 drills per pole
+    infrastructure_items: {transport-belt: 1.625, small-electric-pole: 0.25}
+    tile_footprint: 11.375
+  burner-mining-drill:          # fuel hand-loaded / direct-insert; no belt or pole
+    infrastructure_items: {}
+    tile_footprint: 4.0
+  assembling-machine-1:
+    infrastructure_items: {transport-belt: 3.0, small-electric-pole: 0.5, inserter: 2.0}
+    tile_footprint: 15.0
+  assembling-machine-2:
+    infrastructure_items: {transport-belt: 3.0, small-electric-pole: 0.5, inserter: 2.0}
+    tile_footprint: 15.0
+  boiler:
+    infrastructure_items: {transport-belt: 3.0, small-electric-pole: 0.5, burner-inserter: 1.0}
+    tile_footprint: 12.0
+  stone-furnace:
+    infrastructure_items: {transport-belt: 2.0, small-electric-pole: 0.5, inserter: 2.0}
+    tile_footprint: 10.0
+  steel-furnace:
+    infrastructure_items: {transport-belt: 2.0, small-electric-pole: 0.5, inserter: 2.0}
+    tile_footprint: 10.0
+  pumpjack:                     # long fluid plumb to the refinery network
+    infrastructure_items: {pipe: 10.0, small-electric-pole: 1.0}
+    tile_footprint: 20.0
+  lab:
+    infrastructure_items: {small-electric-pole: 0.5, inserter: 2.0}
+    tile_footprint: 11.0
+
+# Player-physics constants (single character acting serially).
+physics:
+  walking_speed_tps: 8.9                 # character walk speed, tiles/second
+  placement_tick_s: 0.016666666666666666 # one entity placed per game tick (1/60 s)
+  tree_mining_rate_base: 0.55            # trees/s at 0.5× mining (pre-steel-axe)
+  tree_mining_rate_steelaxe: 1.1         # trees/s at 1.0× mining (post-steel-axe)
+  wood_per_tree: 4.0                     # turns the map's tree_count into a wood budget
+
+# Spatial / count caps.
+caps:
+  burner_drill: 50.0          # forces transition to electric drills
+  stone_furnace: 200.0        # forces transition to split steel furnaces
+  chest_inserter_per: 1.0     # +1 inserter infra per storage chest
+  chest_tile_footprint: 1.0   # 1×1 chest selection box, for placement player-time
+  max_area_fraction: 0.75     # max fraction of map area filled by buildings
+
+# The hand-crafting character stand-in, folded into effective initial items in
+# every mode (bypasses automation gating; energy-credited, not grid-powered).
+character:
+  building: assembling-machine-1
+  count: 2.0
+
+# Planning-mode end-of-step capacity weights + bootstrap seeding. The mode LOGIC
+# is in code; these are the tunable weights it interpolates with.
+modes:
+  experimental_raw_weight: 0.0       # raw extractors: strict start-of-step timing
+  experimental_default_weight: 1.0   # everything else: same-step build-and-use
+  trapezoidal_weight: 0.5            # uniform start/end average
+  lower_bound_weight: 0.0            # strict timing for every building
+  experimental_seed:                 # raw extractor scenarios rarely seed
+    offshore-pump: 1.0
+  lower_bound_seed:                  # minimum infra so step 0 can do anything
+    lab: 1.0
+    boiler: 1.0
+    steam-engine: 2.0
+    offshore-pump: 1.0
+
+# Modeling-scope policy sets.
+policy:
+  # Buildings whose capacity uses strict (start-of-step) timing under experimental.
+  raw_extraction_buildings:
+    [burner-mining-drill, electric-mining-drill, pumpjack, offshore-pump]
+  # Terminal end-products removed entirely (no var, no balance) — curated, NOT
+  # reachability-derived. See the L2 design doc.
+  pruned_items:
+    - pistol
+    - firearm-magazine
+    - light-armor
+    - repair-pack
+    - refined-concrete
+    - hazard-concrete
+    - refined-hazard-concrete
+    - radar
+    - empty-barrel
+    - fast-inserter
+    - filter-inserter
+    - long-handed-inserter
+    - fast-transport-belt
+    - underground-belt
+    - splitter
+    - pump
+  # Smelting buildings given no activity var (smelting served by stone + split steel).
+  smelting_disabled_buildings: [electric-furnace]
+  # Recipes restricted to a single machine.
+  single_machine_recipes: [rocket-silo]
+  # Cap-pinning research steps split into <tech>-middle + <tech>.
+  split_research_techs: [engine, rocket-silo]
+  # Items barred as a boiler fuel choice (kept in the model otherwise).
+  fuel_excluded: [wood]
