@@ -34,6 +34,12 @@ def test_bare_reports_no_config(tmp_path: Path, monkeypatch) -> None:
     assert "config: none found" in result.stdout
 
 
+def test_bare_hints_at_help(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, [])
+    assert "fplan --help" in result.stdout
+
+
 def test_bare_reports_unset_paths(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / cfg.DEFAULT_CONFIG_NAME).write_text(cfg.render_config(None, None))

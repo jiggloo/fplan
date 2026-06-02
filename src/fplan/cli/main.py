@@ -126,6 +126,7 @@ def main(
         return
     typer.echo(f"fplan working directory: {Path.cwd()}")
     _report_config(config_file)
+    typer.echo("\nRun `fplan --help` to list the available commands.")
 
 
 def _detect_factorio_interactively() -> factorio.FactorioInstall | None:
