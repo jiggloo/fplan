@@ -1,0 +1,9 @@
+{
+  "name": "l3-map-extract",
+  "version": "0.1.0",
+  "title": "L3 Map Extract",
+  "author": "factorio_explore",
+  "factorio_version": "1.1",
+  "dependencies": ["base"],
+  "description": "Dumps resource patches, oil spots, and water distance around spawn as JSON, then signals via a sentinel file. Driven by fplan's map extractor."
+}

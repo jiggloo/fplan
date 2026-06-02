@@ -123,6 +123,33 @@ def test_require_data_dir_ok(tmp_path: Path) -> None:
     assert cfg.require_data_dir(conf) == tmp_path / "data"
 
 
+def test_require_binary_unset_raises(tmp_path: Path) -> None:
+    conf = cfg.FplanConfig(data_dir=None, binary=None, source=tmp_path / "c")
+    with pytest.raises(cfg.ConfigError, match="no Factorio executable"):
+        cfg.require_binary(conf)
+
+
+def test_require_binary_missing_path_raises(tmp_path: Path) -> None:
+    conf = cfg.FplanConfig(data_dir=None, binary=tmp_path / "nope", source=None)
+    with pytest.raises(cfg.ConfigError, match="does not exist"):
+        cfg.require_binary(conf)
+
+
+def test_require_binary_directory_raises(tmp_path: Path) -> None:
+    # A config pointing the binary at a directory gets a clear ConfigError
+    # rather than a downstream Popen OSError/traceback.
+    conf = cfg.FplanConfig(data_dir=None, binary=tmp_path, source=None)
+    with pytest.raises(cfg.ConfigError, match="is not a file"):
+        cfg.require_binary(conf)
+
+
+def test_require_binary_ok_resolves(tmp_path: Path) -> None:
+    binary = tmp_path / "factorio"
+    binary.touch()
+    conf = cfg.FplanConfig(data_dir=None, binary=binary, source=None)
+    assert cfg.require_binary(conf) == binary.resolve()
+
+
 def test_render_config_round_trips(tmp_path: Path) -> None:
     p = _write(tmp_path / "c.yaml", cfg.render_config("/a/b", "/c/d"))
     conf = cfg.load_config(p)
@@ -197,3 +224,13 @@ def test_detect_finds_an_install(tmp_path: Path, monkeypatch) -> None:
 def test_detect_returns_none_when_absent(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setitem(factorio._KNOWN_ROOTS, "darwin", [str(tmp_path / "absent")])
     assert factorio.detect("darwin") is None
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32", "linux"])
+def test_script_output_dir_known_platforms(platform: str) -> None:
+    out = factorio.script_output_dir(platform)
+    assert out is not None and out.name == "script-output"
+
+
+def test_script_output_dir_unknown_platform() -> None:
+    assert factorio.script_output_dir("mystery") is None
