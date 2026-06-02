@@ -774,9 +774,13 @@ class GameModel:
         effects here. The current implementation copies base values verbatim.
 
         Deployment overhead (infrastructure_items + a refined tile_footprint)
-        is an L2-stage overlay; until that migrates, the footprint is the bare
-        prototype footprint and infrastructure is empty. The L2 migration
-        reintroduces the per-building deployment lookup here.
+        is an L2-stage concern and is applied *there*, not here: this base
+        factory stays dependency-free (it never imports L2), returning empty
+        infrastructure and the bare prototype footprint. L2 overlays the
+        deployment pattern from its config via
+        ``fplan.l2.deployment.deployed_facility`` — see that function and the
+        stage-enrichment note in docs/. (When module support lands, the
+        speed/productivity/consumption math *does* belong here, as base data.)
         """
         if modules:
             raise NotImplementedError(

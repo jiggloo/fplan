@@ -107,6 +107,26 @@ first with `fplan init` (see
   .venv/bin/fplan map show maps/save.yaml
   ```
 
+- **L2 solve** — the SCIP optimize needs the full model and is a per-seed primal
+  coin flip, so it's exercised here rather than in CI (the automated tests cover
+  the solver-*neutral* L2 layer — config, scenario, instance build, deployment —
+  against the fixture). Solve the committed **steelaxe** example run in place
+  (the quickest smoke):
+
+  ```bash
+  cd examples
+  ../.venv/bin/fplan --config-file ../.fplan-config.yaml \
+      rates solve steelaxe --seed 1 --time-limit-s 120
+  ../.venv/bin/fplan --config-file ../.fplan-config.yaml run show steelaxe
+  ```
+
+  Confirm it reports a feasible `t_FINAL` and writes `rates.yaml`; `run show
+  steelaxe` then lists `rates.yaml` under artifacts, and
+  `runs/steelaxe/manifest.yaml` has gained an `l2:` block
+  (mode/seed/objective_s/status/solve_time_s/config). (The committed `fishminer`
+  run binds the full `default-victory` campaign — solvable the same way, but
+  larger and may need several seeds to land an incumbent.)
+
 ## Development
 
 Install the dev toolchain (above) and the pre-commit hooks:
@@ -163,6 +183,8 @@ obvious without reading the docs.
 
 - [Usage reference](docs/usage.md) — the full CLI reference
 - [Repository structure & conventions](docs/structure.md)
+- [Stage enrichment](docs/stage-enrichment.md) — why per-stage knowledge (e.g.
+  L2 deployment) enriches downward and never lives in the base model layer
 
 ## License
 
