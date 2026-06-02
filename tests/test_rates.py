@@ -886,3 +886,65 @@ def test_post_not_a_mapping_clean_error(
     assert r.exit_code == 1 and "not a valid rates YAML" in (
         r.stdout + (r.stderr or "")
     )
+
+
+def test_post_zero_duration_steps_no_traceback(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    # Consecutive zero-duration steps make duplicate timestamps that used to
+    # divide-by-zero in the tube taut string (a raw traceback). tube now
+    # degrades gracefully — the command completes, never crashes.
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    rd = run_mod.run_dir("r")
+    item = {
+        "name": "w",
+        "produced": 1.0,
+        "production_rate_per_s": 0.0,
+        "consumption_rate_per_s": 0.0,
+        "consumed": 0.0,
+        "count_start": 0.0,
+        "count_end": 1.0,
+    }
+    degenerate = {
+        "initial_time_s": 0.0,
+        "steps": [
+            {"label": "a", "duration_s": 10.0, "items": [dict(item, count_end=1.0)]},
+            {
+                "label": "b",
+                "duration_s": 0.0,
+                "items": [dict(item, count_start=1.0, count_end=2.0)],
+            },
+            {
+                "label": "c",
+                "duration_s": 0.0,
+                "items": [dict(item, count_start=2.0, count_end=3.0)],
+            },
+            {
+                "label": "d",
+                "duration_s": 10.0,
+                "items": [dict(item, count_start=3.0, count_end=0.0)],
+            },
+        ],
+    }
+    (rd / "rates.yaml").write_text(yaml.safe_dump(degenerate))
+    r = runner.invoke(app, ["rates", "post", "r", "--method", "tube", "--no-viz"])
+    assert r.exit_code == 0, r.stdout + (r.stderr or "")
+    assert (rd / "rates-post.yaml").exists()
+    assert r.exception is None or isinstance(r.exception, SystemExit)
+
+
+def test_post_from_outside_run_dir_records_basename(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    # A --from outside the run dir can't be made run-dir-relative, so the source
+    # is recorded as a bare basename (the overlay then degrades gracefully).
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run_with_rates(tmp_path)
+    ext = tmp_path / "elsewhere.yaml"
+    ext.write_text(yaml.safe_dump(POST_RATES))
+    r = runner.invoke(app, ["rates", "post", "r", "--from", str(ext), "--no-viz"])
+    assert r.exit_code == 0
+    assert yaml.safe_load((rd / "rates-post.yaml").read_text())["post"]["source"] == (
+        "elsewhere.yaml"
+    )

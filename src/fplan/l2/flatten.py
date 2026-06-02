@@ -68,6 +68,11 @@ def taut_string(X, BOT, TOP, y0, yN):
     def valid(ui, wi):
         xu, yu, gu = verts[ui]
         xw, yw, gw = verts[wi]
+        if xw == xu:
+            # Vertical segment: duplicate timestamps from (consecutive)
+            # zero-duration steps. No horizontal extent, so no interior gate can
+            # be violated — and guarding here avoids a divide-by-zero.
+            return True
         for g in range(gu + 1, gw):
             yy = yu + (yw - yu) * (X[g] - xu) / (xw - xu)
             if yy < BOT[g] - 1e-9 or yy > TOP[g] + 1e-9:

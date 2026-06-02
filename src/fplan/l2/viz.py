@@ -569,7 +569,7 @@ function buildLegend() {
     catEl.className = "cat";
     const hdr = document.createElement("div");
     hdr.className = "cat-header";
-    hdr.innerHTML = `<span class="caret">▼</span><span class="cat-name">${cat.name}</span><span style="flex:1"></span><span class="cat-count" style="color:#9ca3af;font-weight:normal">${cat.items.length}</span>`;
+    hdr.innerHTML = `<span class="caret">▼</span><span class="cat-name">${esc(cat.name)}</span><span style="flex:1"></span><span class="cat-count" style="color:#9ca3af;font-weight:normal">${cat.items.length}</span>`;
     const list = document.createElement("div");
     list.className = "cat-items";
     hdr.addEventListener("click", (e) => {
@@ -1386,7 +1386,7 @@ def _flatten_meta_parts(dataset: dict, method: str) -> list[str]:
     if summ:
         parts.append(
             f"revisits={summ.get('revisits')} (was {summ.get('orig_segments')}, "
-            f"-{summ.get('revisits_saved')})"
+            f"saved {summ.get('revisits_saved')})"
         )
         parts.append(f"self-stockouts={summ.get('self_stockouts')}")
     parts.append(f"deficit-lines={len(dataset.get('deficits') or [])}")

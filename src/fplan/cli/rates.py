@@ -785,7 +785,10 @@ def post(
     try:
         result = l2_flatten.flatten(l2, method=method, model=model)
         post_yaml = l2_flatten.build_post_yaml(l2, result, source_ref=source_ref)
-    except (KeyError, ValueError, TypeError, AttributeError) as exc:
+    except (KeyError, ValueError, TypeError, AttributeError, ZeroDivisionError) as exc:
+        # `src` is untrusted (--from any file): degenerate shapes (a non-dict
+        # step, duplicate/zero-duration timestamps, …) must surface as a clean
+        # error, never a raw traceback.
         typer.echo(f"error: malformed rates YAML in {src}: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
@@ -812,7 +815,7 @@ def post(
     typer.echo(
         f"  method={method}  items={summary['items_scored']}  "
         f"revisits={summary['revisits']} (was {summary['orig_segments']}, "
-        f"-{summary['revisits_saved']})  "
+        f"saved {summary['revisits_saved']})  "
         f"self-stockouts={summary['self_stockouts']}  "
         f"unmet-inputs={summary['deficit_lines']}"
     )

@@ -282,3 +282,113 @@ def test_chord_self_stockouts_where_tube_does_not(model: GameModel) -> None:
     assert tube["self_stockouts"] == 0
     # chord collapses to fewer/equal segments than the tube (at that cost).
     assert chord["revisits"] <= tube["revisits"]
+
+
+# --- dependency graph + unmet-input report (needs `activity:` + the model) -----
+
+
+def _gear_step(label, ip_produced, gear_cycles, ip_cs, ip_ce):
+    """A step producing iron-plate (banked) and, via an `activity:` entry,
+    iron-gear-wheel — whose recipe consumes iron-plate (fixture model:
+    iron-gear-wheel ← 2 iron-plate). This drives compute_deficits + the mrp
+    dependency graph, neither of which fires without an `activity:` block."""
+    return {
+        "label": label,
+        "duration_s": 10.0,
+        "items": [
+            {
+                "name": "iron-plate",
+                "produced": ip_produced,
+                "production_rate_per_s": ip_produced / 10.0,
+                "consumption_rate_per_s": 0.0,
+                "consumed": 0.0,
+                "count_start": ip_cs,
+                "count_end": ip_ce,
+            },
+            {
+                "name": "iron-gear-wheel",
+                "produced": gear_cycles,
+                "production_rate_per_s": gear_cycles / 10.0,
+                "consumption_rate_per_s": 0.0,
+                "consumed": 0.0,
+                "count_start": 0.0,
+                "count_end": 0.0,
+            },
+        ],
+        "activity": [
+            {
+                "recipe": "iron-gear-wheel",
+                "cycles": gear_cycles,
+                "building": "assembling-machine-1",
+            }
+        ],
+    }
+
+
+# iron-plate banked (same P/inv shape as BANKING) so chord self-stockouts on it.
+GEAR_RATES = {
+    "scenario": "gears",
+    "mode": "lower-bound",
+    "initial_time_s": 0.0,
+    "steps": [
+        _gear_step("s0", 100.0, 5.0, 0.0, 30.0),
+        _gear_step("s1", 60.0, 5.0, 30.0, 20.0),
+        _gear_step("s2", 40.0, 5.0, 20.0, 0.0),
+    ],
+}
+
+
+def test_compute_deficits_attributes_shortfall_to_consuming_recipe(
+    model: GameModel,
+) -> None:
+    chord = F.flatten(GEAR_RATES, method="chord", model=model)
+    tube = F.flatten(GEAR_RATES, method="tube", model=model)
+    # tube never falls behind; chord does — and the shortfall is attributed to
+    # the recipe (iron-gear-wheel) consuming the short input (iron-plate).
+    assert tube.deficits == []
+    assert chord.deficits, "chord should report unmet iron-plate"
+    d = chord.deficits[0]
+    assert d["recipe"] == "iron-gear-wheel" and d["input"] == "iron-plate"
+    assert d["short"] > 0 and d["required"] > d["made"]
+
+
+def test_mrp_runs_dependency_graph_and_diverges_from_chord(model: GameModel) -> None:
+    # mrp reshapes iron-gear-wheel by its propagated consumer demand, so its
+    # revisit count for the gear diverges from the independent chord — proving
+    # the dependency machinery (rcyc/consumers/principal/Jacobi) actually ran.
+    chord = F.flatten(GEAR_RATES, method="chord", model=model)
+    mrp = F.flatten(GEAR_RATES, method="mrp", model=model)
+    assert (
+        mrp.flats["iron-gear-wheel"].revisits != chord.flats["iron-gear-wheel"].revisits
+    )
+    assert mrp.deficits  # the unmet-input report still fires under mrp
+
+
+def _zd_item(produced, rate, cs, ce):
+    return {
+        "name": "w",
+        "produced": produced,
+        "production_rate_per_s": rate,
+        "consumption_rate_per_s": 0.0,
+        "consumed": 0.0,
+        "count_start": cs,
+        "count_end": ce,
+    }
+
+
+def test_flatten_tube_handles_consecutive_zero_duration_steps(
+    model: GameModel,
+) -> None:
+    # Regression: consecutive zero-duration steps make duplicate timestamps;
+    # the taut string used to divide by zero. It must degrade gracefully now.
+    z = {
+        "initial_time_s": 0.0,
+        "steps": [
+            {"label": "a", "duration_s": 10.0, "items": [_zd_item(3.0, 0.3, 0.0, 3.0)]},
+            {"label": "b", "duration_s": 0.0, "items": [_zd_item(3.0, 0.0, 3.0, 6.0)]},
+            {"label": "c", "duration_s": 0.0, "items": [_zd_item(3.0, 0.0, 6.0, 9.0)]},
+            {"label": "d", "duration_s": 10.0, "items": [_zd_item(1.0, 0.1, 9.0, 0.0)]},
+        ],
+    }
+    res = F.flatten(z, method="tube", model=model)  # must not raise
+    assert "w" in res.flats
