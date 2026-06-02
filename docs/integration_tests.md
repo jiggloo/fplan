@@ -1,16 +1,17 @@
 # Integration tests
 
 Most of fplan is covered by the automated suite (`pytest`), which runs in CI
-against captured fixtures. Some functionality, though, needs a **real Factorio
-installation** and can't run in CI — the live prototype-data load, the headless
-map extraction, and the SCIP solve (a per-seed primal coin flip). Those are
-verified by hand with the steps below.
+against captured fixtures. This file is the home for the checks that can't —
+**manual** for now, and the place to document integration testing as it grows.
 
-This file documents the **manual** integration checks today; it's the home for
-integration testing generally and will grow as the pipeline does. Run these
-after changes that touch the loaders or the solver.
+## Manual integration tests
 
-## Setup
+Some functionality needs a **real Factorio installation** and can't run in CI —
+the live prototype-data load, the headless map extraction, and the SCIP solve (a
+per-seed primal coin flip). Verify them by hand after changes that touch the
+loaders or the solver.
+
+### Setup
 
 Configure Factorio and seed the working directory with the bundled examples:
 
@@ -18,13 +19,12 @@ Configure Factorio and seed the working directory with the bundled examples:
 .venv/bin/fplan init --copy-examples
 ```
 
-`init` records the Factorio paths (`data_dir` for the model-load and solve steps,
-`binary` for map extraction — see [Configuration](usage.md#configuration));
+`init` records the Factorio paths (see [Configuration](usage.md#configuration));
 `--copy-examples` drops the example scenarios / tech-orders / maps / run
-manifests into the current directory so the L2 steps below run from the repo
-root. ([Cleanup](#cleanup) is at the end.)
+manifests into the current directory so the steps below run from the repo root.
+([Cleanup](#cleanup) is at the end.)
 
-## Game model load
+### Game model load
 
 Parse the installed Factorio prototype data and print a summary:
 
@@ -36,7 +36,7 @@ Confirm it succeeds and the counts look sane (hundreds of recipes/items). The
 automated tests exercise the model *cleaning* against a small captured prototype
 fixture; this exercises the live Lua load that fixture stands in for.
 
-## Map extraction
+### Map extraction
 
 Run a headless extraction against a save and confirm the artifact (and that the
 source save is untouched):
@@ -46,7 +46,7 @@ source save is untouched):
 .venv/bin/fplan map show maps/save.yaml
 ```
 
-## L2 solve
+### L2 solve
 
 The SCIP optimize needs the full model and is a per-seed primal coin flip, so
 it's exercised here rather than in CI (the automated tests cover the
@@ -76,7 +76,7 @@ Each seed's candidate lands under `runs/fishminer/rates-search/` (with a
 `summary.yaml` index); the best is promoted to `runs/fishminer/rates.yaml` after
 a prompt (`--force` to skip). The `rates-search/` scratch is ephemeral.
 
-## L2 viz
+### L2 viz
 
 Render a solved run's `rates.yaml` as interactive HTML (timeline +
 capacity-saturation heatmap) under `runs/<run>/viz/`:
@@ -86,16 +86,13 @@ capacity-saturation heatmap) under `runs/<run>/viz/`:
 ```
 
 Confirm it writes `viz/rates-timeline.html` + `viz/rates-heatmap.html` and (with
-`--open`) opens the timeline. It's a pure consumer of `rates.yaml` — the model
-load is best-effort, so it also runs without a Factorio install (just without the
-legend's facility-count breakdown).
+`--open`) opens the timeline.
 
-## L2 post
+### L2 post
 
 Post-process a solved `rates.yaml` into the layout-stage input and auto-generate
 the visualization. `post` is the L2→L3 stage (still under development); its
-current operation is rate-flattening, and it needs the game model (the
-unmet-input diagnostics and the `mrp` method use the recipe graph):
+current operation is rate-flattening:
 
 ```bash
 .venv/bin/fplan rates post steelaxe
@@ -104,7 +101,7 @@ unmet-input diagnostics and the `mrp` method use the recipe graph):
 
 Confirm `rates post` writes `rates-post.yaml` (with a `post:` block) and
 `viz/rates-post-timeline.html`, and prints a revisits summary. The second command
-regenerates the diff view *without* a model — it auto-detects the flatten view
+regenerates the diff view from the post file — it auto-detects the flatten view
 from the `post:` block.
 
 > `rates-post.yaml` is the **provisional** L2→L3 input — both its role and its
@@ -112,12 +109,11 @@ from the `post:` block.
 > [L2 rate-flattening](L2-rate-flattening.md)); don't build anything downstream
 > that assumes the schema is stable.
 
-## Cleanup
+### Cleanup
 
-The solve/viz/post outputs land under `maps/` and `runs/`, which are gitignored —
-nothing to clean there. The copied example **inputs**, though, land in the
-tracked `scenarios/` and `tech-orders/`, so they show as untracked files. Discard
-them when you're done:
+The solve/viz/post outputs land under `maps/` and `runs/`, which are gitignored.
+The copied example inputs land in the tracked `scenarios/` and `tech-orders/`, so
+they show as untracked files — discard them when you're done:
 
 ```bash
 git clean -n scenarios tech-orders   # preview; drop -n to actually delete

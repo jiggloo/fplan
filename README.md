@@ -99,8 +99,11 @@ Install the development dependencies and run the suite:
 .venv/bin/pytest
 ```
 
-Some functionality needs a real Factorio install and is verified by hand — see
-[Integration tests](docs/integration_tests.md).
+### Manual integration tests
+
+Some checks need a real Factorio install and can't run in CI — run them by hand
+after changes to the loaders or solver. See
+[Manual integration tests](docs/integration_tests.md#manual-integration-tests).
 
 ## Development
 
@@ -110,18 +113,17 @@ Install the dev toolchain (above) and the pre-commit hooks:
 .venv/bin/pre-commit install
 ```
 
-Run the checks locally — these mirror what CI enforces:
+Each commit then auto-runs the hygiene, lint/format (ruff), and secret-detection
+checks. The two checks pre-commit doesn't cover — run them yourself before
+pushing:
 
 ```bash
-.venv/bin/ruff check .        # lint
-.venv/bin/ruff format .       # format
-.venv/bin/mypy                # type-check
-.venv/bin/pytest              # tests + coverage
+.venv/bin/mypy       # type-check
+.venv/bin/pytest     # tests + coverage
 ```
 
-Pre-commit runs the hygiene, lint/format, and secret-detection checks on each
-commit; CI re-runs them (plus the test matrix and a build check) as the
-authoritative gate.
+CI is the authoritative gate: it re-runs everything above across the Python
+3.11–3.14 matrix, plus a packaging build check.
 
 ## Repository layout
 
