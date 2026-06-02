@@ -11,6 +11,38 @@ fplan is **clone-first**: the documentation and example/reference material live
 in the repository and come with a `git clone`. Start with this README, then see
 [`docs/`](docs/).
 
+## Install
+
+Requires Python 3.11+. Clone, then install into an isolated environment:
+
+```bash
+git clone https://github.com/jiggloo/fplan.git
+cd fplan
+python3 -m venv .venv
+.venv/bin/pip install -e .
+```
+
+## Usage
+
+The project is early scaffolding; the only thing wired up so far is the package
+version:
+
+```bash
+.venv/bin/python -c "import fplan; print(fplan.__version__)"
+```
+
+The planning pipeline (and its command-line interface) lands in subsequent
+tiers.
+
+## Testing
+
+Install the development dependencies and run the suite:
+
+```bash
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/pytest
+```
+
 ## Repository layout
 
 ```
@@ -38,26 +70,6 @@ reasoning. In short: **authored/curated inputs are tracked; generated and
 regenerable artifacts are not.** The ephemeral directories are still visible in
 a fresh clone (each keeps a `.gitkeep`) so the intended layout is obvious
 without reading the docs; their generated contents are ignored.
-
-## Install
-
-Clone-first, into an isolated environment:
-
-```bash
-git clone https://github.com/jiggloo/fplan.git
-cd fplan
-python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
-```
-
-Then:
-
-```bash
-.venv/bin/python -c "import fplan; print(fplan.__version__)"
-.venv/bin/pytest
-```
-
-Requires Python 3.10+.
 
 ## Documentation
 
