@@ -1,0 +1,1435 @@
+"""L2 visualization — interactive timeline + capacity-saturation heatmap.
+
+Pure consumer of a run's ``rates.yaml`` (the L2 solver output); the CLI
+(``fplan rates viz``) handles run resolution, file output, and ``--open``.
+
+``render_html`` emits a self-contained interactive HTML file with stacked
+time-series panels sharing one zoomable x-axis. The default timeline has three:
+  1. Raw production rate over time (items/s)
+  2. Net production rate over time (production - consumption, items/s)
+  3. Surplus count over time (running stockpile)
+
+Per-item lines are rendered as step functions (panels 1 + 2) or linear-connect
+(panel 3), because L2's underlying model is piecewise-constant within a step.
+A tree-grouped legend toggles per-item visibility (science packs +
+electric-mining-drill visible by default).
+
+``build_heatmap_html`` emits the companion **capacity-saturation heatmap** from
+the per-step ``capacity`` field: rows = capacity-constrained buildings, columns
+= steps in tech order, a cell black when that building is saturated (on the
+critical surface, relevant to t_FINAL — L2→L3 handoff Theme 2).
+
+The renderer is deliberately **parameterized** (chart spec + heading/title/meta
+as arguments, with ``build_dataset`` / ``categorize`` / ``color_for_item`` /
+``default_meta_parts`` as reusable functions) so a later flatten-viz can compose it with
+a different chart spec + an augmented dataset, rather than string-surgery on the
+template. See ``DEFAULT_CHARTS``.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from collections import defaultdict
+from html import escape
+from pathlib import Path
+
+# Template placeholders, substituted in one non-rescanning pass (see render_html).
+_PLACEHOLDER_RE = re.compile(
+    r"__(?:HEADING|CHART_PANES|CHARTS_JSON|TITLE|META|DATA_JSON)__"
+)
+
+# -- Item categorization -------------------------------------------------
+
+RAW_RESOURCES = {
+    "iron-ore",
+    "copper-ore",
+    "coal",
+    "stone",
+    "uranium-ore",
+    "water",
+    "crude-oil",
+    "wood",
+}
+SMELTED_PLATES = {"iron-plate", "copper-plate", "steel-plate"}
+PRODUCTION_FACILITIES = {
+    "assembling-machine-1",
+    "assembling-machine-2",
+    "assembling-machine-3",
+    "electric-furnace",
+    "steel-furnace",
+    "stone-furnace",
+    "oil-refinery",
+    "chemical-plant",
+    "electric-mining-drill",
+    "burner-mining-drill",
+    "pumpjack",
+    "offshore-pump",
+    "boiler",
+    "steam-engine",
+    "lab",
+    "rocket-silo",
+}
+
+# Synthetic item name used for the per-step MW supply/demand line.
+POWER_ITEM = "_power-mw"
+
+CATEGORY_ORDER = [
+    "Raw resources",
+    "Smelted plates",
+    "Science packs",
+    "Power (MW)",
+    "Player time (s)",
+    "Production facilities",
+    "Other",
+]
+
+# Prefix for the synthetic per-step player-time breakdown items. These
+# carry SECONDS (not a rate) in their `prod` field and are shoehorned into
+# the production-rate chart only (see PLAYER_TIME_CHART in the JS).
+PLAYER_TIME_PREFIX = "player-time:"
+
+
+def categorize(name: str) -> str:
+    if name == POWER_ITEM:
+        return "Power (MW)"
+    if name in RAW_RESOURCES:
+        return "Raw resources"
+    if name in SMELTED_PLATES:
+        return "Smelted plates"
+    if name.endswith("-science-pack"):
+        return "Science packs"
+    if name.startswith(PLAYER_TIME_PREFIX):
+        return "Player time (s)"
+    if name in PRODUCTION_FACILITIES:
+        return "Production facilities"
+    # Per-ore drill split, e.g. "electric-mining-drill@iron-ore".
+    if "@" in name and name.split("@", 1)[0] in PRODUCTION_FACILITIES:
+        return "Production facilities"
+    return "Other"
+
+
+def _stable_hash(s: str) -> int:
+    """A process-independent hash. Python's builtin ``hash`` is salted per run
+    (``PYTHONHASHSEED``), which would re-color every item on each invocation and
+    defeat comparing two viz outputs (the promoted run vs a ``--from`` candidate)."""
+    return int(hashlib.md5(s.encode()).hexdigest(), 16)
+
+
+def color_for_item(name: str) -> str:
+    """Stable per-item HSL color from a hash, with mild S/L jitter to
+    spread visually-similar hues. Stable across runs (see ``_stable_hash``)."""
+    h = _stable_hash(name + "_hue") % 360
+    s = 55 + (_stable_hash(name + "_sat") % 25)  # 55-80
+    L = 38 + (_stable_hash(name + "_lum") % 18)  # 38-56
+    return f"hsl({h}, {s}%, {L}%)"
+
+
+# -- Dataset extraction --------------------------------------------------
+
+
+def _load_model_maps(data_dir: Path | None = None):
+    """Load the game model to derive per-recipe facility counts.
+
+    Returns (building_speed, recipe_outputs, ok). Failure is non-fatal:
+    the viz still renders from pure YAML, just without the facility
+    breakdown (so it stays runnable without a Factorio install — pass no
+    ``data_dir`` and this returns empty maps). The model is the source of
+    `base_speed` (facility count = recipe-seconds / (base_speed · duration))
+    and of recipe→output mapping (so we can answer "which facility produces
+    item X").
+    """
+    try:
+        from fplan.model import load_model
+
+        m = load_model(data_dir=data_dir)
+    except Exception:
+        return {}, {}, False
+    building_speed = {
+        n: float(b.base_speed)
+        for n, b in m.buildings.items()
+        if getattr(b, "base_speed", None)
+    }
+    recipe_outputs = {
+        rn: [(o.name, float(o.amount)) for o in r.outputs]
+        for rn, r in m.recipes.items()
+    }
+    return building_speed, recipe_outputs, True
+
+
+def build_dataset(l2: dict, *, data_dir: Path | None = None) -> dict:
+    """Walk L2's per-step `items` list (which already carries
+    production_rate_per_s, consumption_rate_per_s, count_start, count_end
+    per item per step) and synthesize a power-MW item from `energy`.
+
+    ``data_dir`` (optional) enables the best-effort facility-count breakdown;
+    without it the dataset still builds from the YAML alone.
+    """
+    steps_yaml = l2.get("steps", [])
+    step_records = []
+    # The initial state may sit at a nonzero in-game time (e.g. 3:12 for
+    # default-victory, the hand-crafted seed base). Start the cumulative
+    # clock there so every step t0/t1 — and hence the chart x-axis and the
+    # left-column step times — read as absolute in-game time, not relative.
+    initial_time_s = float(l2.get("initial_time_s", 0.0) or 0.0)
+    clock = initial_time_s  # running absolute in-game time, advanced per step
+
+    building_speed, recipe_outputs, model_loaded = _load_model_maps(data_dir)
+
+    # Per-item totals for default-visibility ranking.
+    total_flow: defaultdict[str, float] = defaultdict(float)
+
+    for i, s in enumerate(steps_yaml):
+        duration = float(s.get("duration_s", 0.0)) or 1e-9
+        start_t = clock
+        end_t = clock + duration
+        clock = end_t
+
+        rates: dict[str, dict] = {}
+        for it in s.get("items", []):
+            name = it["name"]
+            p = float(it.get("production_rate_per_s") or 0.0)
+            c = float(it.get("consumption_rate_per_s") or 0.0)
+            cs = float(it.get("count_start") or 0.0)
+            ce = float(it.get("count_end") or 0.0)
+            rates[name] = {"prod": p, "cons": c, "count_start": cs, "count_end": ce}
+            total_flow[name] += (abs(p) + abs(c)) * duration
+
+        # Per-ore electric-drill split: the LP assigns drills to a specific
+        # ore (a drill on iron can't switch to copper), emitted as
+        # `mining_assignment`. Surface each as a synthetic item (e.g.
+        # "electric-mining-drill@iron-ore") so the split is visible
+        # alongside the aggregate drill. prod/cons mirror the aggregate
+        # drill's build-rate semantics — the per-step count delta over
+        # duration — so the production / net-rate charts show drills being
+        # added (positive) or removed, not a flat zero. The surplus-count
+        # chart reads count_start/count_end directly.
+        for ma in s.get("mining_assignment", []) or []:
+            name = ma.get("building")
+            if not name:
+                continue
+            cs = float(ma.get("count_start") or 0.0)
+            ce = float(ma.get("count_end") or 0.0)
+            delta = ce - cs
+            prod = max(0.0, delta) / duration
+            cons = max(0.0, -delta) / duration
+            rates[name] = {
+                "prod": prod,
+                "cons": cons,
+                "count_start": cs,
+                "count_end": ce,
+            }
+            total_flow[name] += (abs(prod) + abs(cons)) * duration
+
+        # Per-output steel-furnace split: same treatment as the drill split
+        # above (a furnace committed to iron-plate can't switch to copper),
+        # emitted as `smelting_assignment` and surfaced as synthetic items
+        # like "steel-furnace@iron-plate".
+        for sa in s.get("smelting_assignment", []) or []:
+            name = sa.get("building")
+            if not name:
+                continue
+            cs = float(sa.get("count_start") or 0.0)
+            ce = float(sa.get("count_end") or 0.0)
+            delta = ce - cs
+            prod = max(0.0, delta) / duration
+            cons = max(0.0, -delta) / duration
+            rates[name] = {
+                "prod": prod,
+                "cons": cons,
+                "count_start": cs,
+                "count_end": ce,
+            }
+            total_flow[name] += (abs(prod) + abs(cons)) * duration
+
+        # Per-item production-facility breakdown: which recipe(s) produce
+        # each item this step, on which building, and the fractional number
+        # of facilities running it. facilities = recipe-seconds-of-work /
+        # (base_speed · duration) — verified to sum back to the stored
+        # building counts (count_end for crafting, count_start for raw
+        # extraction). Keyed by OUTPUT item so the UI can answer "what makes
+        # this item, with how many machines". Pseudo-recipes (research/,
+        # power/, launch) aren't in recipe_outputs and are skipped.
+        prod_detail: dict[str, list] = defaultdict(list)
+        for a in s.get("activity", []) or []:
+            building = a.get("building")
+            recipe = a.get("recipe")
+            cycles = float(a.get("cycles") or 0.0)
+            rsec = float(a.get("recipe_sec_used") or cycles)
+            sp = building_speed.get(building) or building_speed.get(
+                (building or "").split("@", 1)[0]
+            )
+            facilities = (rsec / (sp * duration)) if sp else None
+            for item_name, amt in recipe_outputs.get(recipe, []):
+                prod_detail[item_name].append(
+                    {
+                        "recipe": recipe,
+                        "building": building,
+                        "facilities": facilities,
+                        "item_rate": cycles * amt / duration,
+                    }
+                )
+
+        # Power: synthetic item. Supply (production), demand (consumption).
+        e = s.get("energy", {}) or {}
+        supply = float(e.get("electric_supply_mw") or 0.0) + float(
+            e.get("character_credit_mw") or 0.0
+        )
+        demand = float(e.get("electric_demand_mw") or 0.0)
+        rates[POWER_ITEM] = {
+            "prod": supply,
+            "cons": demand,
+            "count_start": 0.0,
+            "count_end": 0.0,
+        }
+        total_flow[POWER_ITEM] += (supply + demand) * duration
+
+        # Player-time breakdown: synthetic seconds-valued items, one per
+        # component (movement / placement / wood-cutting / idle). The value
+        # is carried in `prod` so it plots in the production-rate chart; the
+        # JS restricts these items to that chart only (mixing seconds into
+        # the net-rate / surplus-count panels would be meaningless). idle =
+        # duration − total player time the constraint consumed.
+        pt = s.get("player_time") or {}
+        if pt:
+            pt_components = {
+                f"{PLAYER_TIME_PREFIX}movement": pt.get("movement_s", 0.0),
+                f"{PLAYER_TIME_PREFIX}placement": pt.get("placement_s", 0.0),
+                f"{PLAYER_TIME_PREFIX}wood-cutting": pt.get("wood_cutting_s", 0.0),
+                f"{PLAYER_TIME_PREFIX}idle": pt.get("idle_s", 0.0),
+            }
+            for name, secs in pt_components.items():
+                rates[name] = {
+                    "prod": float(secs),
+                    "cons": 0.0,
+                    "count_start": 0.0,
+                    "count_end": 0.0,
+                }
+                total_flow[name] += abs(float(secs))
+
+        step_records.append(
+            {
+                "i": i,
+                "label": s.get("label", f"step-{i}"),
+                "duration": duration,
+                "t0": start_t,
+                "t1": end_t,
+                "rates": rates,
+                "prod_detail": dict(prod_detail),
+            }
+        )
+
+    # All items seen anywhere.
+    items_all = sorted(total_flow.keys(), key=lambda n: -total_flow[n])
+
+    # Group by category. Within each subsection sort alphabetically, EXCEPT
+    # Science packs — those keep flow-rank order (the research-curve reading
+    # order, which `items_all` already provides). `items_all` itself stays
+    # flow-ranked for Top-10 / chart iteration; this only reorders the legend.
+    by_cat: dict[str, list[str]] = defaultdict(list)
+    for it in items_all:
+        by_cat[categorize(it)].append(it)
+    for cat, items in by_cat.items():
+        if cat != "Science packs":
+            items.sort()
+    categories = [{"name": cat, "items": by_cat.get(cat, [])} for cat in CATEGORY_ORDER]
+
+    # Colors (stable across runs).
+    colors = {it: color_for_item(it) for it in items_all}
+
+    # Default visibility: all science packs + electric-mining-drill.
+    # Science-pack curves surface the smoothing the tech-research ORDER
+    # needs (the L2→L1 feedback signal); electric-mining-drill count is
+    # the resource-extraction-saturation proxy for whether the run is
+    # physically achievable. Everything else stays one click away in the
+    # legend but starts hidden so these two signals aren't drowned out.
+    visible_default = set(by_cat.get("Science packs", []))
+    if "electric-mining-drill" in total_flow:
+        visible_default.add("electric-mining-drill")
+
+    # Tech anchors (one per step start).
+    tech_anchors = [
+        {"label": s["label"], "time": s["t0"], "i": s["i"]} for s in step_records
+    ]
+
+    return {
+        "scenario": l2.get("scenario", "unknown"),
+        "mode": l2.get("mode", "unknown"),
+        "l1_method": l2.get("l1_method", "unknown"),
+        "pseudo_recipes_version": l2.get("pseudo_recipes_version"),
+        "solver": l2.get("solver", {}),
+        "initial_time_s": initial_time_s,
+        "total_time": clock,
+        "steps": step_records,
+        "items_all": items_all,
+        "categories": categories,
+        "colors": colors,
+        # Items confined to the production-rate chart (seconds-valued
+        # player-time breakdown); the JS skips them in the other panels.
+        "player_time_items": [
+            it for it in items_all if it.startswith(PLAYER_TIME_PREFIX)
+        ],
+        "visible_default": sorted(visible_default),
+        "tech_anchors": tech_anchors,
+        "model_loaded": model_loaded,
+    }
+
+
+# -- HTML rendering ------------------------------------------------------
+
+HTML_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>L2 timeline — __TITLE__</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; color: #222; }
+  body { display: flex; flex-direction: column; height: 100vh; }
+  header { padding: 6px 12px; background: #1f2937; color: #fff; display: flex; align-items: baseline; gap: 12px; flex: 0 0 auto; }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; }
+  header .meta { font-size: 11px; color: #9ca3af; }
+  #main { flex: 1; display: flex; min-height: 0; }
+  #nav { width: 180px; flex: 0 0 180px; border-right: 1px solid #e5e7eb; overflow-y: auto; padding: 6px 4px; }
+  #nav h3 { font-size: 11px; text-transform: uppercase; color: #6b7280; margin: 6px 4px 4px; letter-spacing: 0.04em; }
+  #nav .tech-row { padding: 2px 6px; cursor: pointer; border-radius: 3px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #nav .tech-row:hover { background: #f3f4f6; }
+  #nav .tech-row.selected { background: #dbeafe; font-weight: 600; }
+  #nav .tech-row .t { color: #6b7280; margin-right: 4px; font-variant-numeric: tabular-nums; font-size: 10px; }
+
+  #center { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  #charts { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .chart-pane { flex: 1; display: flex; flex-direction: column; min-height: 0; border-bottom: 1px solid #e5e7eb; }
+  .chart-title { font-size: 11px; padding: 3px 8px; background: #f9fafb; color: #374151; border-bottom: 1px solid #e5e7eb; flex: 0 0 auto; font-weight: 500; }
+  .chart-svg-wrap { flex: 1; position: relative; min-height: 0; }
+  .chart-svg { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; user-select: none; }
+
+  #details { flex: 0 0 auto; max-height: 25vh; overflow-y: auto; border-top: 2px solid #d1d5db; padding: 4px 8px; background: #fafafa; }
+  #details h3 { font-size: 11px; text-transform: uppercase; color: #6b7280; margin: 4px 0; }
+  #details table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  #details th, #details td { padding: 2px 6px; text-align: right; border-bottom: 1px solid #f3f4f6; }
+  #details th { background: #f3f4f6; position: sticky; top: 0; }
+  #details td:first-child, #details th:first-child { text-align: left; }
+  #details .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+  #details td.item-cell { cursor: pointer; }
+  #details td.item-cell:hover { text-decoration: underline; }
+
+  #cell-popup { position: absolute; display: none; z-index: 20; background: #fff; border: 1px solid #cbd5e1; border-radius: 5px; box-shadow: 0 4px 16px rgba(0,0,0,0.18); font-size: 11px; font-variant-numeric: tabular-nums; max-width: 360px; overflow: hidden; }
+  #cell-popup .cp-head { display: flex; align-items: center; gap: 6px; padding: 5px 8px; background: #1f2937; color: #fff; font-weight: 600; }
+  #cell-popup .cp-head .swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  #cell-popup .cp-head .cp-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #cell-popup .cp-x { cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; color: #cbd5e1; }
+  #cell-popup .cp-x:hover { color: #fff; }
+  #cell-popup .cp-sub { padding: 4px 8px; color: #6b7280; border-bottom: 1px solid #f3f4f6; }
+  #cell-popup .cp-empty { padding: 8px; color: #6b7280; }
+  #cell-popup table.cp-table { border-collapse: collapse; width: 100%; }
+  #cell-popup table.cp-table th, #cell-popup table.cp-table td { padding: 3px 8px; text-align: right; border-bottom: 1px solid #f3f4f6; white-space: nowrap; }
+  #cell-popup table.cp-table th { background: #f3f4f6; color: #374151; }
+  #cell-popup table.cp-table td:first-child, #cell-popup table.cp-table th:first-child,
+  #cell-popup table.cp-table td:nth-child(2), #cell-popup table.cp-table th:nth-child(2) { text-align: left; }
+  #cell-popup tr.cp-total td { font-weight: 600; border-top: 1px solid #d1d5db; }
+
+  #legend { width: 240px; flex: 0 0 240px; border-left: 1px solid #e5e7eb; overflow-y: auto; padding: 6px 4px; }
+  #legend .ctrl-row { padding: 4px 6px; display: flex; gap: 6px; font-size: 11px; }
+  #legend .ctrl-row button { font-size: 11px; padding: 1px 6px; cursor: pointer; }
+  #legend .cat { margin-bottom: 4px; }
+  #legend .cat-header { padding: 3px 4px; font-size: 11px; font-weight: 600; color: #374151; cursor: pointer; background: #f3f4f6; display: flex; align-items: center; gap: 4px; user-select: none; }
+  #legend .cat-header .caret { transition: transform 0.1s; font-size: 9px; }
+  #legend .cat-header.collapsed .caret { transform: rotate(-90deg); }
+  #legend .cat-items { padding: 2px 0; }
+  #legend .cat-items.hidden { display: none; }
+  #legend .item-row { padding: 2px 6px 2px 18px; display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+  #legend .item-row:hover { background: #f9fafb; }
+  #legend .item-row input { margin: 0; }
+  #legend .item-row .swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  #legend .item-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+
+  .axis-line { stroke: #9ca3af; stroke-width: 1; fill: none; }
+  .axis-text { font-size: 10px; fill: #4b5563; }
+  .step-bound { stroke: #d1d5db; stroke-width: 1; stroke-dasharray: 2,3; }
+  .step-label { font-size: 9px; fill: #6b7280; }
+  .selected-bound { stroke: #2563eb; stroke-width: 1.5; stroke-dasharray: none; }
+  .item-line { fill: none; stroke-width: 1.5; }
+  .item-line:hover { stroke-width: 3; }
+
+  #tooltip { position: absolute; pointer-events: none; background: rgba(31, 41, 55, 0.95); color: #fff; padding: 4px 8px; border-radius: 3px; font-size: 11px; font-variant-numeric: tabular-nums; display: none; z-index: 10; max-width: 280px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>__HEADING__</h1>
+  <div class="meta">__META__</div>
+  <div style="flex: 1"></div>
+  <div class="meta" id="zoom-info"></div>
+</header>
+<div id="main">
+  <div id="nav">
+    <h3>Tech / step</h3>
+    <div id="tech-list"></div>
+  </div>
+  <div id="center">
+    <div id="charts">
+__CHART_PANES__
+    </div>
+    <div id="details">
+      <h3 id="details-title">Click a chart to select a step</h3>
+      <table id="details-table"></table>
+    </div>
+  </div>
+  <div id="legend">
+    <div class="ctrl-row">
+      <button id="legend-all">All</button>
+      <button id="legend-none">None</button>
+      <button id="legend-top10">Top 10</button>
+    </div>
+    <div id="legend-tree"></div>
+  </div>
+</div>
+<div id="tooltip"></div>
+<div id="cell-popup"></div>
+<script>
+const DATA = __DATA_JSON__;
+// HTML-escape DATA-derived strings before any innerHTML interpolation. Item /
+// step / recipe / building names come from the rates YAML, which --from makes
+// externally supplied, so they are untrusted in the DOM.
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]); }
+const MARGIN = { top: 6, right: 10, bottom: 22, left: 60 };
+
+// Per-chart spec: which value to plot, what label. Injected by render_html
+// from the Python chart spec so a 1-panel view (flatten) reuses this template
+// without editing it.
+const CHARTS = __CHARTS_JSON__;
+
+// Player-time breakdown items carry seconds (not a rate) and only make
+// sense in the production-rate chart. Confine them there.
+const PLAYER_TIME_CHART = "chart-prod";
+const playerTimeItems = new Set(DATA.player_time_items || []);
+function inChart(item, specId) {
+  return specId === PLAYER_TIME_CHART || !playerTimeItems.has(item);
+}
+
+// Visibility state.
+const visible = new Set(DATA.visible_default);
+let selectedStepIdx = null;
+// Times are absolute in-game seconds: the domain starts at the initial
+// state's timestamp (default-victory: 192s), not 0.
+let xMin = DATA.initial_time_s, xMax = DATA.total_time;
+const X_INITIAL = { min: DATA.initial_time_s, max: DATA.total_time };
+
+// --- helpers ---
+function valueAt(step, item, key) {
+  const r = step.rates[item];
+  if (!r) return null;
+  if (key === "prod") return r.prod;
+  if (key === "cons") return r.cons;
+  if (key === "net")  return r.prod - r.cons;
+  if (key === "count_start") return r.count_start;
+  if (key === "count_end")   return r.count_end;
+  return null;
+}
+
+function fmt(v) {
+  if (v === null || v === undefined) return "—";
+  if (v === 0) return "0";
+  const abs = Math.abs(v);
+  // Very large values (e.g. the unconstrained water slack ~1e9) stay in
+  // exponential so they don't print as a 10-digit wall. Everything else
+  // rounds to 2 decimals, so near-zero dust (2.72e-6) reads as "0.00"
+  // instead of distracting scientific notation.
+  if (abs >= 1000) return v.toExponential(2);
+  const r = v.toFixed(2);
+  return r === "-0.00" ? "0.00" : r;  // avoid signed-zero from tiny negatives
+}
+
+function fmtTime(t) {
+  const m = Math.floor(t / 60);
+  const s = t - m * 60;
+  return `${m}m${s.toFixed(1)}s`;
+}
+
+// Compact axis-tick label: drop the seconds part on minute-aligned ticks
+// ("2m" not "2m0.0s") and the minutes part below 1 min ("30s"), so
+// whole-minute increments don't overlap.
+function fmtAxisTime(t) {
+  const m = Math.floor(t / 60);
+  const s = Math.round((t - m * 60) * 10) / 10;
+  if (s === 0) return `${m}m`;
+  if (m === 0) return `${s}s`;
+  return `${m}m${s}s`;
+}
+
+// --- legend tree ---
+function buildLegend() {
+  const root = document.getElementById("legend-tree");
+  root.innerHTML = "";
+  for (const cat of DATA.categories) {
+    if (cat.items.length === 0) continue;
+    const catEl = document.createElement("div");
+    catEl.className = "cat";
+    const hdr = document.createElement("div");
+    hdr.className = "cat-header";
+    hdr.innerHTML = `<span class="caret">▼</span><span class="cat-name">${cat.name}</span><span style="flex:1"></span><span class="cat-count" style="color:#9ca3af;font-weight:normal">${cat.items.length}</span>`;
+    const list = document.createElement("div");
+    list.className = "cat-items";
+    hdr.addEventListener("click", (e) => {
+      if (e.target.tagName === "INPUT") return;
+      hdr.classList.toggle("collapsed");
+      list.classList.toggle("hidden");
+    });
+    for (const item of cat.items) {
+      const row = document.createElement("label");
+      row.className = "item-row";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = visible.has(item);
+      cb.addEventListener("change", () => {
+        if (cb.checked) visible.add(item); else visible.delete(item);
+        renderAllCharts();
+        renderDetails();
+      });
+      const sw = document.createElement("span");
+      sw.className = "swatch";
+      sw.style.background = DATA.colors[item];
+      const nm = document.createElement("span");
+      nm.className = "name";
+      nm.textContent = item;
+      row.appendChild(cb);
+      row.appendChild(sw);
+      row.appendChild(nm);
+      list.appendChild(row);
+    }
+    catEl.appendChild(hdr);
+    catEl.appendChild(list);
+    root.appendChild(catEl);
+  }
+}
+
+function setAllVisibility(predicate) {
+  visible.clear();
+  for (const item of DATA.items_all) {
+    if (predicate(item)) visible.add(item);
+  }
+  buildLegend();
+  renderAllCharts();
+  renderDetails();
+}
+
+// --- tech nav ---
+function buildNav() {
+  const root = document.getElementById("tech-list");
+  root.innerHTML = "";
+  for (const tech of DATA.tech_anchors) {
+    const row = document.createElement("div");
+    row.className = "tech-row";
+    row.dataset.step = tech.i;
+    row.title = `${tech.label} @ ${fmtTime(tech.time)}`;
+    row.innerHTML = `<span class="t">${fmtTime(tech.time)}</span>${esc(tech.label)}`;
+    row.addEventListener("click", () => {
+      // Center viewport on this step.
+      const step = DATA.steps[tech.i];
+      const center = (step.t0 + step.t1) / 2;
+      const span = xMax - xMin;
+      xMin = Math.max(DATA.initial_time_s, center - span / 2);
+      xMax = Math.min(DATA.total_time, xMin + span);
+      selectedStepIdx = tech.i;
+      renderAllCharts();
+      renderDetails();
+    });
+    root.appendChild(row);
+  }
+}
+
+// --- charts ---
+function chartMetrics(svgEl) {
+  const r = svgEl.getBoundingClientRect();
+  const w = Math.max(200, r.width);
+  const h = Math.max(80, r.height);
+  return {
+    w, h,
+    plotX0: MARGIN.left,
+    plotY0: MARGIN.top,
+    plotW: w - MARGIN.left - MARGIN.right,
+    plotH: h - MARGIN.top - MARGIN.bottom,
+  };
+}
+
+function dataYRange(spec) {
+  // Compute y-range across visible items + current x-range.
+  let yMin = 0, yMax = 0;
+  for (const item of visible) {
+    if (!inChart(item, spec.id)) continue;
+    for (const step of DATA.steps) {
+      if (step.t1 < xMin || step.t0 > xMax) continue;
+      let v;
+      if (spec.key === "count") {
+        const a = valueAt(step, item, "count_start") ?? 0;
+        const b = valueAt(step, item, "count_end") ?? 0;
+        yMin = Math.min(yMin, a, b);
+        yMax = Math.max(yMax, a, b);
+      } else {
+        v = (spec.key === "prod") ? (step.rates[item]?.prod ?? 0)
+            : (spec.key === "net") ? ((step.rates[item]?.prod ?? 0) - (step.rates[item]?.cons ?? 0))
+            : 0;
+        yMin = Math.min(yMin, v);
+        yMax = Math.max(yMax, v);
+      }
+    }
+  }
+  if (yMin === 0 && yMax === 0) { yMin = 0; yMax = 1; }
+  // Floor the positive max at 1.0: a chart whose visible peak is ~1e-5
+  // would otherwise zoom into noise. Larger peaks size normally.
+  yMax = Math.max(yMax, 1.0);
+  // Pad 5% above and 5% below; keep zero in range if possible.
+  const range = yMax - yMin;
+  if (range === 0) { yMax += 1; }
+  return { yMin: yMin - 0.05 * (yMax - yMin), yMax: yMax + 0.05 * (yMax - yMin) };
+}
+
+function niceTicks(min, max, target = 5) {
+  const range = max - min;
+  if (range <= 0) return [min, max];
+  const rough = range / target;
+  const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+  const norm = rough / mag;
+  let step;
+  if (norm < 1.5) step = mag;
+  else if (norm < 3.5) step = 2 * mag;
+  else if (norm < 7.5) step = 5 * mag;
+  else step = 10 * mag;
+  const ticks = [];
+  const start = Math.ceil(min / step) * step;
+  for (let v = start; v <= max + 1e-9; v += step) ticks.push(v);
+  return ticks;
+}
+
+function renderChart(spec) {
+  const svg = document.getElementById(spec.id);
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  const m = chartMetrics(svg);
+  svg.setAttribute("viewBox", `0 0 ${m.w} ${m.h}`);
+
+  const { yMin, yMax } = dataYRange(spec);
+  const xScale = (t) => m.plotX0 + ((t - xMin) / (xMax - xMin)) * m.plotW;
+  const yScale = (v) => m.plotY0 + m.plotH - ((v - yMin) / (yMax - yMin)) * m.plotH;
+
+  const ns = "http://www.w3.org/2000/svg";
+  const g = document.createElementNS(ns, "g");
+
+  // Clip
+  const clipId = `clip-${spec.id}`;
+  const defs = document.createElementNS(ns, "defs");
+  const clip = document.createElementNS(ns, "clipPath");
+  clip.setAttribute("id", clipId);
+  const cr = document.createElementNS(ns, "rect");
+  cr.setAttribute("x", m.plotX0); cr.setAttribute("y", m.plotY0);
+  cr.setAttribute("width", m.plotW); cr.setAttribute("height", m.plotH);
+  clip.appendChild(cr); defs.appendChild(clip); g.appendChild(defs);
+
+  // Y-axis ticks + grid
+  for (const v of niceTicks(yMin, yMax, 5)) {
+    const y = yScale(v);
+    const grid = document.createElementNS(ns, "line");
+    grid.setAttribute("x1", m.plotX0); grid.setAttribute("x2", m.plotX0 + m.plotW);
+    grid.setAttribute("y1", y); grid.setAttribute("y2", y);
+    grid.setAttribute("stroke", "#f3f4f6"); grid.setAttribute("stroke-width", 1);
+    g.appendChild(grid);
+    const lbl = document.createElementNS(ns, "text");
+    lbl.setAttribute("class", "axis-text");
+    lbl.setAttribute("x", m.plotX0 - 4); lbl.setAttribute("y", y + 3);
+    lbl.setAttribute("text-anchor", "end");
+    lbl.textContent = fmt(v);
+    g.appendChild(lbl);
+  }
+
+  // Zero line (if y-range crosses zero)
+  if (yMin < 0 && yMax > 0) {
+    const z = yScale(0);
+    const zero = document.createElementNS(ns, "line");
+    zero.setAttribute("x1", m.plotX0); zero.setAttribute("x2", m.plotX0 + m.plotW);
+    zero.setAttribute("y1", z); zero.setAttribute("y2", z);
+    zero.setAttribute("stroke", "#9ca3af"); zero.setAttribute("stroke-width", 1);
+    g.appendChild(zero);
+  }
+
+  // Step boundaries (dotted vertical lines + labels at bottom)
+  const showLabels = (xMax - xMin) / m.plotW < 0.8;  // density-gated label rendering
+  for (const step of DATA.steps) {
+    if (step.t0 < xMin - 0.1 || step.t0 > xMax + 0.1) continue;
+    const x = xScale(step.t0);
+    const line = document.createElementNS(ns, "line");
+    line.setAttribute("class", step.i === selectedStepIdx ? "selected-bound" : "step-bound");
+    line.setAttribute("x1", x); line.setAttribute("x2", x);
+    line.setAttribute("y1", m.plotY0); line.setAttribute("y2", m.plotY0 + m.plotH);
+    g.appendChild(line);
+    if (showLabels) {
+      const lbl = document.createElementNS(ns, "text");
+      lbl.setAttribute("class", "step-label");
+      lbl.setAttribute("x", x + 2);
+      lbl.setAttribute("y", m.plotY0 + m.plotH + 12);
+      lbl.setAttribute("transform", `rotate(0, ${x + 2}, ${m.plotY0 + m.plotH + 12})`);
+      lbl.textContent = step.label;
+      g.appendChild(lbl);
+    }
+  }
+  // Final boundary
+  {
+    const lastT = DATA.total_time;
+    if (lastT >= xMin && lastT <= xMax) {
+      const x = xScale(lastT);
+      const line = document.createElementNS(ns, "line");
+      line.setAttribute("class", "step-bound");
+      line.setAttribute("x1", x); line.setAttribute("x2", x);
+      line.setAttribute("y1", m.plotY0); line.setAttribute("y2", m.plotY0 + m.plotH);
+      g.appendChild(line);
+    }
+  }
+
+  // Plot area frame
+  const frame = document.createElementNS(ns, "rect");
+  frame.setAttribute("x", m.plotX0); frame.setAttribute("y", m.plotY0);
+  frame.setAttribute("width", m.plotW); frame.setAttribute("height", m.plotH);
+  frame.setAttribute("fill", "none"); frame.setAttribute("class", "axis-line");
+  g.appendChild(frame);
+
+  // X-axis ticks (minute marks if range > 60s, else 10s)
+  const xRange = xMax - xMin;
+  const tickStep = xRange > 600 ? 120 : xRange > 120 ? 60 : xRange > 30 ? 10 : 5;
+  for (let t = Math.ceil(xMin / tickStep) * tickStep; t <= xMax; t += tickStep) {
+    const x = xScale(t);
+    const tk = document.createElementNS(ns, "line");
+    tk.setAttribute("x1", x); tk.setAttribute("x2", x);
+    tk.setAttribute("y1", m.plotY0 + m.plotH); tk.setAttribute("y2", m.plotY0 + m.plotH + 3);
+    tk.setAttribute("class", "axis-line");
+    g.appendChild(tk);
+    const lbl = document.createElementNS(ns, "text");
+    lbl.setAttribute("class", "axis-text");
+    lbl.setAttribute("x", x); lbl.setAttribute("y", m.plotY0 + m.plotH + 14);
+    lbl.setAttribute("text-anchor", "middle");
+    lbl.textContent = fmtAxisTime(t);
+    g.appendChild(lbl);
+  }
+
+  // Item lines.
+  const linesGroup = document.createElementNS(ns, "g");
+  linesGroup.setAttribute("clip-path", `url(#${clipId})`);
+  for (const item of visible) {
+    if (!inChart(item, spec.id)) continue;
+    const pts = [];
+    if (spec.key === "count") {
+      // Linear-connect through (t0, count_start), (t1, count_end) per step.
+      for (const step of DATA.steps) {
+        const cs = step.rates[item]?.count_start ?? null;
+        const ce = step.rates[item]?.count_end ?? null;
+        if (cs === null || ce === null) continue;
+        pts.push([step.t0, cs]);
+        pts.push([step.t1, ce]);
+      }
+    } else {
+      // Step function: flat through each step at its rate value.
+      for (const step of DATA.steps) {
+        let v;
+        if (spec.key === "prod") v = step.rates[item]?.prod ?? null;
+        else v = (step.rates[item]?.prod ?? 0) - (step.rates[item]?.cons ?? 0);
+        if (v === null) continue;
+        pts.push([step.t0, v]);
+        pts.push([step.t1, v]);
+      }
+    }
+    if (pts.length === 0) continue;
+    let d = "";
+    for (let i = 0; i < pts.length; i++) {
+      const [t, v] = pts[i];
+      d += (i === 0 ? "M" : "L") + xScale(t).toFixed(2) + "," + yScale(v).toFixed(2) + " ";
+    }
+    const path = document.createElementNS(ns, "path");
+    path.setAttribute("class", "item-line");
+    path.setAttribute("d", d);
+    path.setAttribute("stroke", DATA.colors[item]);
+    linesGroup.appendChild(path);
+  }
+  g.appendChild(linesGroup);
+
+  svg.appendChild(g);
+}
+
+function renderAllCharts() {
+  for (const spec of CHARTS) renderChart(spec);
+  const fullSpan = DATA.total_time - DATA.initial_time_s;
+  document.getElementById("zoom-info").textContent =
+    `${fmtTime(xMin)} → ${fmtTime(xMax)} (zoom ${((fullSpan / (xMax - xMin)) * 100).toFixed(0)}%)`;
+}
+
+// Reflect the selected step in the left tech/step sidebar, and scroll it
+// into view. Called on every selection change (chart click or nav click)
+// so highlighting stays in sync in both directions.
+function highlightNav() {
+  const rows = document.querySelectorAll("#tech-list .tech-row");
+  rows.forEach(r => r.classList.toggle(
+    "selected", Number(r.dataset.step) === selectedStepIdx));
+  if (selectedStepIdx !== null) {
+    const sel = document.querySelector(
+      `#tech-list .tech-row[data-step="${selectedStepIdx}"]`);
+    if (sel) sel.scrollIntoView({ block: "nearest" });
+  }
+}
+
+// --- details table ---
+function renderDetails() {
+  highlightNav();
+  const t = document.getElementById("details-table");
+  const title = document.getElementById("details-title");
+  t.innerHTML = "";
+  if (selectedStepIdx === null) {
+    title.textContent = "Click a chart to select a step";
+    return;
+  }
+  const step = DATA.steps[selectedStepIdx];
+  title.textContent = `Step ${step.i}: ${step.label}   |   ${fmtTime(step.t0)} → ${fmtTime(step.t1)}   |   duration ${step.duration.toFixed(2)}s`;
+  const head = document.createElement("thead");
+  head.innerHTML = "<tr><th>item</th><th>prod /s</th><th>cons /s</th><th>net /s</th><th>count start</th><th>count end</th><th>Δ count</th></tr>";
+  t.appendChild(head);
+  const body = document.createElement("tbody");
+  // Sorted by |net|*duration descending so the most-active items rise.
+  const itemsHere = [...visible].filter(it => step.rates[it] !== undefined);
+  itemsHere.sort((a, b) => {
+    const na = (step.rates[a].prod - step.rates[a].cons) * step.duration;
+    const nb = (step.rates[b].prod - step.rates[b].cons) * step.duration;
+    return Math.abs(nb) - Math.abs(na);
+  });
+  for (const it of itemsHere) {
+    const r = step.rates[it];
+    const net = r.prod - r.cons;
+    const dc = r.count_end - r.count_start;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td class="item-cell" data-item="${esc(it)}" title="click for production-facility breakdown"><span class="swatch" style="background:${DATA.colors[it]}"></span>${esc(it)}</td>
+      <td>${fmt(r.prod)}</td><td>${fmt(r.cons)}</td><td>${fmt(net)}</td>
+      <td>${fmt(r.count_start)}</td><td>${fmt(r.count_end)}</td><td>${fmt(dc)}</td>`;
+    body.appendChild(tr);
+  }
+  t.appendChild(body);
+}
+
+// --- inline cell popup: production-facility breakdown for one item ---
+function closeCellPopup() {
+  document.getElementById("cell-popup").style.display = "none";
+}
+
+function showCellPopup(item, ev) {
+  if (selectedStepIdx === null) return;
+  const step = DATA.steps[selectedStepIdx];
+  const detail = (step.prod_detail && step.prod_detail[item]) || [];
+  const pop = document.getElementById("cell-popup");
+  const sw = DATA.colors[item] || "#9ca3af";
+  let html = `<div class="cp-head"><span class="swatch" style="background:${sw}"></span>`
+    + `<span class="cp-title">${esc(item)}</span><span class="cp-x" title="close">×</span></div>`
+    + `<div class="cp-sub">step ${step.i}: ${esc(step.label)} — produced by</div>`;
+  if (detail.length === 0) {
+    html += DATA.model_loaded
+      ? `<div class="cp-empty">not produced this step</div>`
+      : `<div class="cp-empty">facility data unavailable (game model not loaded)</div>`;
+  } else {
+    html += `<table class="cp-table"><thead><tr>`
+      + `<th>recipe</th><th>building</th><th>#facilities</th><th>rate /s</th></tr></thead><tbody>`;
+    let totF = 0, totR = 0; let anyF = false;
+    for (const d of detail) {
+      const f = d.facilities;
+      if (f != null) { totF += f; anyF = true; }
+      totR += (d.item_rate || 0);
+      const fcell = (f == null) ? "—" : f.toFixed(3);
+      html += `<tr><td>${esc(d.recipe)}</td><td>${esc(d.building)}</td>`
+        + `<td>${fcell}</td><td>${fmt(d.item_rate)}</td></tr>`;
+    }
+    if (detail.length > 1) {
+      html += `<tr class="cp-total"><td>total</td><td></td>`
+        + `<td>${anyF ? totF.toFixed(3) : "—"}</td><td>${fmt(totR)}</td></tr>`;
+    }
+    html += `</tbody></table>`;
+  }
+  pop.innerHTML = html;
+  pop.style.display = "block";
+  // Position near the click, clamped to the viewport.
+  const pad = 12;
+  const rect = pop.getBoundingClientRect();
+  let x = ev.clientX + pad, y = ev.clientY + pad;
+  if (x + rect.width > window.innerWidth) x = Math.max(4, window.innerWidth - rect.width - pad);
+  if (y + rect.height > window.innerHeight) y = Math.max(4, window.innerHeight - rect.height - pad);
+  pop.style.left = x + "px";
+  pop.style.top = y + "px";
+  const x_btn = pop.querySelector(".cp-x");
+  if (x_btn) x_btn.addEventListener("click", closeCellPopup);
+}
+
+// --- interactions ---
+function setupZoomPan(svgEl) {
+  let panning = false;
+  let panStartX, xMinStart, xMaxStart;
+  svgEl.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const r = svgEl.getBoundingClientRect();
+    const xPx = e.clientX - r.left;
+    const m = chartMetrics(svgEl);
+    if (xPx < m.plotX0 || xPx > m.plotX0 + m.plotW) return;
+    const tAtCursor = xMin + ((xPx - m.plotX0) / m.plotW) * (xMax - xMin);
+    const factor = Math.pow(1.2, -Math.sign(e.deltaY));
+    const span = (xMax - xMin) / factor;
+    const minSpan = 0.5;
+    if (span < minSpan) return;
+    xMin = Math.max(DATA.initial_time_s, tAtCursor - ((tAtCursor - xMin) / (xMax - xMin)) * span);
+    xMax = Math.min(DATA.total_time, xMin + span);
+    if (xMax === DATA.total_time) xMin = Math.max(DATA.initial_time_s, xMax - span);
+    renderAllCharts();
+  }, { passive: false });
+  svgEl.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    panning = true;
+    panStartX = e.clientX;
+    xMinStart = xMin; xMaxStart = xMax;
+    svgEl.style.cursor = "grabbing";
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!panning) return;
+    const r = svgEl.getBoundingClientRect();
+    const m = chartMetrics(svgEl);
+    const dxPx = e.clientX - panStartX;
+    const span = xMaxStart - xMinStart;
+    const dx = -(dxPx / m.plotW) * span;
+    let newMin = xMinStart + dx;
+    let newMax = xMaxStart + dx;
+    if (newMin < DATA.initial_time_s) { newMax += (DATA.initial_time_s - newMin); newMin = DATA.initial_time_s; }
+    if (newMax > DATA.total_time) { newMin -= (newMax - DATA.total_time); newMax = DATA.total_time; }
+    xMin = newMin; xMax = newMax;
+    renderAllCharts();
+  });
+  window.addEventListener("mouseup", () => {
+    if (panning) { panning = false; svgEl.style.cursor = "crosshair"; }
+  });
+
+  svgEl.addEventListener("click", (e) => {
+    if (Math.abs(e.clientX - (panStartX ?? -1e9)) > 4) return;  // dragged
+    const r = svgEl.getBoundingClientRect();
+    const xPx = e.clientX - r.left;
+    const m = chartMetrics(svgEl);
+    if (xPx < m.plotX0 || xPx > m.plotX0 + m.plotW) return;
+    const tClick = xMin + ((xPx - m.plotX0) / m.plotW) * (xMax - xMin);
+    // Find step containing tClick.
+    let found = null;
+    for (const step of DATA.steps) {
+      if (tClick >= step.t0 && tClick < step.t1) { found = step.i; break; }
+    }
+    if (found === null) {
+      // Last step edge
+      if (tClick >= DATA.total_time) found = DATA.steps[DATA.steps.length - 1].i;
+    }
+    if (found !== null) {
+      selectedStepIdx = found;
+      renderAllCharts();
+      renderDetails();
+    }
+  });
+
+  // Tooltip on hover.
+  svgEl.addEventListener("mousemove", (e) => {
+    if (panning) return;
+    const r = svgEl.getBoundingClientRect();
+    const xPx = e.clientX - r.left;
+    const m = chartMetrics(svgEl);
+    const tt = document.getElementById("tooltip");
+    if (xPx < m.plotX0 || xPx > m.plotX0 + m.plotW) {
+      tt.style.display = "none"; return;
+    }
+    const tCursor = xMin + ((xPx - m.plotX0) / m.plotW) * (xMax - xMin);
+    let step = null;
+    for (const s of DATA.steps) if (tCursor >= s.t0 && tCursor < s.t1) { step = s; break; }
+    if (!step) { tt.style.display = "none"; return; }
+    const spec = CHARTS.find(c => c.id === svgEl.id);
+    const items = [...visible].filter(it => step.rates[it] !== undefined);
+    items.sort((a, b) => {
+      const va = spec.key === "count" ? step.rates[a].count_end :
+                 spec.key === "prod"  ? step.rates[a].prod :
+                                        step.rates[a].prod - step.rates[a].cons;
+      const vb = spec.key === "count" ? step.rates[b].count_end :
+                 spec.key === "prod"  ? step.rates[b].prod :
+                                        step.rates[b].prod - step.rates[b].cons;
+      return Math.abs(vb) - Math.abs(va);
+    });
+    let html = `<b>step ${step.i}: ${esc(step.label)}</b> @ ${fmtTime(tCursor)}<br>`;
+    for (const it of items.slice(0, 6)) {
+      const r = step.rates[it];
+      let v = spec.key === "count" ? r.count_end : spec.key === "prod" ? r.prod : (r.prod - r.cons);
+      html += `<span style="display:inline-block;width:8px;height:8px;background:${DATA.colors[it]};margin-right:4px"></span>${esc(it)}: ${fmt(v)}<br>`;
+    }
+    tt.innerHTML = html;
+    tt.style.display = "block";
+    tt.style.left = (e.clientX + 12) + "px";
+    tt.style.top = (e.clientY + 12) + "px";
+  });
+  svgEl.addEventListener("mouseleave", () => {
+    document.getElementById("tooltip").style.display = "none";
+  });
+}
+
+// --- bootstrap ---
+window.addEventListener("DOMContentLoaded", () => {
+  buildLegend();
+  buildNav();
+  for (const spec of CHARTS) {
+    const svg = document.getElementById(spec.id);
+    setupZoomPan(svg);
+  }
+  // Inline production-facility popup: click an item cell in the step table.
+  document.getElementById("details-table").addEventListener("click", (e) => {
+    const cell = e.target.closest(".item-cell");
+    if (!cell) return;
+    showCellPopup(cell.dataset.item, e);
+  });
+  // Dismiss the popup on outside-click or Escape.
+  document.addEventListener("click", (e) => {
+    const pop = document.getElementById("cell-popup");
+    if (pop.style.display !== "block") return;
+    if (pop.contains(e.target) || e.target.closest(".item-cell")) return;
+    closeCellPopup();
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeCellPopup(); });
+
+  document.getElementById("legend-all").addEventListener("click", () => setAllVisibility(() => true));
+  document.getElementById("legend-none").addEventListener("click", () => setAllVisibility(() => false));
+  document.getElementById("legend-top10").addEventListener("click", () =>
+    setAllVisibility(item => DATA.visible_default.includes(item)));
+  // Render initial.
+  renderAllCharts();
+  // Re-render on resize.
+  window.addEventListener("resize", () => { renderAllCharts(); });
+});
+</script>
+</body>
+</html>
+"""
+
+
+# The default 3-panel timeline. Each entry drives BOTH a chart pane (HTML,
+# via `pane_title` + `id`) and a JS chart spec (`id`/`key`/`label`/`step_fn`),
+# so a caller selects panels by passing a different list — no template editing.
+# A later flatten-viz composes render_html() with its own 1-panel spec.
+DEFAULT_CHARTS = [
+    {
+        "id": "chart-prod",
+        "key": "prod",
+        "label": "production rate",
+        "step_fn": True,
+        "pane_title": "Raw production rate (items/s, or MW for Power)",
+    },
+    {
+        "id": "chart-net",
+        "key": "net",
+        "label": "net rate",
+        "step_fn": True,
+        "pane_title": "Net production rate (production − consumption)",
+    },
+    {
+        "id": "chart-count",
+        "key": "count",
+        "label": "surplus count",
+        "step_fn": False,
+        "pane_title": "Surplus count over time (stockpile)",
+    },
+]
+
+
+def _script_safe(json_text: str) -> str:
+    """Make a JSON string safe to embed in an inline <script>: ``</`` → ``<\\/``
+    so a value containing ``</script>`` can't terminate the element early, and
+    the U+2028/U+2029 line separators (illegal in pre-ES2019 JS string literals,
+    and the JSON is consumed as a JS expression, not via JSON.parse) → escapes.
+    All still valid JSON, inert to the JS parser."""
+    return (
+        json_text.replace("</", "<\\/")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
+def _chart_panes_html(charts: list[dict]) -> str:
+    return "\n".join(
+        '      <div class="chart-pane">\n'
+        f'        <div class="chart-title">{escape(c["pane_title"])}</div>\n'
+        '        <div class="chart-svg-wrap">'
+        f'<svg class="chart-svg" id="{escape(c["id"])}"></svg></div>\n'
+        "      </div>"
+        for c in charts
+    )
+
+
+def default_meta_parts(dataset: dict) -> list[str]:
+    """The standard meta line (scenario/mode/l1/solver/total) for a dataset."""
+    solver = dataset.get("solver") or {}
+    parts = [
+        f"scenario={dataset['scenario']}",
+        f"mode={dataset['mode']}",
+        f"l1={dataset['l1_method']}",
+    ]
+    if solver:
+        parts.append(f"status={solver.get('status', '?')}")
+        obj = solver.get("objective_s")
+        if obj is not None:
+            parts.append(f"obj={obj:.1f}s")
+        gap = solver.get("gap")
+        if gap is not None:
+            parts.append(f"gap={gap * 100:.1f}%")
+    parts.append(f"total={dataset['total_time']:.1f}s")
+    if dataset.get("pseudo_recipes_version"):
+        parts.append(f"pseudo_recipes_v={dataset['pseudo_recipes_version']}")
+    return parts
+
+
+def render_html(
+    dataset: dict,
+    *,
+    charts: list[dict] | None = None,
+    heading: str = "L2 timeline",
+    title: str | None = None,
+    meta: str | None = None,
+) -> str:
+    """Render the interactive timeline HTML for ``dataset``.
+
+    ``charts`` selects the stacked panels (defaults to the 3-panel timeline);
+    ``heading``/``title``/``meta`` override the page chrome. Keeping these
+    parameters is what lets a later flatten-viz reuse this template with a
+    single panel instead of string-rewriting it.
+    """
+    charts = charts if charts is not None else DEFAULT_CHARTS
+    if title is None:
+        title = f"{dataset['scenario']} ({dataset['mode']})"
+    if meta is None:
+        meta = " · ".join(default_meta_parts(dataset))
+    charts_json = json.dumps(
+        [
+            {
+                "id": c["id"],
+                "key": c["key"],
+                "label": c["label"],
+                "stepFn": c["step_fn"],
+            }
+            for c in charts
+        ]
+    )
+    data_json = json.dumps(dataset, separators=(",", ":"))
+    repl = {
+        "__HEADING__": escape(heading),
+        "__CHART_PANES__": _chart_panes_html(charts),
+        "__CHARTS_JSON__": _script_safe(charts_json),
+        "__TITLE__": escape(title),
+        "__META__": escape(meta),
+        "__DATA_JSON__": _script_safe(data_json),
+    }
+    # Single non-rescanning pass: a replacement's output is never scanned for
+    # another placeholder, so untrusted title/meta text can't reintroduce a
+    # later token like __DATA_JSON__ (chained .replace() would).
+    return _PLACEHOLDER_RE.sub(lambda m: repl[m.group(0)], HTML_TEMPLATE)
+
+
+# -- CLI -----------------------------------------------------------------
+
+
+def _fmt_clock(t: float) -> str:
+    """m:ss.s in-game time, matching the timeline view's left-column times."""
+    m = int(t // 60)
+    s = t - m * 60
+    return f"{m}:{s:04.1f}"
+
+
+_HEATMAP_CSS = """
+<style>
+  html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#222;}
+  body{display:flex;flex-direction:column;height:100vh;}
+  header{padding:6px 12px;background:#1f2937;color:#fff;display:flex;gap:12px;align-items:baseline;flex:0 0 auto;}
+  header h1{font-size:14px;margin:0;font-weight:600;}
+  header .sub{color:#cbd5e1;font-size:12px;}
+  .key{padding:4px 12px;font-size:11px;color:#6b7280;display:flex;gap:16px;align-items:center;border-bottom:1px solid #e5e7eb;flex:0 0 auto;}
+  .key b{display:inline-block;width:11px;height:11px;vertical-align:middle;margin-right:4px;border:1px solid #cbd5e1;}
+  .wrap{display:flex;flex:1 1 auto;min-height:0;}
+  .legend{flex:0 0 250px;overflow:auto;height:100%;border-right:2px solid #e5e7eb;padding:4px 0;}
+  .lg-row{display:flex;gap:6px;align-items:baseline;padding:2px 8px;font-size:11px;white-space:nowrap;}
+  .lg-row:hover{background:#dbeafe;}
+  .lg-idx{flex:0 0 22px;text-align:right;color:#6b7280;font-variant-numeric:tabular-nums;}
+  .lg-tech{flex:1;overflow:hidden;text-overflow:ellipsis;}
+  .lg-time{color:#9ca3af;font-variant-numeric:tabular-nums;}
+  .grid{flex:1 1 auto;overflow:auto;padding:4px;}
+  table{border-collapse:collapse;}
+  th.row-h{position:sticky;left:0;background:#fff;text-align:right;padding:0 6px;font-weight:500;font-size:11px;white-space:nowrap;z-index:2;}
+  th.col-h{position:sticky;top:0;background:#fff;font-size:9px;color:#6b7280;font-weight:500;height:18px;width:14px;font-variant-numeric:tabular-nums;z-index:1;}
+  td{width:14px;height:14px;border:1px solid #f1f5f9;padding:0;}
+  td.c-sat{background:#111827;}
+  td.c-slack{background:#e5e7eb;}
+  td.c-absent{background:#fff;}
+  .col-hi{outline:2px solid #2563eb;outline-offset:-2px;}
+  .threshold-bar{flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:8px 12px;border-top:2px solid #e5e7eb;background:#f9fafb;}
+  .threshold-bar label{font-size:12px;color:#374151;white-space:nowrap;font-weight:500;}
+  .threshold-bar select{font-size:12px;padding:2px 4px;}
+  .threshold-bar .sep{width:1px;height:18px;background:#d1d5db;}
+  .threshold-bar input[type=range]{flex:1 1 auto;cursor:pointer;}
+  .threshold-bar .tval{font-variant-numeric:tabular-nums;font-weight:600;min-width:52px;text-align:right;}
+  .threshold-bar .tcount{font-size:11px;color:#6b7280;white-space:nowrap;min-width:150px;text-align:right;}
+</style>
+"""
+
+
+def build_heatmap_html(l2: dict) -> str:
+    """Binary capacity-saturation heatmap (handoff Theme 2 utilization
+    filter). Rows = capacity-constrained buildings; columns = steps in
+    tech-tree order. A cell is BLACK when that building is *saturated*
+    (utilization ≈ 1) at that step — i.e. it is on the critical surface and
+    relevant to t_FINAL. Light grey = present but slack; blank = not active
+    that step. Rows are ordered by first saturation so the bottleneck
+    "baton-pass" reads as a staircase, and a left legend maps each column
+    index to its tech + in-game timestamp (the same techs/times as the
+    timeline view). The binary fill is deliberately the v0 — a colorscale
+    (utilization, or the duration/count magnitude proxy) drops into the same
+    cell later; for now black is the honest answer to "is this a bottleneck."
+    """
+    steps = l2.get("steps", []) or []
+    clock = float(l2.get("initial_time_s", 0.0) or 0.0)
+    cols: list[tuple[int, str, float]] = []
+    cells: dict[str, dict[int, dict]] = defaultdict(dict)
+    for i, s in enumerate(steps):
+        dur = float(s.get("duration_s", 0.0) or 0.0)
+        cols.append((i, s.get("label") or f"step-{i}", clock))
+        clock += dur
+        for c in s.get("capacity", []) or []:
+            b = c.get("building")
+            if not b:
+                continue
+            cells[b][i] = {
+                "sat": bool(c.get("saturated")),
+                "util": c.get("utilization"),
+                "rs": c.get("recipe_seconds_used"),
+                "cap": c.get("capacity_seconds"),
+            }
+    n = len(cols)
+
+    def first_sat(b: str) -> int:
+        for i in range(n):
+            v = cells[b].get(i)
+            if v and v["sat"]:
+                return i
+        return n + 1
+
+    rows = sorted(
+        cells,
+        key=lambda b: (first_sat(b), -sum(1 for v in cells[b].values() if v["sat"]), b),
+    )
+
+    legend = "".join(
+        f'<div class="lg-row" data-col="{i}">'
+        f'<span class="lg-idx">{i}</span>'
+        f'<span class="lg-tech">{escape(label)}</span>'
+        f'<span class="lg-time">{_fmt_clock(t0)}</span></div>'
+        for i, label, t0 in cols
+    )
+    head = "".join(
+        f'<th class="col-h" data-col="{i}" title="{escape(label)} · {_fmt_clock(t0)}">{i}</th>'
+        for i, label, t0 in cols
+    )
+    body_rows = []
+    for b in rows:
+        tds = []
+        for i in range(n):
+            v = cells[b].get(i)
+            if v is None:
+                tds.append(f'<td class="c-absent" data-col="{i}"></td>')
+                continue
+            util = v["util"]
+            us = f"{util:.2f}" if util is not None else "—"
+            du = f"{util:.4f}" if util is not None else ""
+            tip = (
+                f"{escape(b)} · col {i} · util={us} · "
+                f"used {(v['rs'] or 0):.1f}s / cap {(v['cap'] or 0):.1f}s"
+            )
+            cls = "c-sat" if v["sat"] else "c-slack"
+            # Server class = the solver's `saturated` bool (also the fallback when
+            # JS can't recompute from data-util); the slider then drives c-sat by
+            # utilization threshold for cells that have a number.
+            tds.append(
+                f'<td class="cell {cls}" data-col="{i}" '
+                f'data-util="{du}" title="{tip}"></td>'
+            )
+        fs = first_sat(b)
+        ts = sum(1 for v in cells[b].values() if v["sat"])
+        body_rows.append(
+            f'<tr data-name="{escape(b)}" data-firstsat="{fs}" data-totalsat="{ts}">'
+            f'<th class="row-h" title="{escape(b)}">{escape(b)}</th>{"".join(tds)}</tr>'
+        )
+
+    obj = (l2.get("solver", {}) or {}).get("objective_s")
+    seed = (l2.get("solver", {}) or {}).get("seed")
+    sub = f"{len(rows)} buildings × {n} steps (tech order)"
+    if obj is not None:
+        sub += f" · t_FINAL {_fmt_clock(float(obj))}"
+    if seed is not None:
+        sub += f" · seed {escape(str(seed))}"
+
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<title>L2 capacity-saturation heatmap</title>" + _HEATMAP_CSS + "</head><body>"
+        f"<header><h1>L2 capacity-saturation heatmap</h1>"
+        f"<span class='sub'>{sub}</span></header>"
+        "<div class='key'>"
+        "<span><b style='background:#111827'></b>saturated — on the critical "
+        "surface (relevant to t_FINAL)</span>"
+        "<span><b style='background:#e5e7eb'></b>present but slack</span>"
+        "<span><b style='background:#fff'></b>not active this step</span>"
+        "<span>hover a tech (left) to highlight its column</span></div>"
+        "<div class='wrap'>"
+        f"<div class='legend'>{legend}</div>"
+        "<div class='grid'><table>"
+        f"<thead><tr><th class='row-h'></th>{head}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody>"
+        "</table></div></div>"
+        "<div class='threshold-bar'>"
+        "<label>Rows</label>"
+        "<select id='sort'>"
+        "<option value='stair'>by first saturation</option>"
+        "<option value='alpha'>alphabetical</option>"
+        "</select>"
+        "<span class='sep'></span>"
+        "<label>Saturation threshold</label>"
+        "<input type='range' id='thresh' min='95' max='100' step='0.1' value='98'>"
+        "<span class='tval' id='thresh-val'>98.0%</span>"
+        "<span class='tcount' id='thresh-count'></span></div>"
+        "<script>"
+        "document.querySelectorAll('.lg-row').forEach(function(r){"
+        "var c=r.getAttribute('data-col');"
+        "function hi(on){document.querySelectorAll('[data-col=\"'+c+'\"]')"
+        ".forEach(function(e){e.classList.toggle('col-hi',on);});}"
+        "r.addEventListener('mouseenter',function(){hi(true);});"
+        "r.addEventListener('mouseleave',function(){hi(false);});});"
+        "var slider=document.getElementById('thresh');"
+        "var tval=document.getElementById('thresh-val');"
+        "var tcount=document.getElementById('thresh-count');"
+        "var cells=document.querySelectorAll('td.cell');"
+        "function applyThreshold(){"
+        "var t=parseFloat(slider.value)/100,nsat=0;"
+        "cells.forEach(function(c){"
+        "var u=parseFloat(c.getAttribute('data-util'));"
+        # No utilization number → keep the server-computed saturated state
+        # (c-sat) instead of forcing the cell to slack.
+        "var sat=isNaN(u)?c.classList.contains('c-sat'):(u>=t);if(sat)nsat++;"
+        "c.classList.toggle('c-sat',sat);c.classList.toggle('c-slack',!sat);});"
+        "tval.textContent=parseFloat(slider.value).toFixed(1)+'%';"
+        "tcount.textContent=nsat+' / '+cells.length+' cells saturated';}"
+        "slider.addEventListener('input',applyThreshold);applyThreshold();"
+        "var sortSel=document.getElementById('sort');"
+        "var tbody=document.querySelector('tbody');"
+        "function applySort(){"
+        "var rows=Array.prototype.slice.call(tbody.querySelectorAll('tr'));"
+        "rows.sort(function(a,b){"
+        "var na=a.getAttribute('data-name'),nb=b.getAttribute('data-name');"
+        "if(sortSel.value==='alpha')return na.localeCompare(nb);"
+        "var fa=+a.getAttribute('data-firstsat'),fb=+b.getAttribute('data-firstsat');"
+        "if(fa!==fb)return fa-fb;"
+        "var ta=+a.getAttribute('data-totalsat'),tb=+b.getAttribute('data-totalsat');"
+        "if(ta!==tb)return tb-ta;return na.localeCompare(nb);});"
+        "rows.forEach(function(r){tbody.appendChild(r);});}"
+        "sortSel.addEventListener('change',applySort);"
+        "</script></body></html>"
+    )

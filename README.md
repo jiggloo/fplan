@@ -140,6 +140,20 @@ first with `fplan init` (see
   after a prompt (`--force` to skip). The `rates-search/` scratch is ephemeral
   (ignored like the rest of `runs/`).
 
+- **L2 viz** — render a solved run's `rates.yaml` as interactive HTML
+  (timeline + capacity-saturation heatmap) under `runs/<run>/viz/`:
+
+  ```bash
+  cd examples
+  ../.venv/bin/fplan --config-file ../.fplan-config.yaml rates viz steelaxe --open
+  ```
+
+  Confirm it writes `viz/rates-timeline.html` + `viz/rates-heatmap.html` and (with
+  `--open`) opens the timeline. It's a pure consumer of `rates.yaml` — the model
+  load is best-effort, so it also runs without a Factorio install (just without
+  the legend's facility-count breakdown). The `viz/` outputs are ephemeral
+  (gitignored like the rest of the run directory — here `examples/runs/steelaxe/`).
+
 ## Development
 
 Install the dev toolchain (above) and the pre-commit hooks:

@@ -317,10 +317,47 @@ Game-physics facts (boiler/rocket constants), the constraint formulation itself,
 and the SCIP random seed are not in the config — the first two stay authoritative
 in code, the seed is a per-solve flag recorded in the manifest.
 
-#### `rates post` / `rates viz`
+#### `rates viz`
 
-Flattening the rates into the layout-stage input (`rates post`) and the
-capacity-saturation heatmap (`rates viz`) are not yet ported (exit `70`).
+Render a solved run's `rates.yaml` as **self-contained interactive HTML** —
+written under `runs/<run>/viz/`:
+
+```bash
+.venv/bin/fplan rates viz steelaxe-exp            # timeline + heatmap
+.venv/bin/fplan rates viz steelaxe-exp --open     # ...and open the timeline
+```
+
+Two views:
+- **`<stem>-timeline.html`** — three stacked panels (raw production rate, net
+  rate, surplus count) on one zoomable x-axis, with a tree-grouped click-to-toggle
+  legend (science packs + electric-mining-drill visible by default).
+- **`<stem>-heatmap.html`** — capacity-saturation heatmap (rows =
+  capacity-constrained buildings, columns = tech-order steps; black = saturated,
+  the L2→L3 bottleneck signal). Suppress with `--no-heatmap`.
+
+Options:
+- `--from PATH` visualizes any rates-shaped YAML instead of the run's
+  `rates.yaml` — e.g. a search candidate `runs/<run>/rates-search/seed-N.yaml`
+  to compare a losing seed. The output filename is stemmed from the input
+  (`rates.yaml` → `rates-*`, `seed-9.yaml` → `seed-9-*`) so candidate views never
+  clobber the promoted run's.
+- `--open` opens the timeline in the default browser after writing. It follows
+  `fplan init`'s platform convention: it abstracts the OS-specific open
+  (`webbrowser`). On an **unrecognized** platform it skips opening and prints the
+  path; on a **recognized-but-untested** one it notes that and still attempts; on
+  any failure it falls back to printing the path.
+- `--dry-run` reports what it would write without writing.
+
+The game model is loaded **best-effort** (from the configured `data_dir`, to
+enrich the legend with per-recipe facility counts); if it's unset or unavailable,
+viz renders from the YAML alone with a one-line notice — **no Factorio install is
+required**. The HTML is self-contained (no external assets) and overwritten
+freely (it's regenerated from `rates.yaml`); the manifest is not modified.
+
+#### `rates post`
+
+Flattening the rates into the layout-stage input (`rates post`) is not yet
+ported (exit `70`).
 
 ### `run`
 
@@ -369,7 +406,7 @@ content-hash check flags edits since `create`), and which stage artifacts exist:
 ```
 run: steelaxe-exp
 created: 2026-06-02T09:24:42+00:00
-fplan: 0.0.9
+fplan: 0.0.10
 inputs:
   scenario: scenarios/steelaxe.yaml [✓ current]
   tech-order: tech-orders/steelaxe.yaml [⚠ changed]
