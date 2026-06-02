@@ -458,3 +458,70 @@ def test_viz_open_dry_run_does_not_open(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(rates_cli, "_open_in_browser", lambda p: opened.update(n=1))
     r = runner.invoke(app, ["rates", "viz", "r", "--open", "--dry-run"])
     assert r.exit_code == 0 and opened["n"] == 0  # dry-run returns before opening
+
+
+# --- WF-MAR round-2 fixes ---------------------------------------------------
+
+# Note: the REAL model-loaded branch of _load_model_maps (load_model over Lua
+# game data) is verified manually, per the manual-integration convention; CI
+# covers the math via test_facility_breakdown_when_model_loaded's fake maps.
+
+
+def test_render_single_pass_no_placeholder_reintroduction() -> None:
+    # A scenario literally named "__DATA_JSON__" must NOT be re-inflated into the
+    # data blob by the placeholder substitution (single non-rescanning pass).
+    ds = viz.build_dataset(
+        {
+            "scenario": "__DATA_JSON__",
+            "mode": "m",
+            "l1_method": "f",
+            "initial_time_s": 0.0,
+            "steps": [],
+        }
+    )
+    html = viz.render_html(ds)
+    assert "<title>L2 timeline — __DATA_JSON__ (m)</title>" in html
+    assert html.count('{"scenario":"__DATA_JSON__"') == 1  # only the real DATA blob
+    assert '{"scenario":"__DATA_JSON__"' not in html.split("const DATA =")[0]
+
+
+def test_script_safe_escapes_close_tag_and_separators() -> None:
+    assert viz._script_safe("a</script>b c d") == "a<\\/script>b\\u2028c\\u2029d"
+
+
+def test_render_infeasible_stub_no_steps() -> None:
+    # write_solution emits a solver block with NO `steps` for infeasible runs;
+    # viz must render both views without crashing.
+    stub = {
+        "scenario": "x",
+        "mode": "m",
+        "l1_method": "f",
+        "solver": {"status": "infeasible", "objective_s": None},
+    }
+    assert "<h1>L2 timeline</h1>" in viz.render_html(viz.build_dataset(stub))
+    assert "capacity-saturation heatmap" in viz.build_heatmap_html(stub)
+
+
+def test_heatmap_threshold_falls_back_to_server_class() -> None:
+    # The slider JS keeps the server-computed c-sat when a cell has no util number.
+    hm = viz.build_heatmap_html(RATES)
+    assert "isNaN(u)?c.classList.contains('c-sat')" in hm
+
+
+def test_viz_type_confused_yaml_is_clean_error(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run(tmp_path, with_rates=False)
+    (rd / "rates.yaml").write_text("steps: abc\n")  # steps is a str → AttributeError
+    r = runner.invoke(app, ["rates", "viz", "r"])
+    assert r.exit_code == 1 and "malformed rates YAML" in (r.stdout + (r.stderr or ""))
+    assert r.exception is None or isinstance(r.exception, SystemExit)
+
+
+def test_viz_from_own_rates_overwrites_canonical(tmp_path, monkeypatch) -> None:
+    # --from the run's own rates.yaml → stem "rates" → the canonical viz (by
+    # design; documents the edge rather than treating it as a bug).
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run(tmp_path)
+    r = runner.invoke(app, ["rates", "viz", "r", "--from", str(rd / "rates.yaml")])
+    assert r.exit_code == 0
+    assert (rd / "viz" / "rates-timeline.html").exists()

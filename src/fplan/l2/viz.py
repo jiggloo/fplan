@@ -21,7 +21,7 @@ critical surface, relevant to t_FINAL — L2→L3 handoff Theme 2).
 
 The renderer is deliberately **parameterized** (chart spec + heading/title/meta
 as arguments, with ``build_dataset`` / ``categorize`` / ``color_for_item`` /
-``_fmt_clock`` as reusable functions) so a later flatten-viz can compose it with
+``default_meta_parts`` as reusable functions) so a later flatten-viz can compose it with
 a different chart spec + an augmented dataset, rather than string-surgery on the
 template. See ``DEFAULT_CHARTS``.
 """
@@ -30,9 +30,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import defaultdict
 from html import escape
 from pathlib import Path
+
+# Template placeholders, substituted in one non-rescanning pass (see render_html).
+_PLACEHOLDER_RE = re.compile(
+    r"__(?:HEADING|CHART_PANES|CHARTS_JSON|TITLE|META|DATA_JSON)__"
+)
 
 # -- Item categorization -------------------------------------------------
 
@@ -1132,9 +1138,15 @@ DEFAULT_CHARTS = [
 
 def _script_safe(json_text: str) -> str:
     """Make a JSON string safe to embed in an inline <script>: ``</`` → ``<\\/``
-    so a value containing ``</script>`` can't terminate the element early. Valid
-    JSON, inert to the JS parser."""
-    return json_text.replace("</", "<\\/")
+    so a value containing ``</script>`` can't terminate the element early, and
+    the U+2028/U+2029 line separators (illegal in pre-ES2019 JS string literals,
+    and the JSON is consumed as a JS expression, not via JSON.parse) → escapes.
+    All still valid JSON, inert to the JS parser."""
+    return (
+        json_text.replace("</", "<\\/")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
 
 
 def _chart_panes_html(charts: list[dict]) -> str:
@@ -1202,16 +1214,18 @@ def render_html(
         ]
     )
     data_json = json.dumps(dataset, separators=(",", ":"))
-    html = HTML_TEMPLATE
-    html = html.replace("__HEADING__", escape(heading))
-    html = html.replace("__CHART_PANES__", _chart_panes_html(charts))
-    # `</` → `<\/` keeps the JSON valid but inert inside a <script> block, so a
-    # string value containing `</script>` can't close the element early.
-    html = html.replace("__CHARTS_JSON__", _script_safe(charts_json))
-    html = html.replace("__TITLE__", escape(title))
-    html = html.replace("__META__", escape(meta))
-    html = html.replace("__DATA_JSON__", _script_safe(data_json))
-    return html
+    repl = {
+        "__HEADING__": escape(heading),
+        "__CHART_PANES__": _chart_panes_html(charts),
+        "__CHARTS_JSON__": _script_safe(charts_json),
+        "__TITLE__": escape(title),
+        "__META__": escape(meta),
+        "__DATA_JSON__": _script_safe(data_json),
+    }
+    # Single non-rescanning pass: a replacement's output is never scanned for
+    # another placeholder, so untrusted title/meta text can't reintroduce a
+    # later token like __DATA_JSON__ (chained .replace() would).
+    return _PLACEHOLDER_RE.sub(lambda m: repl[m.group(0)], HTML_TEMPLATE)
 
 
 # -- CLI -----------------------------------------------------------------
@@ -1332,8 +1346,9 @@ def build_heatmap_html(l2: dict) -> str:
                 f"used {(v['rs'] or 0):.1f}s / cap {(v['cap'] or 0):.1f}s"
             )
             cls = "c-sat" if v["sat"] else "c-slack"
-            # data-util drives the live threshold slider; initial class is the
-            # 0.98 default so it renders sanely with JS disabled.
+            # Server class = the solver's `saturated` bool (also the fallback when
+            # JS can't recompute from data-util); the slider then drives c-sat by
+            # utilization threshold for cells that have a number.
             tds.append(
                 f'<td class="cell {cls}" data-col="{i}" '
                 f'data-util="{du}" title="{tip}"></td>'
@@ -1396,7 +1411,9 @@ def build_heatmap_html(l2: dict) -> str:
         "var t=parseFloat(slider.value)/100,nsat=0;"
         "cells.forEach(function(c){"
         "var u=parseFloat(c.getAttribute('data-util'));"
-        "var sat=!isNaN(u)&&u>=t;if(sat)nsat++;"
+        # No utilization number → keep the server-computed saturated state
+        # (c-sat) instead of forcing the cell to slack.
+        "var sat=isNaN(u)?c.classList.contains('c-sat'):(u>=t);if(sat)nsat++;"
         "c.classList.toggle('c-sat',sat);c.classList.toggle('c-slack',!sat);});"
         "tval.textContent=parseFloat(slider.value).toFixed(1)+'%';"
         "tcount.textContent=nsat+' / '+cells.length+' cells saturated';}"

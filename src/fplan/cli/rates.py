@@ -793,7 +793,9 @@ def viz(
         if not no_heatmap:
             heatmap_path.write_text(l2_viz.build_heatmap_html(l2))
             outputs.append(heatmap_path)
-    except (KeyError, ValueError, TypeError) as exc:  # malformed rates shape
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
+        # Shape mismatches (e.g. a step that's a str → .get on a non-dict raises
+        # AttributeError) map to a clean error, not a raw traceback.
         typer.echo(f"error: malformed rates YAML in {src}: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     except OSError as exc:

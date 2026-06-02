@@ -152,7 +152,7 @@ first with `fplan init` (see
   `--open`) opens the timeline. It's a pure consumer of `rates.yaml` — the model
   load is best-effort, so it also runs without a Factorio install (just without
   the legend's facility-count breakdown). The `viz/` outputs are ephemeral
-  (ignored like the rest of `runs/`).
+  (gitignored like the rest of the run directory — here `examples/runs/steelaxe/`).
 
 ## Development
 
