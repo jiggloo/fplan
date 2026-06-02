@@ -20,7 +20,7 @@ classifiers = [
 dynamic = ["version"]
 # Typer is a core dependency, not an optional extra: the CLI is the project's
 # primary human interface.
-dependencies = ["typer>=0.12,<1.0", "pyyaml>=6", "numpy>=1.26"]
+dependencies = ["typer>=0.12,<1.0", "pyyaml>=6", "numpy>=1.26", "lupa>=2.0"]
 
 [project.scripts]
 fplan = "fplan.cli:app"
@@ -65,12 +65,20 @@ warn_unused_ignores = true
 warn_unused_configs = true
 no_implicit_optional = true
 
+# lupa (LuaJIT bindings) ships no type stubs.
+[[tool.mypy.overrides]]
+module = "lupa"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov=fplan --cov-report=term-missing"
 
 [tool.coverage.run]
 source = ["fplan"]
+# Entry points that need a real Factorio install (no game data in CI) are
+# exercised manually — see the README Testing section.
+omit = ["*/__main__.py"]
 
 [tool.coverage.report]
 fail_under = 80
