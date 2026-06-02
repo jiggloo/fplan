@@ -48,20 +48,31 @@ def _redirect_fds(path: Path) -> Iterator[None]:
     """
     sys.stdout.flush()
     sys.stderr.flush()
-    saved_out, saved_err = os.dup(1), os.dup(2)
-    logf = open(path, "w")
+    # Acquire inside the try (with separate assignments) so a failure partway —
+    # the second os.dup, or open() on a full/read-only fs — can't leak an
+    # already-duped fd. Workers are long-lived, so a recurring leak would
+    # eventually exhaust the fd table.
+    saved_out: int | None = None
+    saved_err: int | None = None
+    logf = None
     try:
+        saved_out = os.dup(1)
+        saved_err = os.dup(2)
+        logf = open(path, "w")
         os.dup2(logf.fileno(), 1)
         os.dup2(logf.fileno(), 2)
         yield
     finally:
         sys.stdout.flush()
         sys.stderr.flush()
-        os.dup2(saved_out, 1)
-        os.dup2(saved_err, 2)
-        os.close(saved_out)
-        os.close(saved_err)
-        logf.close()
+        if saved_out is not None:
+            os.dup2(saved_out, 1)
+            os.close(saved_out)
+        if saved_err is not None:
+            os.dup2(saved_err, 2)
+            os.close(saved_err)
+        if logf is not None:
+            logf.close()
 
 
 def _solve_and_write(

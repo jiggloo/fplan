@@ -537,6 +537,10 @@ def test_search_parallel_promotes_best(
     # Full SCIP progress by default in parallel; candidates record their log.
     assert summary["solver"]["verbose"] is True
     assert {c["seed"]: c["log"] for c in summary["candidates"]}[2] == "seed-2.log"
+    # Promotion provenance: the manifest search block records jobs + summary.
+    sblock = run_mod.load(rd).extra["l2"]["search"]
+    assert sblock["jobs"] == 2
+    assert sblock["summary"] == "rates-search/summary.yaml"
 
 
 def test_search_parallel_quiet_solver(tmp_path, monkeypatch, use_fixture_model) -> None:
@@ -561,7 +565,51 @@ def test_search_parallel_quiet_solver(tmp_path, monkeypatch, use_fixture_model) 
         ],
     )
     assert r.exit_code == 0
+    # Banner reflects silencing; no tail -f guidance toward near-empty logs.
+    assert "silenced" in r.stdout and "tail -f" not in r.stdout
     summary = yaml.safe_load(
         (run_mod.run_dir("r") / "rates-search" / "summary.yaml").read_text()
     )
-    assert summary["solver"]["verbose"] is False  # logs slimmed
+    assert summary["solver"]["verbose"] is False  # SCIP silenced → near-empty logs
+
+
+def test_search_mixed_feasible_and_infeasible(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    # Seed 2 finds no incumbent (infeasible, not an error) — the motivating case.
+    _patch_solve(monkeypatch, _fake_solve_by_seed({1: 240.0, 2: None, 3: 250.0}))
+    r = runner.invoke(
+        app, ["rates", "solve", "r", "--seeds", "[1,2,3]", "--jobs", "1", "--force"]
+    )
+    assert r.exit_code == 0
+    rd = run_mod.run_dir("r")
+    assert run_mod.load(rd).extra["l2"]["seed"] == 1  # best feasible
+    summary = yaml.safe_load((rd / "rates-search" / "summary.yaml").read_text())
+    byseed = {c["seed"]: c for c in summary["candidates"]}
+    assert byseed[2]["objective_s"] is None and byseed[2]["status"] == "infeasible"
+    assert "error" not in byseed[2]  # infeasible is not an error
+    assert (rd / "rates.yaml").exists()
+
+
+def test_search_clears_prior_search_residue(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    _patch_solve(monkeypatch, _fake_solve_any())
+    rd = run_mod.run_dir("r")
+    # First search over {1,2,3}, then a second over {4,5} into the same run.
+    runner.invoke(
+        app, ["rates", "solve", "r", "--seeds", "[1,2,3]", "--jobs", "1", "--force"]
+    )
+    r = runner.invoke(
+        app, ["rates", "solve", "r", "--seeds", "[4,5]", "--jobs", "1", "--force"]
+    )
+    assert r.exit_code == 0
+    search = rd / "rates-search"
+    present = {p.name for p in search.glob("seed-*.yaml")}
+    assert present == {"seed-4.yaml", "seed-5.yaml"}  # 1/2/3 cleared
+    summary = yaml.safe_load((search / "summary.yaml").read_text())
+    assert summary["seeds"] == [4, 5]

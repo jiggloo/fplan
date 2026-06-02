@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import random
 import shutil
 from pathlib import Path
@@ -20,6 +21,9 @@ group = typer.Typer(help="L2 — production rates.", no_args_is_help=True)
 SEARCH_DIRNAME = "rates-search"
 SEARCH_SUMMARY = "summary.yaml"
 RATES_NAME = "rates.yaml"
+# Inclusive upper bound for a random SCIP seed; shared by single-solve and
+# search so both draw from the same [1, SEED_MAX] range.
+SEED_MAX = 2**31 - 1
 
 RunArg = Annotated[str, typer.Argument(help="Run name (under runs/) to solve.")]
 ModeOpt = Annotated[
@@ -154,8 +158,8 @@ def _seed_spec(spec: str) -> int | list[int]:
 
 
 def _random_seeds(n: int) -> list[int]:
-    """``n`` distinct random SCIP seeds in ``[1, 2**31)``."""
-    return random.sample(range(1, 2**31 - 1), n)
+    """``n`` distinct random SCIP seeds in ``[1, SEED_MAX]``."""
+    return random.sample(range(1, SEED_MAX + 1), n)
 
 
 @group.command()
@@ -185,10 +189,10 @@ def solve(
     the current directory), builds the L2 instance, solves the nonconvex MINLP
     with SCIP, and records the L2 settings + outcome back into the manifest.
 
-    With ``--seeds`` it runs a multi-seed search instead: every seed is solved,
-    each candidate is written under ``runs/<run>/rates-search/`` (never touching
-    the promoted ``rates.yaml``), the seeds are ranked by t_FINAL, and the best
-    is promoted to ``rates.yaml`` after a prompt (``--force`` to skip).
+    With --seeds it runs a multi-seed search instead: every seed is solved, each
+    candidate is written under runs/<run>/rates-search/ (never touching the
+    promoted rates.yaml), the seeds are ranked by t_FINAL, and the best is
+    promoted to rates.yaml after a prompt (--force to skip).
     """
     from fplan import refs
     from fplan import run as run_mod
@@ -357,7 +361,7 @@ def _run_single(
         cli_main.confirm_overwrite_or_exit(out_path)
 
     if seed is None:
-        seed = random.randint(1, 2**31 - 1)
+        seed = random.randint(1, SEED_MAX)
     typer.echo(f"SCIP seed: {seed}  (re-pass --seed {seed} to reproduce)")
 
     try:
@@ -424,18 +428,34 @@ def _run_search(
 
     search_dir = run_dir / SEARCH_DIRNAME
     search_dir.mkdir(parents=True, exist_ok=True)
+    # Clear a prior search's residue so rates-search/ reflects only this search
+    # (summary.yaml is rewritten below; orphaned seed-*.yaml/.log would otherwise
+    # mislead a casual `ls` into mixing two searches).
+    for stale in (
+        *search_dir.glob("seed-*.yaml"),
+        *search_dir.glob("seed-*.log"),
+        search_dir / SEARCH_SUMMARY,
+    ):
+        stale.unlink(missing_ok=True)
 
     n_jobs = l2_search.resolve_jobs(jobs, len(seeds))
     parallel = n_jobs > 1
     # Parallel seeds each get full SCIP progress in their own log (so they're
     # monitorable with tail -f) — interleaving the console is the whole problem.
-    # --quiet-solver slims those logs. Serial stays quiet on the console as before.
+    # --quiet-solver silences SCIP, leaving the logs near-empty. Serial keeps its
+    # output on the console as before.
     solver_kwargs = {**solver_kwargs, "verbose": parallel and not quiet_solver}
 
-    if parallel:
+    if parallel and quiet_solver:
         typer.echo(
-            f"Searching {len(seeds)} seed(s), up to {n_jobs} in parallel — "
-            f"per-seed logs (tail -f to monitor):"
+            f"Searching {len(seeds)} seed(s), up to {n_jobs} in parallel "
+            "(SCIP silenced via --quiet-solver; per-seed logs stay near-empty)."
+        )
+    elif parallel:
+        typer.echo(
+            f"Searching {len(seeds)} seed(s), up to {n_jobs} in parallel "
+            "(each worker holds a full model copy) — per-seed logs "
+            "(tail -f to monitor):"
         )
         for sd in seeds:
             typer.echo(f"  seed {sd} → {search_dir / f'seed-{sd}.log'}")
@@ -518,6 +538,7 @@ def _run_search(
         best=best,
         mode=mode,
         seeds=seeds,
+        jobs=n_jobs,
         config_ref=config_ref,
         force=force,
         run_mod=run_mod,
@@ -550,6 +571,7 @@ def _promote(
     best,
     mode,
     seeds,
+    jobs,
     config_ref,
     force,
     run_mod,
@@ -584,9 +606,14 @@ def _promote(
             return
 
     cand_path = search_dir / best["file"]
+    # Atomic replace: copy to a temp sibling, then os.replace onto rates.yaml so
+    # an interruption mid-copy can't truncate a previously-promoted good plan.
+    tmp_path = out_path.with_name(out_path.name + ".tmp")
     try:
-        shutil.copyfile(cand_path, out_path)
+        shutil.copyfile(cand_path, tmp_path)
+        os.replace(tmp_path, out_path)
     except OSError as exc:
+        tmp_path.unlink(missing_ok=True)
         typer.echo(f"error: could not write {out_path}: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
@@ -599,7 +626,9 @@ def _promote(
         "config": config_ref,
         "search": {
             "seeds": list(seeds),
+            "jobs": jobs,
             "promoted_from": f"{SEARCH_DIRNAME}/{best['file']}",
+            "summary": f"{SEARCH_DIRNAME}/{SEARCH_SUMMARY}",
         },
     }
     run_mod.save(run_dir, manifest)

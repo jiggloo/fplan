@@ -11,12 +11,20 @@ initializer wiring the real pool uses.
 from __future__ import annotations
 
 import concurrent.futures as cf
+import json
 import os
+import pickle
 import types
 from pathlib import Path
 
+import yaml
+
+from fplan.l2 import instance as l2_instance
 from fplan.l2 import search
 from fplan.l2 import solve as l2_solve
+from fplan.model import build_game_data, load_model
+
+MODEL_FIXTURE = Path(__file__).parent / "fixtures" / "model_raw_subset.json"
 
 
 class _InlineExecutor:
@@ -63,6 +71,25 @@ def _mock_solve(monkeypatch, objective_of=lambda seed: float(seed)):
     monkeypatch.setattr(
         l2_solve, "write_solution", lambda i, s, m, p: Path(p).write_text("stub\n")
     )
+
+
+# --- worker shippability ---------------------------------------------------
+
+
+def test_inst_and_model_are_picklable(tmp_path) -> None:
+    """The parallel pool ships (inst, model) to workers by pickle; guard that
+    they stay picklable so a future non-picklable field is caught in CI rather
+    than only in a manual multi-process run."""
+    from fplan import scenario as scn
+
+    model = load_model(raw=build_game_data(json.loads(MODEL_FIXTURE.read_text())))
+    (tmp_path / "o.yaml").write_text(
+        yaml.safe_dump({"method": "forward", "layers": [["automation"]]})
+    )
+    inst = l2_instance.build_instance(
+        scn.from_dict({"name": "t"}), tmp_path / "o.yaml", model
+    )
+    assert pickle.loads(pickle.dumps((inst, model))) is not None
 
 
 # --- resolve_jobs ----------------------------------------------------------
