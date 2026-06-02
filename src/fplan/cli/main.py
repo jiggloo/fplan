@@ -23,6 +23,11 @@ from fplan.cli._stub import not_implemented
 app = typer.Typer(
     help="fplan — Factorio production and placement planner.",
     add_completion=True,
+    # Keep the no-traceback / no-leak posture intentional and independent of
+    # Typer's evolving defaults: never render local variables (file paths,
+    # resolved data dirs, env-derived strings) into a displayed traceback once
+    # later stages add real subprocess / file work.
+    pretty_exceptions_show_locals=False,
 )
 
 app.add_typer(tech_order.group, name="tech-order")
@@ -58,12 +63,12 @@ def main(
 
 
 @app.command("full-run")
-def full_run(dry_run: DryRun = False) -> None:
+def full_run(ctx: typer.Context, dry_run: DryRun = False) -> None:
     """Run the whole L1 → L4 chain (gated on cross-stage discovery)."""
-    not_implemented("full-run")
+    not_implemented(ctx)
 
 
 @app.command()
-def init(dry_run: DryRun = False) -> None:
+def init(ctx: typer.Context, dry_run: DryRun = False) -> None:
     """Detect and create an initial config file."""
-    not_implemented("init")
+    not_implemented(ctx)

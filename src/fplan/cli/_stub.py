@@ -27,18 +27,23 @@ EXIT_NOT_MIGRATED = 70
 EXIT_NOT_IMPLEMENTED = 71
 
 
-def not_migrated(feature: str) -> NoReturn:
-    """Report that ``feature`` exists upstream but isn't ported yet, then exit."""
+def not_migrated(ctx: typer.Context) -> NoReturn:
+    """Report that the command exists upstream but isn't ported yet, then exit.
+
+    The command path is read from ``ctx`` (Typer already owns it) so the notice
+    can never drift out of sync with a renamed command or group.
+    """
     typer.echo(
-        f"'{feature}' is not available yet: it exists in the source project "
-        f"(factorio_explore) but has not been ported to fplan."
+        f"'{ctx.command_path}' is not available yet: it exists in the source "
+        f"project (factorio_explore) but has not been ported to fplan."
     )
     raise typer.Exit(code=EXIT_NOT_MIGRATED)
 
 
-def not_implemented(feature: str) -> NoReturn:
-    """Report that ``feature`` is planned but has no implementation, then exit."""
+def not_implemented(ctx: typer.Context) -> NoReturn:
+    """Report that the command is planned but has no implementation, then exit."""
     typer.echo(
-        f"'{feature}' is not implemented yet: it is planned but has no implementation."
+        f"'{ctx.command_path}' is not implemented yet: it is planned but has "
+        f"no implementation."
     )
     raise typer.Exit(code=EXIT_NOT_IMPLEMENTED)

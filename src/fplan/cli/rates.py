@@ -11,18 +11,18 @@ group = typer.Typer(help="L2 — production rates.", no_args_is_help=True)
 
 
 @group.command()
-def solve(dry_run: DryRun = False) -> None:
+def solve(ctx: typer.Context, dry_run: DryRun = False) -> None:
     """Solve the production-phase LP. --dry-run shows the instance without solving."""
-    not_migrated("rates solve")
+    not_migrated(ctx)
 
 
 @group.command()
-def post(dry_run: DryRun = False) -> None:
+def post(ctx: typer.Context, dry_run: DryRun = False) -> None:
     """Post-process the solved rates into the input for the layout stage."""
-    not_migrated("rates post")
+    not_migrated(ctx)
 
 
 @group.command()
-def viz() -> None:
+def viz(ctx: typer.Context) -> None:
     """Render the capacity-saturation heatmap."""
-    not_migrated("rates viz")
+    not_migrated(ctx)

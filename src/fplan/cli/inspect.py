@@ -12,18 +12,18 @@ group = typer.Typer(
 
 
 @group.command()
-def tech() -> None:
+def tech(ctx: typer.Context) -> None:
     """Browse technologies."""
-    not_migrated("inspect tech")
+    not_migrated(ctx)
 
 
 @group.command()
-def item() -> None:
+def item(ctx: typer.Context) -> None:
     """Browse items."""
-    not_migrated("inspect item")
+    not_migrated(ctx)
 
 
 @group.command()
-def recipe() -> None:
+def recipe(ctx: typer.Context) -> None:
     """Browse recipes."""
-    not_migrated("inspect recipe")
+    not_migrated(ctx)

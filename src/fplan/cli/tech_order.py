@@ -11,18 +11,18 @@ group = typer.Typer(help="L1 — technology research ordering.", no_args_is_help
 
 
 @group.command()
-def build(dry_run: DryRun = False) -> None:
+def build(ctx: typer.Context, dry_run: DryRun = False) -> None:
     """Generate a tech research order from a scenario."""
-    not_migrated("tech-order build")
+    not_migrated(ctx)
 
 
 @group.command()
-def verify() -> None:
+def verify(ctx: typer.Context) -> None:
     """Verify a tech order satisfies the game-model requirements."""
-    not_migrated("tech-order verify")
+    not_migrated(ctx)
 
 
 @group.command()
-def viz() -> None:
+def viz(ctx: typer.Context) -> None:
     """Render the tech order (layers / DAG)."""
-    not_implemented("tech-order viz")
+    not_implemented(ctx)

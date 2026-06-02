@@ -13,15 +13,15 @@ group = typer.Typer(
 
 
 @group.command()
-def generate(dry_run: DryRun = False) -> None:
+def generate(ctx: typer.Context, dry_run: DryRun = False) -> None:
     """Generate the action steps for the Factorio-TAS-Generator.
 
-    ``generate`` is a placeholder name; the verb is settled when L4 is designed.
+    'generate' is a placeholder name; the verb is settled when L4 is designed.
     """
-    not_implemented("execution generate")
+    not_implemented(ctx)
 
 
 @group.command()
-def viz() -> None:
+def viz(ctx: typer.Context) -> None:
     """Render the execution steps / player trajectory."""
-    not_implemented("execution viz")
+    not_implemented(ctx)

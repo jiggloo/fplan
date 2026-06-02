@@ -19,18 +19,18 @@ group = typer.Typer(
 
 
 @group.command("from-string")
-def from_string(dry_run: DryRun = False) -> None:
+def from_string(ctx: typer.Context, dry_run: DryRun = False) -> None:
     """Build a map artifact from a Factorio map-exchange string."""
-    not_implemented("map from-string")
+    not_implemented(ctx)
 
 
 @group.command("from-save")
-def from_save(dry_run: DryRun = False) -> None:
+def from_save(ctx: typer.Context, dry_run: DryRun = False) -> None:
     """Build a map artifact (the freshly-generated map) from a save file."""
-    not_migrated("map from-save")
+    not_migrated(ctx)
 
 
 @group.command()
-def show() -> None:
+def show(ctx: typer.Context) -> None:
     """Print a text summary of a map artifact."""
-    not_implemented("map show")
+    not_implemented(ctx)

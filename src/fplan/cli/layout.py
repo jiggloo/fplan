@@ -11,18 +11,18 @@ group = typer.Typer(help="L3 — placement / layout.", no_args_is_help=True)
 
 
 @group.command()
-def place(dry_run: DryRun = False) -> None:
+def place(ctx: typer.Context, dry_run: DryRun = False) -> None:
     """Run a placement method over the production plan and map."""
-    not_migrated("layout place")
+    not_migrated(ctx)
 
 
 @group.command()
-def post(dry_run: DryRun = False) -> None:
+def post(ctx: typer.Context, dry_run: DryRun = False) -> None:
     """Post-process the placement into the input for the execution stage (L4)."""
-    not_implemented("layout post")
+    not_implemented(ctx)
 
 
 @group.command()
-def viz() -> None:
+def viz(ctx: typer.Context) -> None:
     """Render the placement / flow partition (the render includes the map)."""
-    not_migrated("layout viz")
+    not_migrated(ctx)

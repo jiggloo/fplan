@@ -59,7 +59,9 @@ without reading any docs — yet generated files inside them stay untracked and
 so a later run can use it *in place* — reading the example inputs and writing to
 the ignored `examples/runs/` — without copying files and without owning
 Factorio. The mechanism for selecting where the tool reads and writes (a
-working-directory concept) is part of the CLI, which is designed separately.
+working-directory concept) is part of the CLI; the CLI skeleton now exists
+(bare `fplan` reports the working directory it would operate from), but the
+working-directory / run-directory *resolution* is not wired up yet.
 
 ## Versioning
 
