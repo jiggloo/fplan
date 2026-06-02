@@ -347,6 +347,16 @@ def test_build_writes_order(tmp_path, monkeypatch, use_fixture_model) -> None:
     assert doc["level"] == 1 and "plastics" in [t for L in doc["layers"] for t in L]
 
 
+def test_build_surfaces_method_setting(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    scn = _scenario(tmp_path, ["plastics"])
+    r = runner.invoke(app, ["tech-order", "build", str(scn), "--out", "o.yaml"])
+    assert r.exit_code == 0
+    assert "settings: method=forward (default)" in r.stdout
+
+
 def test_build_requires_out(tmp_path, monkeypatch, use_fixture_model) -> None:
     monkeypatch.chdir(tmp_path)
     scn = _scenario(tmp_path, ["plastics"])

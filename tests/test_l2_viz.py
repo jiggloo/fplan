@@ -152,6 +152,15 @@ def test_viz_writes_both(tmp_path, monkeypatch) -> None:
     assert "model not loaded" in r.stdout
 
 
+def test_viz_surfaces_effective_settings(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    r = runner.invoke(app, ["rates", "viz", "r"])
+    assert r.exit_code == 0
+    assert "settings: source=rates.yaml (default)" in r.stdout
+    assert "view=timeline" in r.stdout and "heatmap=on (default)" in r.stdout
+
+
 def test_viz_no_heatmap(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     rd = _make_run(tmp_path)

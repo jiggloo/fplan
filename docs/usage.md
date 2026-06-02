@@ -71,6 +71,12 @@ Commands that take a side-effecting action (write an artifact, create the config
 file, run a stage) also accept `--dry-run`, which reports what would happen
 without doing it.
 
+**Effective settings.** When a command has optional parameters, it prints a
+`settings:` line up front showing the value in effect for each — with `(default)`
+marking the ones you didn't override — so omitting a flag is never opaque. For
+example, `rates solve` without `--seed` still prints the (random) seed it chose,
+so the run stays reproducible.
+
 ## Configuration
 
 fplan reads `.fplan-config.yaml` from the current working directory. It mainly
