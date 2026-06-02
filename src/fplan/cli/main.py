@@ -2,8 +2,9 @@
 
 Bare ``fplan`` (no subcommand) prints the working directory it will operate from
 and the resolved config status — listing files is what the shell is for. Each
-pipeline stage is a command group (L1 ``tech-order`` → L4 ``execution``);
-cross-cutting commands (``init``, ``full-run``) live at the top level.
+pipeline stage is a command group (L1 ``tech-order`` → L4 ``execution``); the
+``run`` group manages whole L2→L4 executions, and ``init`` lives at the top
+level.
 
 The ``--config-file`` global option is stashed on ``ctx.obj`` so subcommands can
 read it; CLI arguments override config-file values, and there is no
@@ -24,8 +25,8 @@ from fplan import config as cfg
 from fplan.cli import execution, layout, rates, tech_order
 from fplan.cli import inspect as inspect_group
 from fplan.cli import map as map_group
+from fplan.cli import run as run_group
 from fplan.cli._options import DryRun
-from fplan.cli._stub import not_implemented
 
 app = typer.Typer(
     help="fplan — Factorio production and placement planner.",
@@ -43,6 +44,7 @@ app.add_typer(map_group.group, name="map")
 app.add_typer(layout.group, name="layout")
 app.add_typer(inspect_group.group, name="inspect")
 app.add_typer(execution.group, name="execution")
+app.add_typer(run_group.group, name="run")
 
 
 @dataclass
@@ -225,12 +227,6 @@ def _detect_factorio_interactively() -> factorio.FactorioInstall | None:
     if not root_str.strip():
         return None
     return factorio.derive_from_root(Path(root_str.strip()).expanduser(), platform)
-
-
-@app.command("full-run")
-def full_run(ctx: typer.Context, dry_run: DryRun = False) -> None:
-    """Run the whole L1 → L4 chain (gated on cross-stage discovery)."""
-    not_implemented(ctx)
 
 
 @app.command()

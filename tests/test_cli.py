@@ -15,9 +15,12 @@ from fplan.cli._stub import EXIT_NOT_IMPLEMENTED, EXIT_NOT_MIGRATED
 
 runner = CliRunner()
 
-GROUPS = ["tech-order", "rates", "map", "layout", "inspect", "execution"]
+GROUPS = ["tech-order", "rates", "map", "layout", "inspect", "execution", "run"]
 
-# (argv, expected exit code) for every leaf command in the tree.
+# (argv, expected exit code) for every stub leaf in the tree. `run`'s
+# create/clone/show are real commands with required args, so they're exercised
+# in test_run.py rather than here; `run full` requires a name positional (so it
+# can't be invoked bare) and is covered there too.
 LEAVES = [
     (["tech-order", "viz"], EXIT_NOT_IMPLEMENTED),
     (["rates", "solve"], EXIT_NOT_MIGRATED),
@@ -31,7 +34,6 @@ LEAVES = [
     (["inspect", "recipe"], EXIT_NOT_MIGRATED),
     (["execution", "generate"], EXIT_NOT_IMPLEMENTED),
     (["execution", "viz"], EXIT_NOT_IMPLEMENTED),
-    (["full-run"], EXIT_NOT_IMPLEMENTED),
 ]
 
 # Commands that accept --dry-run.
@@ -42,7 +44,6 @@ DRY_RUN_OK = [
     ["layout", "place"],
     ["layout", "post"],
     ["execution", "generate"],
-    ["full-run"],
     ["init"],
 ]
 

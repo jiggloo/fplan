@@ -13,6 +13,7 @@ are implemented.
 - [Commands](#commands) (alphabetical by group)
   - [`inspect`](#inspect)
   - [`map`](#map)
+  - [`run`](#run)
   - [`tech-order`](#tech-order)
 
 ## Invoking the CLI
@@ -47,12 +48,12 @@ sits in the L1 → L4 planning pipeline):
 | Group / command | Level | Purpose |
 |---|---|---|
 | `execution` | L4 | Step generation (TAS-generator input) |
-| `full-run` | — | Run the whole L1 → L4 chain |
 | `init` | — | Create the config file |
 | `inspect` | — | Inspect the game model (tech / item / recipe) |
 | `layout` | L3 | Spatial placement |
 | `map` | — | Map artifact generation and inspection |
 | `rates` | L2 | Production-rate solving |
+| `run` | L2–L4 | Create and manage pipeline runs |
 | `tech-order` | L1 | Technology research ordering |
 
 The surface is complete, but the stages are being migrated incrementally. A
@@ -198,6 +199,66 @@ yield. All distances are tiles from spawn.
 Building an artifact from a Factorio map-exchange string is planned but not yet
 implemented — `fplan map from-string` currently exits with code `71`.
 
+### `run`
+
+A *run* is one execution of the L2→L4 pipeline. It lives in `runs/<name>/` and
+is described by a `manifest.yaml` that binds the run's inputs — a **scenario**,
+a **tech-order**, and an optional **map** — by reference (path + content hash),
+and (as later stages land) accumulates their settings and outputs. L1 is an
+*input* to a run, not part of it. See [Concepts](../README.md#concepts).
+
+#### `run create`
+
+Create a run directory and write its manifest:
+
+```bash
+.venv/bin/fplan run create steelaxe-exp \
+    --scenario scenarios/steelaxe.yaml \
+    --tech-order tech-orders/steelaxe.yaml \
+    --map maps/world.yaml          # optional
+```
+
+- A run is **named** — `run create <name>` creates `runs/<name>/`. `runs/` is a
+  managed, git-ignored directory like `maps/`.
+- `--scenario` and `--tech-order` are required; `--map` is optional (spatial
+  caps simply don't fire without it).
+- Refuses if the run already exists (remove it, or use `run clone`).
+- `--dry-run` reports what would be created and writes nothing.
+
+#### `run clone`
+
+Start a new run from an existing one's manifest — same input bindings, fresh
+identity, **no stage artifacts copied** (a clean re-solve of the same problem):
+
+```bash
+.venv/bin/fplan run clone steelaxe-exp steelaxe-trap
+```
+
+#### `run show`
+
+Show a run's bindings, whether each referenced input is still current (a
+content-hash check flags edits since `create`), and which stage artifacts exist:
+
+```bash
+.venv/bin/fplan run show steelaxe-exp
+```
+
+```
+run: steelaxe-exp
+created: 2026-06-02T09:24:42+00:00
+fplan: 0.0.7
+inputs:
+  scenario: scenarios/steelaxe.yaml [✓ current]
+  tech-order: tech-orders/steelaxe.yaml [⚠ changed]
+  map: maps/world.yaml [✗ missing]
+artifacts: (none yet)
+```
+
+#### `run full`
+
+Executing the whole L2→L4 chain against a run's manifest is planned but not yet
+implemented — `fplan run full` currently exits with code `71`.
+
 ### `tech-order`
 
 L1 — turn a scenario (a goal) into a layered technology research order, and
@@ -238,7 +299,10 @@ Goal 'steelaxe': 3 techs across 2 layers — research order (layer 0 = earliest,
 - `--out` is required and is not clobbered silently — an existing file prompts
   to confirm (interactive) or refuses (non-interactive), protecting a
   hand-edited order. `--dry-run` prints the order and writes nothing.
-- The output YAML carries an embedded `goal:` block that `verify` reads back.
+- The order is L1's *output*; the scenario is L1's *input*. The two are kept
+  disjoint: the order carries **no goal content**, only a lightweight
+  `scenario:` reference (name + path + content hash) recording what it was
+  built from. `verify` resolves the goal from that reference.
 
 #### `tech-order verify`
 
@@ -251,8 +315,9 @@ prerequisites (extra techs and same-layer prereq pairs are non-fatal warnings):
 .venv/bin/fplan tech-order verify my-order.yaml --scenario examples/scenarios/steelaxe.yaml
 ```
 
-The goal is taken from the order's embedded `goal:` block by default, or from
-`--scenario PATH`. Exit `0` if valid, `1` if invalid.
+The goal is resolved from the order's `scenario:` reference by default (a
+content-hash mismatch warns but still verifies against the current scenario),
+or from `--scenario PATH`. Exit `0` if valid, `1` if invalid.
 
 #### `tech-order viz`
 
