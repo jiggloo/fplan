@@ -13,7 +13,6 @@ import typer
 import yaml
 
 from fplan.cli._options import DryRun
-from fplan.cli._stub import not_migrated
 
 group = typer.Typer(help="L2 — production rates.", no_args_is_help=True)
 
@@ -22,6 +21,10 @@ group = typer.Typer(help="L2 — production rates.", no_args_is_help=True)
 SEARCH_DIRNAME = "rates-search"
 SEARCH_SUMMARY = "summary.yaml"
 RATES_NAME = "rates.yaml"
+# The post-processed (flattened) L2 output — the provisional L3 input. Same
+# rates schema as RATES_NAME plus a `post:` diagnostics block (auto-detected by
+# `rates viz` to switch to the diff view).
+POST_NAME = "rates-post.yaml"
 # Inclusive upper bound for a random SCIP seed; shared by single-solve and
 # search so both draw from the same [1, SEED_MAX] range.
 SEED_MAX = 2**31 - 1
@@ -655,10 +658,175 @@ def _promote(
     )
 
 
+PostRunArg = Annotated[
+    str, typer.Argument(help="Run (under runs/) whose rates.yaml to post-process.")
+]
+MethodOpt = Annotated[
+    str,
+    typer.Option(
+        "--method",
+        help="Flattening rule: tube (taut-string, default) | chord (baseline) | "
+        "mrp (cross-dependency).",
+    ),
+]
+PostFromOpt = Annotated[
+    Path | None,
+    typer.Option(
+        "--from",
+        help="Post-process this rates-shaped YAML instead of the run's rates.yaml "
+        "(e.g. a search candidate). The output is still the run's rates-post.yaml.",
+    ),
+]
+NoVizOpt = Annotated[
+    bool,
+    typer.Option("--no-viz", help="Skip auto-generating the diff visualization."),
+]
+
+
 @group.command()
-def post(ctx: typer.Context, dry_run: DryRun = False) -> None:
-    """Post-process the solved rates into the input for the layout stage."""
-    not_migrated(ctx)
+def post(
+    ctx: typer.Context,
+    run: PostRunArg,
+    method: MethodOpt = "tube",
+    from_path: PostFromOpt = None,
+    no_viz: NoVizOpt = False,
+    open_browser: OpenVizOpt = False,
+    force: ForceOpt = False,
+    dry_run: DryRun = False,
+) -> None:
+    """Post-process a solved rates.yaml into the layout-stage (L3) input.
+
+    Flattens each item's per-step production rate to the smoothest schedule that
+    still meets every deadline — minimizing assembler revisits (real TAS
+    player-time) without producing ahead of causality. Writes
+    runs/<run>/rates-post.yaml: the same (PROVISIONAL) rates schema with the
+    flattened production characteristics, plus a `post:` block carrying the
+    method, source, and the per-item / unmet-input diagnostics. By default it
+    also auto-generates the diff visualization (original vs flattened + the
+    unmet-input table); regenerate it later with `rates viz --from`.
+
+    The output is the temporary L2→L3 input and its schema is temporary too —
+    it mirrors rates.yaml only because L3's format isn't decided yet. Don't
+    build anything downstream that assumes the schema is stable.
+    """
+    from fplan import config as cfg
+    from fplan import run as run_mod
+    from fplan.cli import main as cli_main
+    from fplan.l2 import flatten as l2_flatten
+
+    state: cli_main.CLIState = ctx.obj
+
+    if method not in l2_flatten.METHODS:
+        choices = ", ".join(l2_flatten.METHODS)
+        typer.echo(
+            f"error: unknown method {method!r}; choose from {choices}.", err=True
+        )
+        raise typer.Exit(code=2)
+
+    try:
+        run_dir = run_mod.run_dir(run)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if not run_mod.manifest_path(run_dir).exists():
+        typer.echo(f"error: run {run!r} not found at {run_dir}", err=True)
+        raise typer.Exit(code=1)
+
+    src = from_path if from_path is not None else run_dir / RATES_NAME
+    if not src.exists():
+        hint = "" if from_path is not None else " (run `fplan rates solve` first)"
+        typer.echo(f"error: rates file not found: {src}{hint}", err=True)
+        raise typer.Exit(code=1)
+
+    out_path = run_dir / POST_NAME
+    viz_dir = run_dir / "viz"
+    viz_path = viz_dir / f"{out_path.stem}-timeline.html"
+
+    if dry_run:
+        typer.echo(f"(dry run) would post-process {src} (method={method}) and write:")
+        typer.echo(f"  {out_path}")
+        if not no_viz:
+            typer.echo(f"  {viz_path}")
+        return
+
+    try:
+        l2 = yaml.safe_load(src.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if not isinstance(l2, dict):
+        typer.echo(
+            f"error: {src} is not a valid rates YAML (expected a mapping)", err=True
+        )
+        raise typer.Exit(code=1)
+
+    # The model is REQUIRED here (unlike viz): the unmet-input diagnostics and
+    # the mrp dependency graph both need the recipe→ingredient map.
+    model = cli_main.load_model_or_exit(state.config_file)
+
+    if not force:
+        cli_main.confirm_overwrite_or_exit(out_path)
+
+    # source ref recorded in the post block so `rates viz` can find the original
+    # series for the faint overlay: a bare name when it sits beside the output,
+    # else the path as given.
+    source_ref = RATES_NAME if from_path is None else str(from_path)
+    try:
+        result = l2_flatten.flatten(l2, method=method, model=model)
+        post_yaml = l2_flatten.build_post_yaml(l2, result, source_ref=source_ref)
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
+        typer.echo(f"error: malformed rates YAML in {src}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    try:
+        out_path.write_text(yaml.safe_dump(post_yaml, sort_keys=False))
+    except OSError as exc:
+        typer.echo(f"error: could not write {out_path}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    summary = result.summary()
+    try:
+        manifest = run_mod.load(run_dir)
+        manifest.extra["post"] = {
+            "method": method,
+            "source": source_ref,
+            "summary": summary,
+        }
+        run_mod.save(run_dir, manifest)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        # The output is already written; a manifest hiccup shouldn't lose it.
+        typer.echo(f"warning: could not update manifest: {exc}", err=True)
+
+    typer.echo(f"✓ wrote {out_path}")
+    typer.echo(
+        f"  method={method}  items={summary['items_scored']}  "
+        f"revisits={summary['revisits']} (was {summary['orig_segments']}, "
+        f"-{summary['revisits_saved']})  "
+        f"self-stockouts={summary['self_stockouts']}  "
+        f"unmet-inputs={summary['deficit_lines']}"
+    )
+
+    if not no_viz:
+        from fplan.l2 import viz as l2_viz
+
+        data_dir = None
+        try:
+            data_dir = cfg.load_config(state.config_file).data_dir
+        except cfg.ConfigError:
+            data_dir = None
+        try:
+            dataset = l2_viz.build_flatten_dataset(post_yaml, l2, data_dir=data_dir)
+            html = l2_viz.render_flatten_html(dataset, method=method)
+            viz_dir.mkdir(parents=True, exist_ok=True)
+            viz_path.write_text(html)
+        except (KeyError, ValueError, TypeError, AttributeError) as exc:
+            typer.echo(f"warning: could not render viz: {exc}", err=True)
+        except OSError as exc:
+            typer.echo(f"warning: could not write viz: {exc}", err=True)
+        else:
+            typer.echo(f"✓ wrote {viz_path}")
+            if open_browser:
+                _open_in_browser(viz_path)
 
 
 VizRunArg = Annotated[
@@ -716,6 +884,27 @@ def _open_in_browser(path: Path) -> None:
         typer.echo(f"note: could not open a browser; open it manually: {path}")
 
 
+def _read_overlay_source(post: dict, post_file: Path) -> dict | None:
+    """Best-effort load of the original solve referenced by a post block's
+    ``source`` — the faint original-rate overlay in the flatten diff view.
+    Resolved relative to the post file's directory (the canonical layout:
+    rates.yaml beside rates-post.yaml), with an as-given fallback. Any failure
+    → None, so the diff still renders, just without the original line."""
+    ref = post.get("source")
+    if not isinstance(ref, str) or not ref:
+        return None
+    p = Path(ref)
+    candidates = [p] if p.is_absolute() else [post_file.parent / p, p]
+    for c in candidates:
+        try:
+            if c.exists():
+                data = yaml.safe_load(c.read_text())
+                return data if isinstance(data, dict) else None
+        except (OSError, yaml.YAMLError):
+            return None
+    return None
+
+
 @group.command()
 def viz(
     ctx: typer.Context,
@@ -753,18 +942,8 @@ def viz(
         typer.echo(f"error: rates file not found: {src}{hint}", err=True)
         raise typer.Exit(code=1)
 
-    viz_dir = run_dir / "viz"
-    stem = src.stem  # rates.yaml → "rates", seed-22.yaml → "seed-22"
-    timeline_path = viz_dir / f"{stem}-timeline.html"
-    heatmap_path = viz_dir / f"{stem}-heatmap.html"
-
-    if dry_run:
-        typer.echo(f"(dry run) would read {src} and write:")
-        typer.echo(f"  {timeline_path}")
-        if not no_heatmap:
-            typer.echo(f"  {heatmap_path}")
-        return
-
+    # Load the YAML up front: it both validates the shape and selects the view
+    # (a `post:` block ⇒ the flatten diff view, else the timeline).
     try:
         l2 = yaml.safe_load(src.read_text())
     except (OSError, yaml.YAMLError) as exc:
@@ -775,6 +954,23 @@ def viz(
             f"error: {src} is not a valid rates YAML (expected a mapping)", err=True
         )
         raise typer.Exit(code=1)
+    is_flatten = isinstance(l2.get("post"), dict)
+
+    viz_dir = run_dir / "viz"
+    stem = src.stem  # rates.yaml → "rates", rates-post.yaml → "rates-post"
+    timeline_path = viz_dir / f"{stem}-timeline.html"
+    heatmap_path = viz_dir / f"{stem}-heatmap.html"
+    # The flatten diff view has no companion heatmap (capacity is unchanged by
+    # flattening); --no-heatmap is moot there.
+    want_heatmap = not no_heatmap and not is_flatten
+
+    if dry_run:
+        view = "flatten diff view" if is_flatten else "timeline"
+        typer.echo(f"(dry run) would read {src} ({view}) and write:")
+        typer.echo(f"  {timeline_path}")
+        if want_heatmap:
+            typer.echo(f"  {heatmap_path}")
+        return
 
     # Best-effort model load: enrich the legend with facility counts if a valid
     # data_dir is configured; otherwise render from the YAML alone.
@@ -785,12 +981,18 @@ def viz(
         data_dir = None
 
     try:
-        dataset = l2_viz.build_dataset(l2, data_dir=data_dir)
-        timeline = l2_viz.render_html(dataset)
         viz_dir.mkdir(parents=True, exist_ok=True)
-        timeline_path.write_text(timeline)
+        if is_flatten:
+            # Pure render of the post file + its source (for the faint original
+            # overlay): no model re-load, no re-flattening.
+            source_l2 = _read_overlay_source(l2["post"], src)
+            dataset = l2_viz.build_flatten_dataset(l2, source_l2, data_dir=data_dir)
+            timeline_path.write_text(l2_viz.render_flatten_html(dataset))
+        else:
+            dataset = l2_viz.build_dataset(l2, data_dir=data_dir)
+            timeline_path.write_text(l2_viz.render_html(dataset))
         outputs = [timeline_path]
-        if not no_heatmap:
+        if want_heatmap:
             heatmap_path.write_text(l2_viz.build_heatmap_html(l2))
             outputs.append(heatmap_path)
     except (KeyError, ValueError, TypeError, AttributeError) as exc:
@@ -804,6 +1006,11 @@ def viz(
 
     for p in outputs:
         typer.echo(f"✓ wrote {p}")
+    if is_flatten and not dataset.get("has_orig"):
+        typer.echo(
+            "note: original-rate overlay omitted — source rates not found "
+            f"(post.source = {l2['post'].get('source')!r})"
+        )
     if not dataset.get("model_loaded"):
         typer.echo("note: model not loaded — legend omits the facility-count breakdown")
     if open_browser:

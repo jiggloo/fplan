@@ -23,7 +23,6 @@ GROUPS = ["tech-order", "rates", "map", "layout", "inspect", "execution", "run"]
 # can't be invoked bare) and is covered there too.
 LEAVES = [
     (["tech-order", "viz"], EXIT_NOT_IMPLEMENTED),
-    (["rates", "post"], EXIT_NOT_MIGRATED),
     (["map", "from-string"], EXIT_NOT_IMPLEMENTED),
     (["layout", "place"], EXIT_NOT_MIGRATED),
     (["layout", "post"], EXIT_NOT_IMPLEMENTED),
@@ -34,10 +33,9 @@ LEAVES = [
     (["execution", "viz"], EXIT_NOT_IMPLEMENTED),
 ]
 
-# Commands that accept --dry-run. (`rates solve` also accepts it but needs a
-# run argument, so it's exercised in test_rates.py instead.)
+# Commands that accept --dry-run. (`rates solve`/`rates post` also accept it but
+# need a run argument, so they're exercised in test_rates.py instead.)
 DRY_RUN_OK = [
-    ["rates", "post"],
     ["map", "from-string"],
     ["layout", "place"],
     ["layout", "post"],

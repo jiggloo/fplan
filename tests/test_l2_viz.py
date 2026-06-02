@@ -8,6 +8,7 @@ platform detection mocked.
 
 from __future__ import annotations
 
+import copy
 import webbrowser
 from pathlib import Path
 
@@ -525,3 +526,156 @@ def test_viz_from_own_rates_overwrites_canonical(tmp_path, monkeypatch) -> None:
     r = runner.invoke(app, ["rates", "viz", "r", "--from", str(rd / "rates.yaml")])
     assert r.exit_code == 0
     assert (rd / "viz" / "rates-timeline.html").exists()
+
+
+# --- flatten diff view (post output) ---------------------------------------
+
+# A rates-post-shaped dict: the RATES timeline with flattened production
+# characteristics plus a `post:` diagnostics block (auto-detected → diff view).
+POST = copy.deepcopy(RATES)
+POST["post"] = {
+    "method": "tube",
+    "source": "rates.yaml",
+    "schema": "provisional-rates-mirror",
+    "summary": {
+        "items_scored": 2,
+        "revisits": 1,
+        "orig_segments": 3,
+        "revisits_saved": 2,
+        "self_stockouts": 0,
+        "deficit_lines": 1,
+    },
+    "per_item": {
+        "iron-plate": {
+            "revisits": 1,
+            "orig_segments": 3,
+            "self_stockouts": 0,
+            "excluded": False,
+            "total_units": 200.0,
+        }
+    },
+    "deficits": [
+        {
+            "step": 0,
+            "label": "automation",
+            "time": 10.0,
+            "recipe": "automation-science-pack",
+            "input": "iron-plate",
+            "short": 12.0,
+            "short_time": 6.0,
+            "made": 88.0,
+            "required": 100.0,
+        }
+    ],
+}
+
+
+def test_build_flatten_dataset_injects_orig_and_diagnostics() -> None:
+    ds = viz.build_flatten_dataset(POST, RATES)
+    assert ds["view"] == "flatten"
+    assert ds["flatten_method"] == "tube"
+    assert ds["has_orig"] is True
+    assert ds["revisits"]["iron-plate"] == 1
+    assert len(ds["deficits"]) == 1
+    # The original rate is injected as `orig` for the faint overlay.
+    assert ds["steps"][0]["rates"]["iron-plate"]["orig"] == 2.0
+
+
+def test_build_flatten_dataset_without_source() -> None:
+    ds = viz.build_flatten_dataset(POST, None)
+    assert ds["has_orig"] is False
+    assert ds["view"] == "flatten"  # still renders, just no overlay
+
+
+def test_render_flatten_html_diff_view() -> None:
+    html = viz.render_flatten_html(viz.build_flatten_dataset(POST, RATES))
+    assert "<h1>L2 rate flattening</h1>" in html
+    assert "overlayKey" in html  # the diff overlay series
+    assert 'id="chart-net"' not in html  # single panel
+    assert "Unmet inputs" in html  # the deficit-table panel
+    assert "faint = original, solid = flattened (tube)" in html
+
+
+def test_flatten_view_injection_closed() -> None:
+    p = "</script><img src=x onerror=alert(1)>"
+    post: dict = copy.deepcopy(POST)
+    post["scenario"] = p
+    # Fresh block (avoids chained indexing into an inferred-`object` value) with
+    # the payload in every flatten-specific sink: method, label, recipe, input.
+    post["post"] = {
+        "method": p,
+        "source": "rates.yaml",
+        "schema": "provisional-rates-mirror",
+        "summary": {
+            "items_scored": 1,
+            "revisits": 1,
+            "orig_segments": 2,
+            "revisits_saved": 1,
+            "self_stockouts": 0,
+            "deficit_lines": 1,
+        },
+        "per_item": {p: {"revisits": 1}},
+        "deficits": [
+            {
+                "step": 0,
+                "label": p,
+                "time": 0.0,
+                "recipe": p,
+                "input": p,
+                "short": 5.0,
+                "short_time": 6.0,
+                "made": 1.0,
+                "required": 2.0,
+            }
+        ],
+    }
+    src: dict = copy.deepcopy(RATES)
+    src["scenario"] = p
+    html = viz.render_flatten_html(viz.build_flatten_dataset(post, src))
+    # No raw breakout; the dataset JSON is </-escaped.
+    assert "</script><img" not in html
+    assert "<\\/script>" in html
+    # Nothing executable leaks into the static body before the data block.
+    body_pre = html.split("const DATA =")[0].split("<body")[1]
+    assert "<img" not in body_pre and p not in body_pre
+
+
+# --- rates viz CLI: auto-detect the flatten view ---------------------------
+
+
+def test_viz_autodetects_post_block(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run(tmp_path)  # writes rates.yaml (the overlay source)
+    (rd / "rates-post.yaml").write_text(yaml.safe_dump(POST))
+    r = runner.invoke(app, ["rates", "viz", "r", "--from", str(rd / "rates-post.yaml")])
+    assert r.exit_code == 0, r.stdout + (r.stderr or "")
+    tl = rd / "viz" / "rates-post-timeline.html"
+    assert tl.exists()
+    # The flatten view has no companion heatmap.
+    assert not (rd / "viz" / "rates-post-heatmap.html").exists()
+    html = tl.read_text()
+    assert "<h1>L2 rate flattening</h1>" in html and "Unmet inputs" in html
+
+
+def test_viz_post_dry_run_reports_flatten_view(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run(tmp_path)
+    (rd / "rates-post.yaml").write_text(yaml.safe_dump(POST))
+    r = runner.invoke(
+        app,
+        ["rates", "viz", "r", "--from", str(rd / "rates-post.yaml"), "--dry-run"],
+    )
+    assert r.exit_code == 0
+    assert "flatten diff view" in r.stdout
+    assert "rates-post-timeline.html" in r.stdout
+    assert "heatmap" not in r.stdout  # no heatmap promised for a post file
+    assert not (rd / "viz").exists()
+
+
+def test_viz_post_missing_source_notes_no_overlay(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run(tmp_path, with_rates=False)  # no rates.yaml → no overlay source
+    (rd / "rates-post.yaml").write_text(yaml.safe_dump(POST))
+    r = runner.invoke(app, ["rates", "viz", "r", "--from", str(rd / "rates-post.yaml")])
+    assert r.exit_code == 0
+    assert "original-rate overlay omitted" in (r.stdout + (r.stderr or ""))

@@ -154,6 +154,25 @@ first with `fplan init` (see
   the legend's facility-count breakdown). The `viz/` outputs are ephemeral
   (gitignored like the rest of the run directory — here `examples/runs/steelaxe/`).
 
+- **L2 post** — flatten a solved `rates.yaml` into the layout-stage input and
+  auto-generate the diff visualization. Needs the game model (the unmet-input
+  diagnostics and the `mrp` method use the recipe graph), so it runs here rather
+  than in CI:
+
+  ```bash
+  cd examples
+  ../.venv/bin/fplan --config-file ../.fplan-config.yaml rates post steelaxe --force
+  ../.venv/bin/fplan rates viz steelaxe --from runs/steelaxe/rates-post.yaml
+  ```
+
+  Confirm `rates post` writes `rates-post.yaml` (with a `post:` block) and
+  `viz/rates-post-timeline.html`, and prints a revisits summary. The second
+  command regenerates the diff view *without* a model (a pure render of the post
+  file + its source `rates.yaml`) — it auto-detects the flatten view from the
+  `post:` block. `rates-post.yaml` and `viz/` are ephemeral; `rates post` also
+  grows the tracked `examples/runs/steelaxe/manifest.yaml` with a `post:` block,
+  so `git checkout examples/runs/steelaxe/manifest.yaml` afterward to discard it.
+
 ## Development
 
 Install the dev toolchain (above) and the pre-commit hooks:

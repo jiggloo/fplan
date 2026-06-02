@@ -593,7 +593,9 @@ function buildLegend() {
       sw.style.background = DATA.colors[item];
       const nm = document.createElement("span");
       nm.className = "name";
-      nm.textContent = item;
+      // Flatten view annotates each item with its revisit count (↻N).
+      nm.textContent = (DATA.revisits && DATA.revisits[item] != null)
+        ? item + "  ↻" + DATA.revisits[item] : item;
       row.appendChild(cb);
       row.appendChild(sw);
       row.appendChild(nm);
@@ -673,6 +675,15 @@ function dataYRange(spec) {
             : 0;
         yMin = Math.min(yMin, v);
         yMax = Math.max(yMax, v);
+        // A diff chart (flatten view) overlays a second series per item;
+        // size the y-range to both so neither curve clips.
+        if (spec.overlayKey) {
+          const ov = step.rates[item]?.[spec.overlayKey];
+          if (ov !== null && ov !== undefined) {
+            yMin = Math.min(yMin, ov);
+            yMax = Math.max(yMax, ov);
+          }
+        }
       }
     }
   }
@@ -815,6 +826,27 @@ function renderChart(spec) {
   linesGroup.setAttribute("clip-path", `url(#${clipId})`);
   for (const item of visible) {
     if (!inChart(item, spec.id)) continue;
+    // Overlay series (flatten diff): a faint step function drawn first so
+    // the solid primary line paints on top of it.
+    if (spec.overlayKey) {
+      let od = "", st = false;
+      for (const step of DATA.steps) {
+        const ov = step.rates[item]?.[spec.overlayKey];
+        if (ov === null || ov === undefined) continue;
+        od += (st ? "L" : "M") + xScale(step.t0).toFixed(2) + "," + yScale(ov).toFixed(2) + " ";
+        od += "L" + xScale(step.t1).toFixed(2) + "," + yScale(ov).toFixed(2) + " ";
+        st = true;
+      }
+      if (od) {
+        const op = document.createElementNS(ns, "path");
+        op.setAttribute("class", "item-line");
+        op.setAttribute("d", od);
+        op.setAttribute("stroke", DATA.colors[item]);
+        op.setAttribute("stroke-width", "1");
+        op.setAttribute("opacity", "0.30");
+        linesGroup.appendChild(op);
+      }
+    }
     const pts = [];
     if (spec.key === "count") {
       // Linear-connect through (t0, count_start), (t1, count_end) per step.
@@ -846,6 +878,7 @@ function renderChart(spec) {
     path.setAttribute("class", "item-line");
     path.setAttribute("d", d);
     path.setAttribute("stroke", DATA.colors[item]);
+    if (spec.overlayKey) path.setAttribute("stroke-width", "2");
     linesGroup.appendChild(path);
   }
   g.appendChild(linesGroup);
@@ -874,12 +907,55 @@ function highlightNav() {
   }
 }
 
+// --- bottom panel: unmet-input table (flatten diff view) ---
+// Replaces the per-step detail table when DATA.view === "flatten". Lists every
+// (step, consuming recipe, input item) where the flattened plan's running-total
+// production has fallen behind the raw requirement (buffer-aware). All
+// data-derived text is esc()-escaped; the only un-escaped interpolations are
+// server-generated color strings (DATA.colors / the grey fallback).
+function renderDeficits(t, title) {
+  const defs = DATA.deficits || [];
+  title.textContent = `Unmet inputs — ${defs.length} lines `
+    + `(running-total produced < required, buffer-aware · method ${esc(DATA.flatten_method)})`;
+  const head = document.createElement("thead");
+  head.innerHTML = "<tr><th>time</th>"
+    + "<th style='text-align:left'>step</th>"
+    + "<th style='text-align:left'>consuming recipe</th>"
+    + "<th style='text-align:left'>input item</th>"
+    + "<th>short (units)</th><th>short (time)</th>"
+    + "<th>made (total)</th><th>required (total)</th></tr>";
+  t.appendChild(head);
+  const body = document.createElement("tbody");
+  if (defs.length === 0) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="8" style="text-align:center;color:#10b981;padding:8px">`
+      + `No unmet inputs — running-total production meets the raw requirement everywhere.</td>`;
+    body.appendChild(tr);
+  }
+  for (const d of defs) {
+    const tr = document.createElement("tr");
+    if (d.step === selectedStepIdx) tr.style.background = "#dbeafe";
+    const rsw = DATA.colors[d.recipe] || "#9ca3af";
+    const isw = DATA.colors[d.input] || "#9ca3af";
+    tr.innerHTML = `<td>${fmtTime(d.time)}</td>`
+      + `<td style="text-align:left">${d.step} ${esc(d.label)}</td>`
+      + `<td style="text-align:left"><span class="swatch" style="background:${rsw}"></span>${esc(d.recipe)}</td>`
+      + `<td style="text-align:left"><span class="swatch" style="background:${isw}"></span>${esc(d.input)}</td>`
+      + `<td>${fmt(d.short)}</td>`
+      + `<td>${d.short_time == null ? "—" : fmtTime(d.short_time)}</td>`
+      + `<td>${fmt(d.made)}</td><td>${fmt(d.required)}</td>`;
+    body.appendChild(tr);
+  }
+  t.appendChild(body);
+}
+
 // --- details table ---
 function renderDetails() {
   highlightNav();
   const t = document.getElementById("details-table");
   const title = document.getElementById("details-title");
   t.innerHTML = "";
+  if (DATA.view === "flatten") { renderDeficits(t, title); return; }
   if (selectedStepIdx === null) {
     title.textContent = "Click a chart to select a step";
     return;
@@ -1098,6 +1174,9 @@ window.addEventListener("DOMContentLoaded", () => {
     setAllVisibility(item => DATA.visible_default.includes(item)));
   // Render initial.
   renderAllCharts();
+  // The flatten view's bottom panel (unmet inputs) is global, not
+  // step-scoped, so populate it on load rather than waiting for a click.
+  if (DATA.view === "flatten") renderDetails();
   // Re-render on resize.
   window.addEventListener("resize", () => { renderAllCharts(); });
 });
@@ -1209,6 +1288,9 @@ def render_html(
                 "key": c["key"],
                 "label": c["label"],
                 "stepFn": c["step_fn"],
+                # Optional second series drawn faint under the primary line
+                # (the flatten diff overlays the original rate).
+                **({"overlayKey": c["overlay_key"]} if c.get("overlay_key") else {}),
             }
             for c in charts
         ]
@@ -1226,6 +1308,110 @@ def render_html(
     # another placeholder, so untrusted title/meta text can't reintroduce a
     # later token like __DATA_JSON__ (chained .replace() would).
     return _PLACEHOLDER_RE.sub(lambda m: repl[m.group(0)], HTML_TEMPLATE)
+
+
+# -- Flatten diff view ---------------------------------------------------
+#
+# The flatten view reuses the timeline template via render_html() with a
+# single-panel spec (an overlay chart) and a `flatten` dataset that swaps the
+# step-detail table for the unmet-input table. It is a PURE renderer of a
+# `rates-post.yaml` (the flattened series + the persisted `post:` diagnostics)
+# plus the source `rates.yaml` (the original series for the faint overlay) —
+# no game model, no re-flattening. Detected by the `post:` block in the file.
+
+# Single overlay panel: solid = flattened (the post file's prod), faint =
+# original (injected as `orig` from the source solve). `pane_title` is
+# completed with the method by render_flatten_html().
+FLATTEN_CHARTS = [
+    {
+        "id": "chart-prod",
+        "key": "prod",
+        "label": "flattened rate",
+        "step_fn": True,
+        "overlay_key": "orig",
+        "pane_title": "Production rate — faint = original, solid = flattened",
+    },
+]
+
+
+def build_flatten_dataset(
+    post_l2: dict, source_l2: dict | None = None, *, data_dir: Path | None = None
+) -> dict:
+    """Build the dataset for the flatten diff view from a ``rates-post.yaml``
+    dict (``post_l2``) and, optionally, its source ``rates.yaml`` dict
+    (``source_l2``) for the faint original-rate overlay.
+
+    The post file's per-step production rate is already the *flattened* series
+    (it becomes the solid line); the source's rate is injected per (step, item)
+    as ``orig`` (the faint overlay). The revisit counts and unmet-input lines
+    come straight from the persisted ``post:`` block — no recomputation.
+    """
+    ds = build_dataset(post_l2, data_dir=data_dir)
+    post = post_l2.get("post") or {}
+
+    has_orig = False
+    if isinstance(source_l2, dict):
+        src_steps = source_l2.get("steps", []) or []
+        for i, step_rec in enumerate(ds["steps"]):
+            if i >= len(src_steps):
+                break
+            srates = step_rec["rates"]
+            for it in src_steps[i].get("items", []) or []:
+                name = it.get("name")
+                if name in srates:
+                    srates[name]["orig"] = float(it.get("production_rate_per_s") or 0.0)
+                    has_orig = True
+
+    per_item = post.get("per_item") or {}
+    ds["view"] = "flatten"
+    ds["flatten_method"] = post.get("method", "?")
+    ds["flatten_summary"] = post.get("summary") or {}
+    ds["revisits"] = {
+        k: v.get("revisits")
+        for k, v in per_item.items()
+        if isinstance(v, dict) and v.get("revisits") is not None
+    }
+    ds["deficits"] = post.get("deficits") or []
+    ds["has_orig"] = has_orig
+    return ds
+
+
+def _flatten_meta_parts(dataset: dict, method: str) -> list[str]:
+    summ = dataset.get("flatten_summary") or {}
+    parts = [
+        f"scenario={dataset['scenario']}",
+        f"mode={dataset['mode']}",
+        f"method={method}",
+    ]
+    if summ:
+        parts.append(
+            f"revisits={summ.get('revisits')} (was {summ.get('orig_segments')}, "
+            f"-{summ.get('revisits_saved')})"
+        )
+        parts.append(f"self-stockouts={summ.get('self_stockouts')}")
+    parts.append(f"deficit-lines={len(dataset.get('deficits') or [])}")
+    parts.append(f"total={dataset['total_time']:.1f}s")
+    return parts
+
+
+def render_flatten_html(dataset: dict, *, method: str | None = None) -> str:
+    """Render the flatten diff HTML for a dataset from ``build_flatten_dataset``."""
+    method = method or dataset.get("flatten_method", "?")
+    charts = [
+        dict(
+            FLATTEN_CHARTS[0],
+            pane_title=(
+                f"Production rate — faint = original, solid = flattened ({method})"
+            ),
+        )
+    ]
+    return render_html(
+        dataset,
+        charts=charts,
+        heading="L2 rate flattening",
+        title=f"{dataset['scenario']} flatten ({method})",
+        meta=" · ".join(_flatten_meta_parts(dataset, method)),
+    )
 
 
 # -- CLI -----------------------------------------------------------------
