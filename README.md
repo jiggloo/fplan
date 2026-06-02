@@ -2,10 +2,10 @@
 
 Factorio production and placement planner.
 
-> **Status: early scaffolding.** The project is being assembled incrementally —
-> this repository currently establishes the structure, conventions, and
-> packaging baseline that later work builds on. No planning functionality is
-> wired up yet.
+> **Status: early scaffolding.** The CLI command surface is complete and
+> navigable, but most stages are stubs being migrated incrementally — the
+> structure, conventions, and packaging baseline are in place ahead of the
+> planning logic that fills them in.
 
 fplan is **clone-first**: the documentation and example/reference material live
 in the repository and come with a `git clone`. Start with this README, then see
@@ -24,15 +24,30 @@ python3 -m venv .venv
 
 ## Usage
 
-The project is early scaffolding; the only thing wired up so far is the package
-version:
+The CLI is the primary interface. Installing the package puts `fplan` on your
+PATH. Run it with no arguments to see the working directory it operates from,
+and `--help` to explore the command tree:
+
+```bash
+fplan                 # prints the working directory
+fplan --help          # the full command tree
+fplan tech-order --help
+```
+
+The command tree mirrors the planning pipeline — `tech-order` (L1), `rates`
+(L2), `map`, `layout` (L3), `execution` (L4), plus `inspect`, `init`, and
+`full-run`. The surface is complete, but the stages are being migrated
+incrementally: a command that isn't built yet prints a clear notice and exits
+with a reserved code rather than failing cryptically. Two codes distinguish the
+states — **70** (exists in the source project but not yet ported) and **71**
+(planned but not yet implemented) — so scripts can tell them apart.
+Artifact-producing commands also accept `--dry-run`.
+
+The package version is also importable directly:
 
 ```bash
 .venv/bin/python -c "import fplan; print(fplan.__version__)"
 ```
-
-The planning pipeline (and its command-line interface) lands in subsequent
-tiers.
 
 ## Testing
 
