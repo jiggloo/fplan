@@ -13,6 +13,9 @@ techs_researched:
 # base) from a reference TAS run. L1 ignores this block; L2 solves in time
 # relative to this t0.
 initial_state:
+  # The snapshot is NOT at t=0: it's the world after ~3m12s of Zaspar's WR TAS:
+  # https://www.youtube.com/watch?v=fkmRd5uJoKI&t=192s
+  # Accepts "M:SS" or a number of seconds.
   timestamp: "3:12"
   items:
     burner-mining-drill: 30

@@ -1,6 +1,4 @@
-# Default Factorio victory: launch a rocket from a rocket-silo.
-# Since Factorio 0.17 there is no payload requirement — the launch
-# itself is the win condition, no satellite needed.
+# Default Factorio 1.1 victory: launch a rocket from a rocket-silo.
 #
 # This file is the consolidated "what I want to achieve" expression:
 # the bare victory condition + personal build preferences (supporting
@@ -17,21 +15,20 @@ name: default-victory
 techs_researched:
   - fast-inserter
   - research-speed-2  # research-speed-1 is a transitive prereq; closure picks it up
-  - steel-axe         # +100% character mining speed (no item form, tech-only buff)
+  - steel-axe         # +100% character mining speed
 items_produced:
   beacon: 20
   speed-module: 40        # 2 per beacon × 20 beacons ringing the silo
   productivity-module: 4  # the silo's 4 module slots
-rocket_launches: 1   # 1 launch, no payload (bare-int form)
+rocket_launches: 1   # 1 launch, no payload
 
 # L2+ inputs: world-state at t₀. Numbers below are from a reference
 # TAS run; same snapshot is shared by steelaxe.yaml so the two goals
 # can be compared from a common starting point. L1 ignores this block.
 initial_state:
-  # The snapshot is NOT at t=0: it's the world after ~3m12s of hand-play
-  # (crafting the seeded burner-drill / stone-furnace base). L2 solves in
-  # time relative to this t₀; the visualizer shifts the displayed timeline
-  # by it. Accepts "M:SS" or a number of seconds.
+  # The snapshot is NOT at t=0: it's the world after ~3m12s of Zaspar's WR TAS:
+  # https://www.youtube.com/watch?v=fkmRd5uJoKI&t=192s
+  # Accepts "M:SS" or a number of seconds.
   timestamp: "3:12"
   items:
     burner-mining-drill: 30
@@ -58,7 +55,7 @@ initial_state:
 # closing the LP-relaxation cheat where the silo was fractionalized
 # to ~0.37 units amortized across the build step.
 #
-# Beacons are foundation for future speed-module-3 boosting of the
+# Beacons are foundation for future speed-module boosting of the
 # silo; the constraint exists so the layout plan has them already
 # placed before modules become operational.
 #
