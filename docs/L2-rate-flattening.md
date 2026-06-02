@@ -20,8 +20,10 @@ input**. Two things are intentionally temporary and must not be relied on:
    isn't decided yet; we're still characterizing the L2→L3 data.
 2. **The output *schema* is temporary too.** It mirrors the `rates.yaml`
    schema (same step/item shape) with the *flattened* production
-   characteristics substituted in, plus a sibling `post:` metadata block.
-   This is a placeholder chosen because it's the format we already have.
+   characteristics substituted in, plus a sibling `post:` metadata block
+   (tagged `schema: provisional-rates-mirror`, the marker `rates viz`
+   auto-detects). This is a placeholder chosen because it's the format we
+   already have.
 
 Concretely, `post` rewrites **production only** — each item's
 `production_rate_per_s` and `produced` become the flattened values;
@@ -159,8 +161,10 @@ them is the follow-up repair stage's / L3's job.
 viz --from rates-post.yaml` regenerates it on demand. The viz is a **pure
 renderer**: it reads the flattened series and the persisted `post:`
 diagnostics from `rates-post.yaml` plus the original series from the
-referenced source `rates.yaml` (the `post.source` field) — **no model
-load, no re-flattening**. It reuses the timeline template with a single
+referenced source `rates.yaml` (the `post.source` field) — **no
+re-flattening**, and the game model is loaded only *best-effort* (to
+enrich the legend's facility counts), so it still works without a Factorio
+install. It reuses the timeline template with a single
 overlay panel (faint = original, solid = flattened) and swaps the
 step-detail table for the unmet-input table; the legend annotates each
 item with its `↻N` revisit count.

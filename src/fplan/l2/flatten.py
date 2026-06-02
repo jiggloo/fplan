@@ -552,13 +552,33 @@ def build_post_yaml(l2: dict, result: FlattenResult, *, source_ref: str) -> dict
     t = result.t
     for k, s in enumerate(out.get("steps", []) or []):
         dur = (t[k + 1] - t[k]) if (k + 1) < len(t) else 0.0
-        for it in s.get("items", []):
-            fl = result.flats.get(it["name"])
-            if fl is None or k >= len(fl.flat_rate):
+        items = s.setdefault("items", [])
+        by_name = {it.get("name"): it for it in items}
+        for name, fl in result.flats.items():
+            if k >= len(fl.flat_rate):
                 continue
             rate = fl.flat_rate[k]
-            it["production_rate_per_s"] = rate
-            it["produced"] = rate * dur
+            row = by_name.get(name)
+            if row is None:
+                # The solve omits an item from a step when it has no activity
+                # and zero inventory there; but the flattener (notably `mrp`,
+                # which reshapes by propagated consumer demand) can want to
+                # produce it in that step. Without a row those units would be
+                # silently dropped from the artifact — breaking area
+                # conservation. Synthesize a production-only row (consumption /
+                # inventory default to zero: the item had no presence here).
+                if rate <= EPS_RATE:
+                    continue
+                row = {
+                    "name": name,
+                    "consumption_rate_per_s": 0.0,
+                    "consumed": 0.0,
+                    "count_start": 0.0,
+                    "count_end": 0.0,
+                }
+                items.append(row)
+            row["production_rate_per_s"] = rate
+            row["produced"] = rate * dur
 
     out["post"] = {
         "method": result.method,

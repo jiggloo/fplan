@@ -172,6 +172,52 @@ def test_post_yaml_is_yaml_roundtrippable(model: GameModel) -> None:
     assert reloaded["post"]["method"] == "chord"
 
 
+def test_build_post_yaml_synthesizes_missing_rows_to_conserve_area() -> None:
+    # Regression: the solve omits an item from a step where it had no activity;
+    # if the flattener (notably mrp) wants to produce it there, build_post_yaml
+    # must synthesize a row rather than silently drop those units.
+    l2 = {
+        "initial_time_s": 0.0,
+        "steps": [
+            {
+                "label": "s0",
+                "duration_s": 10.0,
+                "items": [
+                    {
+                        "name": "gear",
+                        "produced": 50.0,
+                        "production_rate_per_s": 5.0,
+                        "consumption_rate_per_s": 0.0,
+                        "consumed": 0.0,
+                        "count_start": 0.0,
+                        "count_end": 50.0,
+                    }
+                ],
+            },
+            {"label": "s1", "duration_s": 10.0, "items": []},  # gear omitted here
+        ],
+    }
+    fr = F.FlatResult("gear")
+    fr.flat_rate = [3.0, 2.0]  # the flattener wants 2/s in the omitted step
+    fr.total_units = 50.0
+    res = F.FlattenResult(
+        method="mrp", t=[0.0, 10.0, 20.0], flats={"gear": fr}, deficits=[]
+    )
+    post = F.build_post_yaml(l2, res, source_ref="rates.yaml")
+
+    s1 = post["steps"][1]["items"]
+    assert any(
+        it["name"] == "gear" and it["produced"] == pytest.approx(20.0) for it in s1
+    )
+    total = sum(
+        float(it.get("produced") or 0.0)
+        for s in post["steps"]
+        for it in s["items"]
+        if it["name"] == "gear"
+    )
+    assert total == pytest.approx(50.0)  # area conserved in the written artifact
+
+
 # --- documented method invariants (hermetic; example rates.yaml are gitignored
 # artifacts absent in CI, so these use a hand-built banking case instead) ------
 

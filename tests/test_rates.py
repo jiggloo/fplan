@@ -15,6 +15,7 @@ from typer.testing import CliRunner
 from fplan import run as run_mod
 from fplan.cli import app
 from fplan.cli import main as cli_main
+from fplan.cli import rates as rates_cli
 from fplan.model import GameModel, build_game_data, load_model
 
 runner = CliRunner()
@@ -792,7 +793,51 @@ def test_post_from_override_still_writes_canonical(
     assert r.exit_code == 0
     out = rd / "rates-post.yaml"
     assert out.exists()
-    assert yaml.safe_load(out.read_text())["post"]["source"] == str(cand)
+    # source is recorded run-dir-relative (so the overlay resolves under the post
+    # file's dir and a crafted ../ traversal can't be stored).
+    assert (
+        yaml.safe_load(out.read_text())["post"]["source"] == "rates-search/seed-9.yaml"
+    )
+
+
+def test_post_open_invokes_helper(tmp_path, monkeypatch, use_fixture_model) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run_with_rates(tmp_path)
+    called: dict = {}
+    monkeypatch.setattr(
+        rates_cli, "_open_in_browser", lambda p: called.setdefault("p", p)
+    )
+    r = runner.invoke(app, ["rates", "post", "r", "--open"])
+    assert r.exit_code == 0
+    assert called["p"].name == "rates-post-timeline.html"
+
+
+def test_post_open_with_no_viz_notes_noop(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run_with_rates(tmp_path)
+    r = runner.invoke(app, ["rates", "post", "r", "--no-viz", "--open"])
+    assert r.exit_code == 0
+    assert "--open has no effect with --no-viz" in r.stdout
+
+
+def test_post_viz_failure_still_writes_data(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    # A viz render failure must not lose the data output or fail the command.
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run_with_rates(tmp_path)
+    from fplan.l2 import viz as l2_viz
+
+    def _boom(*a, **k):
+        raise ValueError("render exploded")
+
+    monkeypatch.setattr(l2_viz, "render_flatten_html", _boom)
+    r = runner.invoke(app, ["rates", "post", "r"])
+    assert r.exit_code == 0  # data still written, exit 0
+    assert (rd / "rates-post.yaml").exists()
+    assert "could not render viz" in (r.stdout + (r.stderr or ""))
 
 
 def test_post_existing_without_force_refuses(

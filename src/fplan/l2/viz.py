@@ -938,7 +938,7 @@ function renderDeficits(t, title) {
     const rsw = DATA.colors[d.recipe] || "#9ca3af";
     const isw = DATA.colors[d.input] || "#9ca3af";
     tr.innerHTML = `<td>${fmtTime(d.time)}</td>`
-      + `<td style="text-align:left">${d.step} ${esc(d.label)}</td>`
+      + `<td style="text-align:left">${esc(d.step)} ${esc(d.label)}</td>`
       + `<td style="text-align:left"><span class="swatch" style="background:${rsw}"></span>${esc(d.recipe)}</td>`
       + `<td style="text-align:left"><span class="swatch" style="background:${isw}"></span>${esc(d.input)}</td>`
       + `<td>${fmt(d.short)}</td>`

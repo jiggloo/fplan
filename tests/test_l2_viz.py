@@ -617,7 +617,7 @@ def test_flatten_view_injection_closed() -> None:
         "per_item": {p: {"revisits": 1}},
         "deficits": [
             {
-                "step": 0,
+                "step": p,  # attacker-controlled on the --from path → must be esc()'d
                 "label": p,
                 "time": 0.0,
                 "recipe": p,

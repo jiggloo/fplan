@@ -165,6 +165,11 @@ first with `fplan init` (see
   ../.venv/bin/fplan rates viz steelaxe --from runs/steelaxe/rates-post.yaml
   ```
 
+  `rates-post.yaml` is the **provisional** L2→L3 input — both its role and its
+  schema are temporary while L2→L3 is explored (see
+  [L2 rate-flattening](docs/L2-rate-flattening.md)); don't build anything
+  downstream that assumes the schema is stable.
+
   Confirm `rates post` writes `rates-post.yaml` (with a `post:` block) and
   `viz/rates-post-timeline.html`, and prints a revisits summary. The second
   command regenerates the diff view *without* a model (a pure render of the post

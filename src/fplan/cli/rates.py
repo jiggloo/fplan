@@ -768,9 +768,16 @@ def post(
         cli_main.confirm_overwrite_or_exit(out_path)
 
     # source ref recorded in the post block so `rates viz` can find the original
-    # series for the faint overlay: a bare name when it sits beside the output,
-    # else the path as given.
-    source_ref = RATES_NAME if from_path is None else str(from_path)
+    # series for the faint overlay. Stored relative to the run dir so it resolves
+    # (and stays confined) under the post file's directory; a --from outside the
+    # run dir falls back to its basename (overlay then degrades gracefully).
+    if from_path is None:
+        source_ref = RATES_NAME
+    else:
+        try:
+            source_ref = str(from_path.resolve().relative_to(run_dir.resolve()))
+        except ValueError:
+            source_ref = from_path.name
     try:
         result = l2_flatten.flatten(l2, method=method, model=model)
         post_yaml = l2_flatten.build_post_yaml(l2, result, source_ref=source_ref)
@@ -806,7 +813,10 @@ def post(
         f"unmet-inputs={summary['deficit_lines']}"
     )
 
-    if not no_viz:
+    if no_viz:
+        if open_browser:
+            typer.echo("note: --open has no effect with --no-viz (nothing to open).")
+    else:
         from fplan.l2 import viz as l2_viz
 
         data_dir = None
@@ -887,21 +897,28 @@ def _open_in_browser(path: Path) -> None:
 def _read_overlay_source(post: dict, post_file: Path) -> dict | None:
     """Best-effort load of the original solve referenced by a post block's
     ``source`` — the faint original-rate overlay in the flatten diff view.
-    Resolved relative to the post file's directory (the canonical layout:
-    rates.yaml beside rates-post.yaml), with an as-given fallback. Any failure
-    → None, so the diff still renders, just without the original line."""
+
+    ``post.source`` is attacker-controlled on the ``--from`` path, so resolution
+    is **confined to the post file's own directory**: a crafted ``../../etc/...``
+    or absolute path resolves outside and is refused (no arbitrary file read).
+    The canonical layout (rates.yaml beside rates-post.yaml, or an in-run
+    candidate like rates-search/seed-N.yaml) stays within it. Any miss → None,
+    so the diff still renders, just without the original line."""
     ref = post.get("source")
     if not isinstance(ref, str) or not ref:
         return None
-    p = Path(ref)
-    candidates = [p] if p.is_absolute() else [post_file.parent / p, p]
-    for c in candidates:
-        try:
-            if c.exists():
-                data = yaml.safe_load(c.read_text())
-                return data if isinstance(data, dict) else None
-        except (OSError, yaml.YAMLError):
-            return None
+    base = post_file.parent.resolve()
+    candidate = (base / ref).resolve()  # absolute ref discards base → caught below
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        return None  # escapes the post file's directory
+    try:
+        if candidate.exists():
+            data = yaml.safe_load(candidate.read_text())
+            return data if isinstance(data, dict) else None
+    except (OSError, yaml.YAMLError):
+        return None
     return None
 
 

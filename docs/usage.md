@@ -412,8 +412,9 @@ post-processed file renders the diff view instead of the timeline —
 
 This regeneration is a **pure render** — it reads the flattened series and the
 persisted `post:` diagnostics, plus the original series from the referenced
-source `rates.yaml`; **no model load, no re-flattening** (so it works without a
-Factorio install). It has no companion heatmap (capacity is unchanged by
+source `rates.yaml`; **no re-flattening**, and the model is loaded only
+best-effort (to enrich the legend's facility counts), so it works without a
+Factorio install. It has no companion heatmap (capacity is unchanged by
 flattening).
 
 ### `run`
