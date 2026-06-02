@@ -1,15 +1,20 @@
 # L2 rate-flattening (`fplan rates post`)
 
+> **Scope.** `fplan rates post` is the L2 → L3 (layout-stage) post-processing
+> stage and is still under development — it is expected to grow more
+> operations. This document covers its **current** operation: rate-flattening.
+> Don't read "post" as a synonym for "flatten"; flattening is one thing post
+> does today.
+
 **What this is.** A *post-solve* transform of an L2 output (`rates.yaml`)
 that estimates how few times a TAS player must revisit an assembler to
 re-allocate machines, by replacing each item's jagged per-step production
 rate with the smoothest constant-rate-per-segment schedule that still
 meets every deadline. It does **not** change the solve or `t_FINAL`; it
 reshapes production in time and reports where smoothing is possible and,
-crucially, where it is *not*. It is the logic behind `fplan rates post`
-— the L2 → L3 (layout-stage) format-conversion step. The math lives in
-`fplan.l2.flatten`; the diff visualization is rendered by `fplan.l2.viz`
-and auto-detected by `fplan rates viz`.
+crucially, where it is *not*. The math lives in `fplan.l2.flatten`; the
+diff visualization is rendered by `fplan.l2.viz` and auto-detected by
+`fplan rates viz`.
 
 ## Provisional by design
 
@@ -76,19 +81,23 @@ only at step boundaries, so the tube constraint at boundaries is **exact**.
 
 ## Three flattening rules (`--method`)
 
-- **`tube`** (default) — the Euclidean **taut string** through the tube
+The CLI default is **`chord`** — it collapses to the fewest revisits (the
+headline metric), and its self-stockouts are surfaced as the unmet-input
+report (the informative payload, not a bug). `tube` is the zero-stockout,
+strictly-feasible alternative.
+
+- **`chord`** (default) — the first-instinct rule: straight chords between
+  consecutive surplus-zero deadlines (and the endpoints), **ignoring the
+  tube**. Fewest revisits, but a chord can dip below `R` (self-stockout)
+  *or* rise above `P_orig` (impossible front-loading); both are counted and
+  reported. `tube` has zero self-stockouts by construction, `chord` does not.
+
+- **`tube`** — the Euclidean **taut string** through the tube
   `[R, P_orig]` from `(t0, 0)` to `(tN, P[N])`. The smoothest feasible
   schedule that **neither stocks out (≥ R) nor front-loads past causality
   (≤ P_orig)**. A shortest path in a corridor turns only at corners, so it
   is computed exactly as a DAG shortest path over the gate corners (N ~ 48
   ⇒ trivially fast). #revisits = #segments of the taut string.
-
-- **`chord`** — the first-instinct rule: straight chords between
-  consecutive surplus-zero deadlines (and the endpoints), **ignoring the
-  tube**. Kept only as a cautionary baseline: a chord can dip below `R`
-  (self-stockout) *or* rise above `P_orig` (impossible front-loading). The
-  tool counts self-stockouts per item; `tube` has zero by construction,
-  `chord` does not.
 
 - **`mrp`** — cross-dependency flattening (MRP-style). Smoothing starts at
   science (whose demand is exogenous research draw) and propagates

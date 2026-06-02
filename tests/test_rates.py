@@ -747,7 +747,7 @@ def test_post_writes_output_viz_and_manifest(
     out = rd / "rates-post.yaml"
     assert out.exists()
     doc = yaml.safe_load(out.read_text())
-    assert doc["post"]["method"] == "tube"
+    assert doc["post"]["method"] == "chord"  # default
     assert doc["post"]["source"] == "rates.yaml"
     # Production flattened (10,0 → 5,5); inventory passes through.
     assert doc["steps"][0]["items"][0]["production_rate_per_s"] == pytest.approx(5.0)
@@ -757,7 +757,7 @@ def test_post_writes_output_viz_and_manifest(
     assert not (rd / "viz" / "rates-post-heatmap.html").exists()
 
     m = run_mod.load(rd)
-    assert m.extra["post"]["method"] == "tube"
+    assert m.extra["post"]["method"] == "chord"
     assert "summary" in m.extra["post"]
 
 

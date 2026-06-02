@@ -21,9 +21,9 @@ group = typer.Typer(help="L2 — production rates.", no_args_is_help=True)
 SEARCH_DIRNAME = "rates-search"
 SEARCH_SUMMARY = "summary.yaml"
 RATES_NAME = "rates.yaml"
-# The post-processed (flattened) L2 output — the provisional L3 input. Same
-# rates schema as RATES_NAME plus a `post:` diagnostics block (auto-detected by
-# `rates viz` to switch to the diff view).
+# The post-processed L2 output — the provisional L3 input (current operation:
+# rate-flattening). Same rates schema as RATES_NAME plus a `post:` diagnostics
+# block (which `rates viz` auto-detects to pick the matching view).
 POST_NAME = "rates-post.yaml"
 # Inclusive upper bound for a random SCIP seed; shared by single-solve and
 # search so both draw from the same [1, SEED_MAX] range.
@@ -665,8 +665,8 @@ MethodOpt = Annotated[
     str,
     typer.Option(
         "--method",
-        help="Flattening rule: tube (taut-string, default) | chord (baseline) | "
-        "mrp (cross-dependency).",
+        help="Rate-flattening method (post's current operation): chord (default) | "
+        "tube (taut-string) | mrp (cross-dependency).",
     ),
 ]
 PostFromOpt = Annotated[
@@ -679,7 +679,7 @@ PostFromOpt = Annotated[
 ]
 NoVizOpt = Annotated[
     bool,
-    typer.Option("--no-viz", help="Skip auto-generating the diff visualization."),
+    typer.Option("--no-viz", help="Skip auto-generating the visualization."),
 ]
 
 
@@ -687,7 +687,7 @@ NoVizOpt = Annotated[
 def post(
     ctx: typer.Context,
     run: PostRunArg,
-    method: MethodOpt = "tube",
+    method: MethodOpt = "chord",
     from_path: PostFromOpt = None,
     no_viz: NoVizOpt = False,
     open_browser: OpenVizOpt = False,
@@ -696,14 +696,18 @@ def post(
 ) -> None:
     """Post-process a solved rates.yaml into the layout-stage (L3) input.
 
-    Flattens each item's per-step production rate to the smoothest schedule that
-    still meets every deadline — minimizing assembler revisits (real TAS
-    player-time) without producing ahead of causality. Writes
-    runs/<run>/rates-post.yaml: the same (PROVISIONAL) rates schema with the
-    flattened production characteristics, plus a `post:` block carrying the
-    method, source, and the per-item / unmet-input diagnostics. By default it
-    also auto-generates the diff visualization (original vs flattened + the
-    unmet-input table); regenerate it later with `rates viz --from`.
+    `rates post` is the L2→L3 post-processing stage; it's still under
+    development and will grow more operations. Its *current* operation is
+    **rate-flattening**: replacing each item's per-step production rate with the
+    smoothest schedule that still meets every deadline — minimizing assembler
+    revisits (real TAS player-time) without producing ahead of causality.
+
+    Writes runs/<run>/rates-post.yaml: the same (PROVISIONAL) rates schema with
+    the post-processed production characteristics, plus a `post:` block carrying
+    the operation's settings, source, and per-item / unmet-input diagnostics. By
+    default it also auto-generates a visualization (for the current operation, a
+    flattening diff: original vs flattened + the unmet-input table); regenerate
+    it later with `rates viz --from`.
 
     The output is the temporary L2→L3 input and its schema is temporary too —
     it mirrors rates.yaml only because L3's format isn't decided yet. Don't
@@ -959,8 +963,7 @@ def viz(
         typer.echo(f"error: rates file not found: {src}{hint}", err=True)
         raise typer.Exit(code=1)
 
-    # Load the YAML up front: it both validates the shape and selects the view
-    # (a `post:` block ⇒ the flatten diff view, else the timeline).
+    # Load the YAML up front: it both validates the shape and selects the view.
     try:
         l2 = yaml.safe_load(src.read_text())
     except (OSError, yaml.YAMLError) as exc:
@@ -971,7 +974,16 @@ def viz(
             f"error: {src} is not a valid rates YAML (expected a mapping)", err=True
         )
         raise typer.Exit(code=1)
-    is_flatten = isinstance(l2.get("post"), dict)
+    # View selection: a `post:` block recording a flattening operation → the
+    # flatten diff view; otherwise the timeline. We key off the recorded method
+    # (not merely the block's presence) so that future, non-flatten post
+    # operations get their own view rather than being mis-rendered as a diff.
+    from fplan.l2 import flatten as l2_flatten
+
+    post_block = l2.get("post")
+    is_flatten_diff = (
+        isinstance(post_block, dict) and post_block.get("method") in l2_flatten.METHODS
+    )
 
     viz_dir = run_dir / "viz"
     stem = src.stem  # rates.yaml → "rates", rates-post.yaml → "rates-post"
@@ -979,10 +991,10 @@ def viz(
     heatmap_path = viz_dir / f"{stem}-heatmap.html"
     # The flatten diff view has no companion heatmap (capacity is unchanged by
     # flattening); --no-heatmap is moot there.
-    want_heatmap = not no_heatmap and not is_flatten
+    want_heatmap = not no_heatmap and not is_flatten_diff
 
     if dry_run:
-        view = "flatten diff view" if is_flatten else "timeline"
+        view = "flatten diff view" if is_flatten_diff else "timeline"
         typer.echo(f"(dry run) would read {src} ({view}) and write:")
         typer.echo(f"  {timeline_path}")
         if want_heatmap:
@@ -999,9 +1011,10 @@ def viz(
 
     try:
         viz_dir.mkdir(parents=True, exist_ok=True)
-        if is_flatten:
+        if is_flatten_diff:
             # Pure render of the post file + its source (for the faint original
-            # overlay): no model re-load, no re-flattening.
+            # overlay): no re-flattening; model load stays best-effort (legend
+            # facility counts only), per the no-install guarantee.
             source_l2 = _read_overlay_source(l2["post"], src)
             dataset = l2_viz.build_flatten_dataset(l2, source_l2, data_dir=data_dir)
             timeline_path.write_text(l2_viz.render_flatten_html(dataset))
@@ -1023,7 +1036,7 @@ def viz(
 
     for p in outputs:
         typer.echo(f"✓ wrote {p}")
-    if is_flatten and not dataset.get("has_orig"):
+    if is_flatten_diff and not dataset.get("has_orig"):
         typer.echo(
             "note: original-rate overlay omitted — source rates not found "
             f"(post.source = {l2['post'].get('source')!r})"

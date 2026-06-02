@@ -1,6 +1,9 @@
-"""L2 rate-flattening — the post-solve transform behind ``fplan rates post``.
+"""L2 rate-flattening — the *current* operation of ``fplan rates post``.
 
-Reads an L2 solve output (``rates.yaml``) and, for each produced item, computes
+``rates post`` is the L2→L3 post-processing stage (still under development; it
+will grow more operations). This module implements its current one: rate-
+flattening. Reads an L2 solve output (``rates.yaml``) and, for each produced item,
+computes
 the smoothest constant-rate-per-segment production schedule that still meets
 every deadline. The headline per-item metric is **#revisits** = the number of
 distinct constant-rate segments the schedule collapses to — each rate change is
@@ -543,10 +546,11 @@ def build_post_yaml(l2: dict, result: FlattenResult, *, source_ref: str) -> dict
     PROVISIONAL by design: this is the temporary L2→L3 input, and its schema is
     temporary too — it mirrors the ``rates.yaml`` shape only because L3's
     preferred format isn't decided yet (see ``docs/L2-rate-flattening.md`` and
-    issue #25). Post rewrites *production* only; consumption / inventory columns
-    pass through unchanged from the solve (the divergence between flattened
-    production and the solve's inventory is exactly what the unmet-input report
-    quantifies). Don't build anything downstream that assumes this is stable.
+    issue #25). The flattening operation rewrites *production* only; consumption /
+    inventory columns pass through unchanged from the solve (the divergence
+    between flattened production and the solve's inventory is exactly what the
+    unmet-input report quantifies). Don't build anything downstream that assumes
+    this is stable.
     """
     out = copy.deepcopy(l2)
     t = result.t

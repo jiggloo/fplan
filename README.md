@@ -154,10 +154,11 @@ first with `fplan init` (see
   the legend's facility-count breakdown). The `viz/` outputs are ephemeral
   (gitignored like the rest of the run directory — here `examples/runs/steelaxe/`).
 
-- **L2 post** — flatten a solved `rates.yaml` into the layout-stage input and
-  auto-generate the diff visualization. Needs the game model (the unmet-input
-  diagnostics and the `mrp` method use the recipe graph), so it runs here rather
-  than in CI:
+- **L2 post** — post-process a solved `rates.yaml` into the layout-stage input
+  and auto-generate the visualization. `post` is the L2→L3 stage (still under
+  development); its current operation is rate-flattening. Needs the game model
+  (the unmet-input diagnostics and the `mrp` method use the recipe graph), so it
+  runs here rather than in CI:
 
   ```bash
   cd examples
