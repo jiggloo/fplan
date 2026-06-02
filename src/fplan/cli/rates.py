@@ -12,6 +12,7 @@ from typing import Annotated
 import typer
 import yaml
 
+from fplan.cli._log import echo_settings
 from fplan.cli._options import DryRun
 
 group = typer.Typer(help="L2 — production rates.", no_args_is_help=True)
@@ -321,6 +322,37 @@ def solve(
         "node_limit": node_limit,
     }
 
+    # Surface the effective settings (so omitting an optional flag is transparent).
+    settings: list[tuple[str, str, bool]] = [
+        ("mode", mode, mode == "experimental"),
+        (
+            "time-limit",
+            f"{time_limit_s:g}s" if time_limit_s is not None else "none",
+            time_limit_s is None,
+        ),
+        (
+            "gap",
+            f"{gap_limit:g}" if gap_limit is not None else "none",
+            gap_limit is None,
+        ),
+        ("deployment", "off" if no_deployment else "on", not no_deployment),
+        ("player-time", "off" if no_player_time else "on", not no_player_time),
+        (
+            "config",
+            "default" if config_ref == "default" else str(l2_config),
+            config_ref == "default",
+        ),
+    ]
+    # Advanced knobs: list only when set (their default is "unset").
+    for name, val in (
+        ("stall-nodes", stall_nodes),
+        ("node-limit", node_limit),
+        ("max-area-fraction", max_area_fraction),
+    ):
+        if val is not None:
+            settings.append((name, f"{val:g}", False))
+    echo_settings(settings)
+
     if chosen_seeds is not None:
         _run_search(
             run_dir=run_dir,
@@ -381,9 +413,17 @@ def _run_single(
     if not force:
         cli_main.confirm_overwrite_or_exit(out_path)
 
+    provided = seed is not None
     if seed is None:
         seed = random.randint(1, SEED_MAX)
-    typer.echo(f"SCIP seed: {seed}  (re-pass --seed {seed} to reproduce)")
+    typer.echo(
+        f"SCIP seed: {seed} "
+        + (
+            "(from --seed)"
+            if provided
+            else f"(random — pass --seed {seed} to reproduce)"
+        )
+    )
 
     try:
         sol, _m, _handles = l2_solve.solve(inst, model, **solver_kwargs, seed=seed)
@@ -764,6 +804,14 @@ def post(
         )
         raise typer.Exit(code=1)
 
+    echo_settings(
+        [
+            ("method", method, method == "chord"),
+            ("source", src.name, from_path is None),
+            ("viz", "off" if no_viz else "on", not no_viz),
+        ]
+    )
+
     # The model is REQUIRED here (unlike viz): the unmet-input diagnostics and
     # the mrp dependency graph both need the recipe→ingredient map.
     model = cli_main.load_model_or_exit(state.config_file)
@@ -1003,6 +1051,14 @@ def viz(
         if want_heatmap:
             typer.echo(f"  {heatmap_path}")
         return
+
+    settings: list[tuple[str, str, bool]] = [
+        ("source", src.name, from_path is None),
+        ("view", "flatten-diff" if is_flatten_diff else "timeline", False),
+    ]
+    if not is_flatten_diff:
+        settings.append(("heatmap", "off" if no_heatmap else "on", not no_heatmap))
+    echo_settings(settings)
 
     # Best-effort model load: enrich the legend with facility counts if a valid
     # data_dir is configured; otherwise render from the YAML alone.

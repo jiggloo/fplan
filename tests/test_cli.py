@@ -85,6 +85,22 @@ def test_leaf_exits_with_reserved_stub_code(
     assert result.exit_code == expected_code
 
 
+# Each unbuilt command's --help must state its status, so the boundary of "what
+# works today" is visible in the tool itself (no separate capability matrix to
+# keep in sync). Drift-guarded: every stub in LEAVES is checked.
+STUB_TAGS = {
+    EXIT_NOT_MIGRATED: "(pending migration)",
+    EXIT_NOT_IMPLEMENTED: "(not implemented)",
+}
+
+
+@pytest.mark.parametrize("argv, expected_code", LEAVES)
+def test_stub_help_states_its_status(argv: list[str], expected_code: int) -> None:
+    result = runner.invoke(app, [*argv, "--help"])
+    assert result.exit_code == 0
+    assert STUB_TAGS[expected_code] in result.stdout
+
+
 @pytest.mark.parametrize("argv", DRY_RUN_OK)
 def test_dry_run_flag_is_accepted(argv: list[str]) -> None:
     # --dry-run is a recognized option (not a usage error / exit code 2).

@@ -42,7 +42,7 @@ def _warn_if_untested() -> None:
 
 @group.command("from-string")
 def from_string(ctx: typer.Context, dry_run: DryRun = False) -> None:
-    """Build a map artifact from a Factorio map-exchange string."""
+    """Build a map artifact from a Factorio map-exchange string. (not implemented)"""
     not_implemented(ctx)
 
 

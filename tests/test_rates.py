@@ -178,6 +178,54 @@ def test_solve_success_grows_manifest(tmp_path, monkeypatch, use_fixture_model) 
     assert m.extra["l2"]["config"] == "default"
 
 
+def _patch_fake_solve(monkeypatch) -> None:
+    from fplan.l2 import solve as l2_solve
+
+    monkeypatch.setattr(l2_solve, "solve", _fake_solve())
+    monkeypatch.setattr(l2_solve, "write_solution", lambda *a, **k: None)
+
+
+def test_solve_surfaces_effective_settings_and_random_seed(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    _patch_fake_solve(monkeypatch)
+    r = runner.invoke(app, ["rates", "solve", "r", "--force"])  # no --seed
+    assert r.exit_code == 0
+    assert "settings: " in r.stdout
+    assert "mode=experimental (default)" in r.stdout
+    assert "time-limit=none (default)" in r.stdout
+    # An omitted --seed still surfaces the chosen value, reproducibly.
+    assert "random — pass --seed" in r.stdout
+
+
+def test_solve_seed_from_flag_is_labelled(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    _patch_fake_solve(monkeypatch)
+    r = runner.invoke(app, ["rates", "solve", "r", "--seed", "7", "--force"])
+    assert "SCIP seed: 7 (from --seed)" in r.stdout
+
+
+def test_solve_settings_reflect_overrides(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    _patch_fake_solve(monkeypatch)
+    r = runner.invoke(
+        app,
+        ["rates", "solve", "r", "--time-limit-s", "30", "--no-player-time", "--force"],
+    )
+    assert "time-limit=30s" in r.stdout and "player-time=off" in r.stdout
+    # An overridden value is not marked (default); only the unset ones are.
+    seg = r.stdout.split("time-limit=30s", 1)[1].split("·", 1)[0]
+    assert "(default)" not in seg
+
+
 def test_solve_records_config_ref(tmp_path, monkeypatch, use_fixture_model) -> None:
     monkeypatch.chdir(tmp_path)
     _make_run(tmp_path)
@@ -759,6 +807,17 @@ def test_post_writes_output_viz_and_manifest(
     m = run_mod.load(rd)
     assert m.extra["post"]["method"] == "chord"
     assert "summary" in m.extra["post"]
+
+
+def test_post_surfaces_effective_settings(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run_with_rates(tmp_path)
+    r = runner.invoke(app, ["rates", "post", "r", "--no-viz"])
+    assert r.exit_code == 0
+    assert "settings: method=chord (default)" in r.stdout
+    assert "source=rates.yaml (default)" in r.stdout and "viz=off" in r.stdout
 
 
 def test_post_no_viz(tmp_path, monkeypatch, use_fixture_model) -> None:

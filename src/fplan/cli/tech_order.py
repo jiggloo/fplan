@@ -10,6 +10,7 @@ import yaml
 
 from fplan import goals, refs
 from fplan import tech_order as ordering
+from fplan.cli._log import echo_settings
 from fplan.cli._options import DryRun
 from fplan.cli._stub import not_implemented
 
@@ -56,6 +57,7 @@ def build(
     if not scenario.exists():
         typer.echo(f"error: scenario file not found: {scenario}", err=True)
         raise typer.Exit(code=1)
+    echo_settings([("method", method, method == "forward")])
     try:
         goal = goals.load(scenario)
     except (OSError, ValueError, yaml.YAMLError) as exc:
@@ -167,5 +169,5 @@ def verify(ctx: typer.Context, order: OrderArg, scenario: ScenarioOpt = None) ->
 
 @group.command()
 def viz(ctx: typer.Context) -> None:
-    """Render the tech order (layers / DAG)."""
+    """Render the tech order (layers / DAG). (not implemented)"""
     not_implemented(ctx)
