@@ -121,6 +121,10 @@ def require_binary(config: FplanConfig) -> Path:
         raise ConfigError(
             f"configured Factorio executable does not exist: {config.binary}"
         )
+    if not config.binary.is_file():
+        raise ConfigError(
+            f"configured Factorio executable is not a file: {config.binary}"
+        )
     return config.binary.resolve()
 
 

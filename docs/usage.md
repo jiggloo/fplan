@@ -54,8 +54,9 @@ scripts can tell them apart:
 | `70` | Exists in the source project (factorio_explore) but not yet ported |
 | `71` | Planned but not yet implemented |
 
-Artifact-producing commands also accept `--dry-run`, which reports what would
-happen without doing it.
+Commands that take a side-effecting action (write an artifact, create the config
+file, run a stage) also accept `--dry-run`, which reports what would happen
+without doing it.
 
 ## Configuration
 
@@ -94,8 +95,9 @@ git-ignored; the committed `.example` file is the documentation.
 ## `map` — map artifacts
 
 A *map artifact* is a single self-describing YAML bundle (seed, map-gen
-settings, resource patches, oil fields, water bodies, tree count) describing the
-world around spawn, so a map can be reproduced and inspected from the file alone.
+settings, probe radius, resource patches, oil fields, water bodies, tree count)
+describing the world around spawn, so a map can be reproduced and inspected from
+the file alone.
 
 ### `map from-save`
 
@@ -132,3 +134,8 @@ seed=1063559207  radius=512
   30 water bodies (nearest at 49.7)
   4244 trees
 ```
+
+### `map from-string`
+
+Building an artifact from a Factorio map-exchange string is planned but not yet
+implemented — `fplan map from-string` currently exits with code `71`.

@@ -174,6 +174,13 @@ def test_read_result_missing_output(tmp_path: Path) -> None:
         extract._read_result(tmp_path)
 
 
+def test_read_result_malformed_json(tmp_path: Path) -> None:
+    # A truncated/garbled dump must surface as ExtractError, not a raw traceback.
+    (tmp_path / extract.OUTPUT_NAME).write_text('{"seed": 1, "patches": [')
+    with pytest.raises(extract.ExtractError, match="unreadable"):
+        extract._read_result(tmp_path)
+
+
 def test_resolve_script_output_macos(monkeypatch) -> None:
     monkeypatch.setattr(factorio, "current_platform", lambda: "darwin")
     out = extract._resolve_script_output()

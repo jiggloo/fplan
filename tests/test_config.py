@@ -135,6 +135,14 @@ def test_require_binary_missing_path_raises(tmp_path: Path) -> None:
         cfg.require_binary(conf)
 
 
+def test_require_binary_directory_raises(tmp_path: Path) -> None:
+    # A config pointing the binary at a directory gets a clear ConfigError
+    # rather than a downstream Popen OSError/traceback.
+    conf = cfg.FplanConfig(data_dir=None, binary=tmp_path, source=None)
+    with pytest.raises(cfg.ConfigError, match="is not a file"):
+        cfg.require_binary(conf)
+
+
 def test_require_binary_ok_resolves(tmp_path: Path) -> None:
     binary = tmp_path / "factorio"
     binary.touch()

@@ -2,8 +2,8 @@
 --
 -- On tick 1: forces a square of chunks centered on spawn to generate, walks
 -- resources and water tiles, dumps a JSON snapshot via game.write_file, then
--- writes a sentinel file. The orchestrator (l3_map.py) polls for the sentinel
--- and SIGTERMs Factorio once it appears (Factorio Lua has no exit()).
+-- writes a sentinel file. The orchestrator (fplan's map extractor) polls for the
+-- sentinel and SIGTERMs Factorio once it appears (Factorio Lua has no exit()).
 
 local RADIUS = 512  -- tiles from (0,0); change here if a wider sweep is needed.
 

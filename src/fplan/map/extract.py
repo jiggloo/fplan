@@ -123,7 +123,12 @@ def _read_result(script_output: Path) -> dict:
         raise ExtractError(f"extract mod errored: {error_file.read_text().strip()}")
     if not output_file.exists():
         raise ExtractError("sentinel appeared but no JSON output was found")
-    return json.loads(output_file.read_text())
+    try:
+        return json.loads(output_file.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        # A truncated/garbled dump (e.g. disk full mid-write) must surface as a
+        # clean `error:` line, not a traceback escaping past from_save's handler.
+        raise ExtractError(f"extract output was unreadable: {exc}") from exc
 
 
 def extract(*, save: Path, binary: Path, timeout_s: float = 180.0) -> dict:
