@@ -169,5 +169,5 @@ def verify(ctx: typer.Context, order: OrderArg, scenario: ScenarioOpt = None) ->
 
 @group.command()
 def viz(ctx: typer.Context) -> None:
-    """Render the tech order (layers / DAG)."""
+    """Render the tech order (layers / DAG). (not implemented)"""
     not_implemented(ctx)

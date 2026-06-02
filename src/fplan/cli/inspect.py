@@ -74,11 +74,11 @@ def tech(ctx: typer.Context, name: NameArg = None, pattern: FilterOpt = None) ->
 
 @group.command()
 def item(ctx: typer.Context) -> None:
-    """Browse items."""
+    """Browse items. (pending migration)"""
     not_migrated(ctx)
 
 
 @group.command()
 def recipe(ctx: typer.Context) -> None:
-    """Browse recipes."""
+    """Browse recipes. (pending migration)"""
     not_migrated(ctx)

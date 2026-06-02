@@ -4,6 +4,17 @@ Most of fplan is covered by the automated suite (`pytest`), which runs in CI
 against captured fixtures. This file is the home for the checks that can't —
 **manual** for now, and the place to document integration testing as it grows.
 
+## Table of Contents
+
+- [Manual integration tests](#manual-integration-tests)
+  - [Setup](#setup)
+  - [Game model load](#game-model-load)
+  - [Map extraction](#map-extraction)
+  - [L2 solve](#l2-solve)
+  - [L2 viz](#l2-viz)
+  - [L2 post](#l2-post)
+  - [Cleanup](#cleanup)
+
 ## Manual integration tests
 
 Some functionality needs a **real Factorio installation** and can't run in CI —

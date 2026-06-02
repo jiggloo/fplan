@@ -73,6 +73,9 @@ Three authored **inputs** feed the stages, and a **run** ties a specific
 combination together. These are the words fplan uses precisely (each maps to a
 [top-level directory](#repository-layout)):
 
+- **run** — one *execution* of the L2→L4 pipeline: binds a scenario, a
+  tech-order, and a map in `runs/<name>/` (described by a `manifest.yaml`) and
+  collects each stage's output there. → `runs/`
 - **scenario** — the *problem*: the world you start from and the world you want
   — a `GoalState` (techs to research, items to produce, rockets to launch) plus
   an optional `initial_state` (what exists at t₀). → `scenarios/`
@@ -81,9 +84,6 @@ combination together. These are the words fplan uses precisely (each maps to a
   built from, not the scenario's content. → `tech-orders/`
 - **map** — the *environment*: resources, water, and oil around spawn, from a
   Factorio seed/save. Orthogonal to the scenario. → `maps/`
-- **run** — one *execution* of the L2→L4 pipeline: binds a scenario, a
-  tech-order, and a map in `runs/<name>/` (described by a `manifest.yaml`) and
-  collects each stage's output there. → `runs/`
 
 So scenario, tech-order, and map are **reusable inputs** that exist on their own
 (one scenario → many tech-orders → many runs); a **run** ties a specific
@@ -114,8 +114,13 @@ Install the dev toolchain (above) and the pre-commit hooks:
 ```
 
 Each commit then auto-runs the hygiene, lint/format (ruff), and secret-detection
-checks. The two checks pre-commit doesn't cover — run them yourself before
-pushing:
+checks on the staged files — or run them across the whole repo at any time:
+
+```bash
+.venv/bin/pre-commit run --all-files
+```
+
+The two checks pre-commit doesn't cover — run them yourself before pushing:
 
 ```bash
 .venv/bin/mypy       # type-check
