@@ -22,15 +22,39 @@ python3 -m venv .venv
 .venv/bin/pip install -e .
 ```
 
-## Usage
+## Quickstart
 
-The CLI is the primary interface. After installing into the virtualenv (above),
-invoke it via `.venv/bin/fplan` (or activate the venv and type `fplan`):
+Go from a fresh clone to a solved plan and an interactive visualization in a few
+commands. The CLI is the primary interface; invoke it via `.venv/bin/fplan` (or
+activate the venv with `source .venv/bin/activate` and type `fplan`).
+
+After [installing](#install) into the virtualenv, from the repository root:
 
 ```bash
-.venv/bin/fplan                 # working directory + config status
+# 1. Detect Factorio and copy the bundled examples into the working directory.
+.venv/bin/fplan init --copy-examples
+
+# 2. Solve the steelaxe example's production rates (L2) — runs SCIP for ≤120s.
+.venv/bin/fplan rates solve steelaxe --seed 1 --time-limit-s 120
+
+# 3. Render the result as interactive HTML and open it.
+.venv/bin/fplan rates viz steelaxe --open
+```
+
+That's it — `viz` writes a zoomable timeline + a capacity-saturation heatmap
+under `runs/steelaxe/viz/` and opens the timeline. No `cd` needed:
+`--copy-examples` drops the example scenarios, tech-orders, maps, and run
+manifests into the current directory, and every command resolves from there.
+
+**A solve needs a real Factorio install** (for the game model); `init` detects
+it (or writes a template to fill in — see [Configuration](docs/usage.md#configuration)).
+`rates viz` itself runs without Factorio.
+
+Orient yourself any time with:
+
+```bash
+.venv/bin/fplan                 # where am I, and is Factorio configured?
 .venv/bin/fplan --help          # the full command tree
-.venv/bin/fplan init            # create the config file
 ```
 
 The command tree mirrors the planning pipeline — `tech-order` (L1), `rates`

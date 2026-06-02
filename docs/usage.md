@@ -89,6 +89,22 @@ never overwrites an existing file — delete it to regenerate. Auto-detection is
 only verified on macOS today; on Windows/Linux it warns and you should check the
 paths it writes.
 
+Add `--copy-examples` to also copy the bundled example **scenarios**,
+**tech-orders**, **maps**, and **run manifests** into the current directory:
+
+```bash
+.venv/bin/fplan init --copy-examples
+```
+
+This seeds the working directory so you can solve a run immediately without
+changing directories — e.g. `fplan rates solve steelaxe`. It copies into
+`scenarios/`, `tech-orders/`, `maps/`, and `runs/<run>/manifest.yaml`, **never
+overwriting** files already there (your edits are safe), and reports how many it
+copied. The flag is independent of writing the config — it still copies if the
+config already exists, so you can run it on its own. (A run's per-run solve
+outputs aren't copied; regenerate those with `rates solve`.) See the
+[Quickstart](../README.md#quickstart).
+
 Selecting a non-default config file:
 
 ```bash
