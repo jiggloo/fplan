@@ -1,0 +1,60 @@
+level: 1
+produced_by: fplan tech-order build
+method: forward
+goal:
+  name: default-victory
+  techs_researched:
+  - fast-inserter
+  - research-speed-2
+  - steel-axe
+  items_produced:
+    beacon: 20.0
+    productivity-module: 4.0
+    speed-module: 40.0
+  rocket_launches: 1.0
+tech_count: 43
+layer_count: 15
+layers:
+- - automation
+  - logistic-science-pack
+  - logistics
+  - steel-processing
+- - advanced-material-processing
+  - electronics
+  - engine
+  - logistics-2
+  - steel-axe
+- - automation-2
+  - fast-inserter
+  - railway
+- - concrete
+  - fluid-handling
+  - research-speed-1
+- - oil-processing
+  - research-speed-2
+- - flammables
+  - plastics
+  - sulfur-processing
+- - advanced-electronics
+  - battery
+- - chemical-science-pack
+  - modules
+- - advanced-electronics-2
+  - advanced-material-processing-2
+  - advanced-oil-processing
+  - low-density-structure
+  - productivity-module
+  - speed-module
+- - lubricant
+  - production-science-pack
+  - productivity-module-2
+  - rocket-fuel
+  - speed-module-2
+- - effect-transmission
+  - electric-engine
+  - productivity-module-3
+  - speed-module-3
+- - robotics
+- - utility-science-pack
+- - rocket-control-unit
+- - rocket-silo

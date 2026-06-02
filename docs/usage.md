@@ -11,7 +11,9 @@ are implemented.
 - [The command tree](#the-command-tree)
 - [Configuration](#configuration)
 - [Commands](#commands) (alphabetical by group)
+  - [`inspect`](#inspect)
   - [`map`](#map)
+  - [`tech-order`](#tech-order)
 
 ## Invoking the CLI
 
@@ -105,6 +107,34 @@ git-ignored; the committed `.example` file is the documentation.
 
 Per-group command reference, in alphabetical order.
 
+### `inspect`
+
+Browse the loaded game model. Needs the configured `data_dir`.
+
+#### `inspect tech`
+
+Show a technology's detail, or list technologies for discovery:
+
+```bash
+.venv/bin/fplan inspect tech steel-axe          # detail for one tech
+.venv/bin/fplan inspect tech --filter science   # list techs matching "science"
+.venv/bin/fplan inspect tech                     # list all tech names
+```
+
+The detail view shows the science-pack cost (or research trigger), prerequisites,
+the recipes the tech unlocks, and which techs require it (an essential tech is
+also flagged with an `*(essential)*` marker on the name line):
+
+```
+steel-axe
+  cost:          50 × (automation-science-packx1), 30s each
+  prerequisites: steel-processing
+  unlocks:       (no recipes)
+  required by:   (nothing)
+```
+
+`inspect item` and `inspect recipe` are not yet ported (exit 70).
+
 ### `map`
 
 A *map artifact* is a single self-describing YAML bundle (seed, map-gen
@@ -167,3 +197,64 @@ yield. All distances are tiles from spawn.
 
 Building an artifact from a Factorio map-exchange string is planned but not yet
 implemented — `fplan map from-string` currently exits with code `71`.
+
+### `tech-order`
+
+L1 — turn a scenario (a goal) into a layered technology research order, and
+verify an order is a valid plan. Needs the configured `data_dir`.
+
+#### `tech-order build`
+
+Compute a research order from a scenario and write it as YAML. The output path
+is given explicitly with `--out` (required):
+
+```bash
+.venv/bin/fplan tech-order build examples/scenarios/steelaxe.yaml --out tech-orders/steelaxe.yaml
+.venv/bin/fplan tech-order build examples/scenarios/steelaxe.yaml --out o.yaml --method balanced
+.venv/bin/fplan tech-order build examples/scenarios/steelaxe.yaml --out o.yaml --dry-run
+```
+
+```
+Goal 'steelaxe': 3 techs across 2 layers — research order (layer 0 = earliest, last layer = goal asks)
+
+── Layer 0  (2 techs)
+   automation  [10 × (automation-science-packx1)]
+   steel-processing  [50 × (automation-science-packx1)]
+
+── Layer 1  (1 tech)
+   steel-axe  [50 × (automation-science-packx1)]
+
+→ tech-orders/steelaxe.yaml
+```
+
+- The scenario is a `GoalState` YAML — `techs_researched`, `items_produced`,
+  `rocket_launches` (a scenario file's L2 `initial_state`/`checkpoints` blocks
+  are ignored here). See [`examples/scenarios/`](../examples/scenarios/).
+- `--method` selects the ordering: `forward` (default; ASAP, goal last),
+  `from-goal` (ALAP, goal first), or `balanced` (slack-window midpoint).
+  **`forward` and `balanced` produce executable, verifiable plans;** `from-goal`
+  is a backward-planning *view* (goal first) that `verify` will reject — build
+  with `forward` for a plan you intend to verify or feed downstream.
+- `--out` is required and is not clobbered silently — an existing file prompts
+  to confirm (interactive) or refuses (non-interactive), protecting a
+  hand-edited order. `--dry-run` prints the order and writes nothing.
+- The output YAML carries an embedded `goal:` block that `verify` reads back.
+
+#### `tech-order verify`
+
+Check that a tech order is a valid research plan — every tech real and unique,
+the set equals the goal's required closure, and the linear order respects all
+prerequisites (extra techs and same-layer prereq pairs are non-fatal warnings):
+
+```bash
+.venv/bin/fplan tech-order verify examples/tech-orders/steelaxe.yaml
+.venv/bin/fplan tech-order verify my-order.yaml --scenario examples/scenarios/steelaxe.yaml
+```
+
+The goal is taken from the order's embedded `goal:` block by default, or from
+`--scenario PATH`. Exit `0` if valid, `1` if invalid.
+
+#### `tech-order viz`
+
+Rendering a tech order (layers / DAG) is planned but not yet implemented —
+`fplan tech-order viz` currently exits with code `71`.

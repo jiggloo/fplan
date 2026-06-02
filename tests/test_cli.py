@@ -19,8 +19,6 @@ GROUPS = ["tech-order", "rates", "map", "layout", "inspect", "execution"]
 
 # (argv, expected exit code) for every leaf command in the tree.
 LEAVES = [
-    (["tech-order", "build"], EXIT_NOT_MIGRATED),
-    (["tech-order", "verify"], EXIT_NOT_MIGRATED),
     (["tech-order", "viz"], EXIT_NOT_IMPLEMENTED),
     (["rates", "solve"], EXIT_NOT_MIGRATED),
     (["rates", "post"], EXIT_NOT_MIGRATED),
@@ -29,7 +27,6 @@ LEAVES = [
     (["layout", "place"], EXIT_NOT_MIGRATED),
     (["layout", "post"], EXIT_NOT_IMPLEMENTED),
     (["layout", "viz"], EXIT_NOT_MIGRATED),
-    (["inspect", "tech"], EXIT_NOT_MIGRATED),
     (["inspect", "item"], EXIT_NOT_MIGRATED),
     (["inspect", "recipe"], EXIT_NOT_MIGRATED),
     (["execution", "generate"], EXIT_NOT_IMPLEMENTED),
@@ -39,7 +36,6 @@ LEAVES = [
 
 # Commands that accept --dry-run.
 DRY_RUN_OK = [
-    ["tech-order", "build"],
     ["rates", "solve"],
     ["rates", "post"],
     ["map", "from-string"],
