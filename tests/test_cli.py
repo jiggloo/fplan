@@ -61,6 +61,14 @@ def test_bare_invocation_prints_working_directory() -> None:
     assert "working directory" in result.stdout
 
 
+def test_version_flag_prints_version() -> None:
+    from fplan import __version__
+
+    result = runner.invoke(app, ["--version"])
+    assert result.exit_code == 0
+    assert __version__ in result.stdout
+
+
 def test_root_help_lists_every_group() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0

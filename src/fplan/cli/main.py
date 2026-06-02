@@ -9,9 +9,11 @@ group (L1 ``tech-order`` → L4 ``execution``); cross-cutting commands (``init``
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
+from fplan import __version__
 from fplan.cli import execution, layout, rates, tech_order
 from fplan.cli import inspect as inspect_group
 from fplan.cli import map as map_group
@@ -31,8 +33,25 @@ app.add_typer(inspect_group.group, name="inspect")
 app.add_typer(execution.group, name="execution")
 
 
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"fplan {__version__}")
+        raise typer.Exit()
+
+
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context) -> None:
+def main(
+    ctx: typer.Context,
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            callback=_version_callback,
+            is_eager=True,
+            help="Show the version and exit.",
+        ),
+    ] = False,
+) -> None:
     """fplan — Factorio production and placement planner."""
     if ctx.invoked_subcommand is None:
         typer.echo(f"fplan working directory: {Path.cwd()}")
