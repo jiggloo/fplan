@@ -146,12 +146,22 @@ Print a text summary of an artifact:
 ```
 
 ```
-seed=1063559207  radius=512
-  51 solid resource patches
-  36 oil spots in 3 fields
-  30 water bodies (nearest at 49.7)
-  4244 trees
+seed=1063559207  radius=512 tiles
+resources: 51 patches across 5 types
+  coal: 8 patches, 9616 tiles total; nearest 29.1 tiles away (1201 tiles)
+  copper-ore: 11 patches, 11663 tiles total; nearest 55.9 tiles away (1143 tiles)
+  iron-ore: 12 patches, 11095 tiles total; nearest 47.8 tiles away (8242 tiles)
+  stone: 17 patches, 1720 tiles total; nearest 19.1 tiles away (33 tiles)
+  uranium-ore: 3 patches, 1636 tiles total; nearest 220.4 tiles away (974 tiles)
+oil: 36 spots in 3 fields; nearest field 201.0 tiles away; avg yield 1074%/spot
+water: 30 bodies; nearest 49.7 tiles away
+trees: 4244
 ```
+
+Each resource line gives the patch count, total tiles of that ore, and the
+distance to (plus size of) the nearest patch of that type. The oil line gives
+the nearest field's distance, the field count, and the average per-spot pumpjack
+yield. All distances are tiles from spawn.
 
 #### `map from-string`
 

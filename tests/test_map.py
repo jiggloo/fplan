@@ -115,16 +115,65 @@ def test_load_artifact_not_a_mapping(tmp_path: Path) -> None:
         artifact.load_artifact(p)
 
 
-def test_summarize_mentions_counts(raw_dump: dict) -> None:
+def test_summarize_breaks_down_by_resource(raw_dump: dict) -> None:
     data = cluster.postprocess(copy.deepcopy(raw_dump))
     text = artifact.summarize(data)
     assert f"seed={data['seed']}" in text
-    assert "oil spots" in text and "water bodies" in text and "trees" in text
+    # Per-type breakdown: each resource gets a line with count + total tiles +
+    # nearest-patch distance and size.
+    for resource in {p["resource"] for p in data["patches"]}:
+        assert f"{resource}:" in text
+    assert "tiles total" in text
+    assert "tiles away" in text  # distances are labelled in tiles
+    # Oil: nearest field + field count + average yield.
+    assert "fields;" in text and "nearest field" in text and "%/spot" in text
+    # Water: body count + nearest distance.
+    assert "bodies; nearest" in text and "trees:" in text
+
+
+def test_summarize_resource_line_is_accurate(raw_dump: dict) -> None:
+    data = cluster.postprocess(copy.deepcopy(raw_dump))
+    # Pick a resource and verify the numbers in its line.
+    iron = [p for p in data["patches"] if p["resource"] == "iron-ore"]
+    nearest = min(iron, key=lambda p: p["distance"])
+    total = sum(p["tile_count"] for p in iron)
+    text = artifact.summarize(data)
+    line = next(ln for ln in text.splitlines() if ln.strip().startswith("iron-ore:"))
+    assert f"{len(iron)} patch" in line
+    assert f"{total} tiles total" in line
+    assert f"{nearest['distance']:.1f} tiles away" in line
+    assert f"({nearest['tile_count']} tiles)" in line
+
+
+def test_summarize_singular_plural() -> None:
+    data = {
+        "seed": 1,
+        "radius": 10,
+        "patches": [{"resource": "coal", "tile_count": 5, "distance": 3.0}],
+        "oil_spots": [{"x": 0.0, "y": 0.0, "amount": 3000}],
+        "oil_clusters": [{"distance": 1.0, "spot_count": 1, "total_yield_pct": 100.0}],
+        "water_patches": [{"distance": 2.0}],
+        "water_min_distance": 2.0,
+        "tree_count": 1,
+    }
+    text = artifact.summarize(data)
+    assert "1 patch," in text  # singular, not "1 patchs"
+    assert "1 spot in 1 field" in text
+    assert "1 body;" in text
+
+
+def test_summarize_oil_without_clusters() -> None:
+    # A dump with oil spots but no oil_clusters (unclustered) still summarizes.
+    text = artifact.summarize(
+        {"seed": 1, "radius": 10, "oil_spots": [{"x": 0.0, "y": 0.0, "amount": 3000}]}
+    )
+    assert "oil: 1 spot" in text
+    assert "field" not in text  # no field/yield line without clusters
 
 
 def test_summarize_handles_missing_water() -> None:
     text = artifact.summarize({"seed": 1, "radius": 10})
-    assert "nearest at n/a" in text
+    assert "nearest n/a" in text
 
 
 # --------------------------------------------------------------------------- #
