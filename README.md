@@ -107,6 +107,22 @@ first with `fplan init` (see
   .venv/bin/fplan map show maps/save.yaml
   ```
 
+- **L2 solve** — the SCIP optimize needs the full model and is a per-seed primal
+  coin flip, so it's exercised here rather than in CI (the automated tests cover
+  the solver-*neutral* L2 layer — config, scenario, instance build, deployment —
+  against the fixture). Solve the committed example run in place:
+
+  ```bash
+  cd examples
+  ../.venv/bin/fplan --config-file ../.fplan-config.yaml \
+      rates solve fishminer --seed 1 --time-limit-s 600
+  ../.venv/bin/fplan run show fishminer        # artifacts: rates.yaml
+  ```
+
+  Confirm it reports a feasible `t_FINAL`, writes `rates.yaml`, and grows the
+  manifest's `l2:` block. (steelaxe is the quickest smoke; default-victory is the
+  full campaign and may need several seeds to land an incumbent.)
+
 ## Development
 
 Install the dev toolchain (above) and the pre-commit hooks:

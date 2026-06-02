@@ -13,6 +13,7 @@ are implemented.
 - [Commands](#commands) (alphabetical by group)
   - [`inspect`](#inspect)
   - [`map`](#map)
+  - [`rates`](#rates)
   - [`run`](#run)
   - [`tech-order`](#tech-order)
 
@@ -198,6 +199,70 @@ yield. All distances are tiles from spawn.
 
 Building an artifact from a Factorio map-exchange string is planned but not yet
 implemented — `fplan map from-string` currently exits with code `71`.
+
+### `rates`
+
+L2 — solve a run's production-rate plan with SCIP. `rates solve` is **run-aware**:
+it reads a run's manifest, solves, writes `runs/<run>/rates.yaml`, and records the
+L2 settings + outcome back into the manifest. Needs the configured `data_dir`.
+
+#### `rates solve`
+
+```bash
+.venv/bin/fplan run create steelaxe-exp \
+    --scenario scenarios/steelaxe.yaml \
+    --tech-order tech-orders/steelaxe.yaml \
+    --map maps/world.yaml
+.venv/bin/fplan rates solve steelaxe-exp --mode experimental --seed 7
+```
+
+- Reads the run manifest's **scenario / tech-order / map**, resolved relative to
+  the current working directory (matching `run show`).
+- Writes the per-step plan to `runs/<run>/rates.yaml` (durations, per-recipe
+  activity, energy, item flows with per-second rates + buffer seconds, capacity
+  utilization, mining/smelting assignments, fuel burn) and **grows the manifest**
+  with an `l2:` block: `mode`, `seed`, `objective_s`, `status`, `solve_time_s`,
+  and the config reference.
+- `--mode lower-bound|experimental|trapezoidal` (default `experimental`).
+- `--seed N` sets SCIP's randomization (a random seed is picked and printed if
+  omitted, so a good run replays exactly). Primal reliability is a coin flip per
+  seed; re-run with different seeds and keep the best (parallel multi-seed search
+  is a later addition).
+- `--l2-config PATH` deep-merges a tuning override over the packaged defaults —
+  see [the L2 config](#l2-tuning-config) below.
+- Solver controls: `--time-limit-s`, `--gap-limit`, `--stall-nodes`,
+  `--node-limit`. Modeling A/B: `--max-area-fraction`, `--no-deployment`,
+  `--no-player-time`.
+- `--dry-run` builds the instance and prints a summary without solving. An
+  existing `rates.yaml` is not clobbered silently (`--force` to overwrite).
+- Exit `0` if a feasible incumbent was found, non-zero otherwise.
+
+#### L2 tuning config
+
+L2's tunable values — per-building deployment packings, player-physics constants,
+spatial caps, the character stand-in, mode weights + bootstrap seeding, and the
+modeling-scope policy sets — live in a packaged default
+(`src/fplan/resources/l2-defaults.yaml`). A power user overrides any subset with
+`--l2-config PATH`; the file is **deep-merged** over the defaults, so you specify
+only the keys you want to change:
+
+```yaml
+# my-tuning.yaml — only the deltas
+caps:
+  burner_drill: 80
+deployment:
+  pumpjack:
+    tile_footprint: 18.0
+```
+
+Game-physics facts (boiler/rocket constants) and the SCIP random seed are not in
+the config — the former stay authoritative in code, the latter is a per-solve
+flag recorded in the manifest.
+
+#### `rates post` / `rates viz`
+
+Flattening the rates into the layout-stage input (`rates post`) and the
+capacity-saturation heatmap (`rates viz`) are not yet ported (exit `70`).
 
 ### `run`
 
