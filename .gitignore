@@ -30,5 +30,11 @@ htmlcov/
 !/maps/.gitkeep
 /runs/*
 !/runs/.gitkeep
+
+# examples/runs/ holds committed example run *manifests* — curated reference
+# material, like examples/maps/. The stage artifacts a run generates (rates,
+# layout, execution) are ephemeral, so only each run's manifest.yaml is tracked.
 /examples/runs/*
-!/examples/runs/.gitkeep
+!/examples/runs/*/
+/examples/runs/*/*
+!/examples/runs/*/manifest.yaml
