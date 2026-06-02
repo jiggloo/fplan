@@ -71,17 +71,8 @@ def from_save(
         return
 
     # Guard before the multi-minute Factorio run, not after: don't clobber an
-    # existing artifact silently. Confirm if we can prompt; refuse otherwise.
-    if out.exists():
-        if not cli_main._stdin_is_interactive():
-            typer.echo(
-                f"error: {out} already exists; remove it or choose another --out.",
-                err=True,
-            )
-            raise typer.Exit(code=1)
-        if not typer.confirm(f"{out} already exists. Overwrite?", default=False):
-            typer.echo("Aborted; nothing written.")
-            raise typer.Exit(code=0)
+    # existing artifact silently.
+    cli_main.confirm_overwrite_or_exit(out)
 
     binary = cli_main.factorio_binary_or_exit(state.config_file)
     typer.echo(f"Extracting map from {save.name} (running Factorio headless) ...")

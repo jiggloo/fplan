@@ -20,7 +20,13 @@ classifiers = [
 dynamic = ["version"]
 # Typer is a core dependency, not an optional extra: the CLI is the project's
 # primary human interface.
-dependencies = ["typer>=0.12,<1.0", "pyyaml>=6", "numpy>=1.26", "lupa>=2.0"]
+dependencies = [
+    "typer>=0.12,<1.0",
+    "pyyaml>=6",
+    "numpy>=1.26",
+    "lupa>=2.0",
+    "toposort>=1.10",
+]
 
 [project.scripts]
 fplan = "fplan.cli:app"
@@ -65,9 +71,9 @@ warn_unused_ignores = true
 warn_unused_configs = true
 no_implicit_optional = true
 
-# lupa (LuaJIT bindings) ships no type stubs.
+# lupa (LuaJIT bindings) and toposort ship no type stubs.
 [[tool.mypy.overrides]]
-module = "lupa"
+module = ["lupa", "toposort"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

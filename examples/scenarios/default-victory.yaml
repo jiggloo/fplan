@@ -1,0 +1,85 @@
+# Default Factorio victory: launch a rocket from a rocket-silo.
+# Since Factorio 0.17 there is no payload requirement — the launch
+# itself is the win condition, no satellite needed.
+#
+# This file is the consolidated "what I want to achieve" expression:
+# the bare victory condition + personal build preferences (supporting
+# techs to enable late-game ergonomics, plus a specific count of
+# beacons for the production setup).
+#
+# Style note: list `techs_researched` for things you want unlocked but
+# don't have a meaningful "how many" answer (inserters, belts, power
+# poles, etc. — anything an arbitrarily-large base uses). Use
+# `items_produced` only when an exact count is meaningful (beacons,
+# satellites, ...). At L1 the counts are inert; at L2+ they become
+# load-bearing production targets.
+name: default-victory
+techs_researched:
+  - fast-inserter
+  - research-speed-2  # research-speed-1 is a transitive prereq; closure picks it up
+  - steel-axe         # +100% character mining speed (no item form, tech-only buff)
+items_produced:
+  beacon: 20
+  speed-module: 40        # 2 per beacon × 20 beacons ringing the silo
+  productivity-module: 4  # the silo's 4 module slots
+rocket_launches: 1   # 1 launch, no payload (bare-int form)
+
+# L2+ inputs: world-state at t₀. Numbers below are from a reference
+# TAS run; same snapshot is shared by steelaxe.yaml so the two goals
+# can be compared from a common starting point. L1 ignores this block.
+initial_state:
+  # The snapshot is NOT at t=0: it's the world after ~3m12s of hand-play
+  # (crafting the seeded burner-drill / stone-furnace base). L2 solves in
+  # time relative to this t₀; the visualizer shifts the displayed timeline
+  # by it. Accepts "M:SS" or a number of seconds.
+  timestamp: "3:12"
+  items:
+    burner-mining-drill: 30
+    stone-furnace: 31
+    stone: 25
+    iron-plate: 63
+    copper-plate: 15
+    automation-science-pack: 4
+    wood: 44
+  techs_researched: []
+
+# Intermediate-state checkpoints. Each carves out a new step at the
+# point where the named recipe first becomes available, forbids the
+# recipe in earlier steps, and requires the listed items to be
+# physically present at the boundary entering the new step.
+#
+# Here, `before_recipe: rocket-part` carves out a dedicated step at
+# the end of the run where rocket-part production runs. Earlier
+# steps can't produce parts, so launches (which consume parts)
+# naturally land in the carved step via item-flow propagation —
+# no separate launch restriction needed. Forcing rocket-silo: 1 and
+# beacon: 20 at the boundary entering that step ensures both are
+# physically present before any rocket-part production begins,
+# closing the LP-relaxation cheat where the silo was fractionalized
+# to ~0.37 units amortized across the build step.
+#
+# Beacons are foundation for future speed-module-3 boosting of the
+# silo; the constraint exists so the layout plan has them already
+# placed before modules become operational.
+#
+# The 50-of-each science-pack floor is a slack buffer: in-game science
+# consumption is never perfectly just-in-time (labs hold partial stacks,
+# belts buffer, research finishes mid-stack), so requiring 50 spare of
+# each pack used in the run is a realistic over-production allowance.
+# space/military packs are excluded — neither is consumed by this goal.
+checkpoints:
+  - name: "rocket-silo + 20 beacons + science buffer present before rocket-part production"
+    trigger:
+      kind: before_recipe
+      recipe: rocket-part
+    requires:
+      items:
+        rocket-silo: 1
+        beacon: 20
+        speed-module: 40
+        productivity-module: 4
+        automation-science-pack: 50
+        logistic-science-pack: 50
+        chemical-science-pack: 50
+        production-science-pack: 50
+        utility-science-pack: 50
