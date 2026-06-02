@@ -19,7 +19,6 @@ from fplan.l2 import flatten as F
 from fplan.model import GameModel, build_game_data, load_model
 
 MODEL_FIXTURE = Path(__file__).parent / "fixtures" / "model_raw_subset.json"
-EXAMPLES = Path(__file__).parent.parent / "examples" / "runs"
 
 
 @pytest.fixture(scope="module")
@@ -173,23 +172,53 @@ def test_post_yaml_is_yaml_roundtrippable(model: GameModel) -> None:
     assert reloaded["post"]["method"] == "chord"
 
 
-# --- realistic fixtures: documented method invariants ----------------------
-def _load_example(name: str) -> dict | None:
-    p = EXAMPLES / name / "rates.yaml"
-    return yaml.safe_load(p.read_text()) if p.exists() else None
+# --- documented method invariants (hermetic; example rates.yaml are gitignored
+# artifacts absent in CI, so these use a hand-built banking case instead) ------
+
+
+# Three steps, one item, with interior surplus banking: the requirement floor R
+# bulges *above* the straight 0→total chord, so the chord (which ignores the
+# tube) dips below R at both interior boundaries — a self-stockout — while the
+# tube hugs the floor and never does.
+#   P   = [0, 100, 160, 200]   inv = [0, 30, 20, 0]   R = P-inv = [0, 70, 140, 200]
+#   chord (deadlines = endpoints only) = [0, 66.7, 133.3, 200]  →  < R at k1,k2
+def _banking_step(label, produced, consumed, cs, ce):
+    return {
+        "label": label,
+        "duration_s": 10.0,
+        "items": [
+            {
+                "name": "gear",
+                "produced": produced,
+                "production_rate_per_s": produced / 10.0,
+                "consumption_rate_per_s": consumed / 10.0,
+                "consumed": consumed,
+                "count_start": cs,
+                "count_end": ce,
+            }
+        ],
+    }
+
+
+BANKING = {
+    "scenario": "bank",
+    "mode": "lower-bound",
+    "initial_time_s": 0.0,
+    "steps": [
+        _banking_step("s0", 100.0, 70.0, 0.0, 30.0),
+        _banking_step("s1", 60.0, 70.0, 30.0, 20.0),
+        _banking_step("s2", 40.0, 60.0, 20.0, 0.0),
+    ],
+}
 
 
 def test_tube_never_self_stockouts(model: GameModel) -> None:
-    l2 = _load_example("fishminer") or _load_example("steelaxe")
-    assert l2 is not None
-    res = F.flatten(l2, method="tube", model=model)
+    res = F.flatten(BANKING, method="tube", model=model)
     assert res.summary()["self_stockouts"] == 0
 
 
-def test_area_conserved_on_real_solve(model: GameModel) -> None:
-    l2 = _load_example("steelaxe")
-    assert l2 is not None
-    res = F.flatten(l2, method="tube", model=model)
+def test_area_conserved_multi_step(model: GameModel) -> None:
+    res = F.flatten(BANKING, method="tube", model=model)
     for fl in res.flats.values():
         flat_total = sum(
             fl.flat_rate[k] * (res.t[k + 1] - res.t[k])
@@ -198,15 +227,12 @@ def test_area_conserved_on_real_solve(model: GameModel) -> None:
         assert flat_total == pytest.approx(fl.total_units, abs=1e-3)
 
 
-def test_chord_can_self_stockout_on_large_run(model: GameModel) -> None:
-    # The cautionary baseline: chord ignores the tube, so on a run with real
-    # surplus banking it dips below the requirement floor where tube doesn't.
-    l2 = _load_example("fishminer")
-    if l2 is None:
-        pytest.skip("fishminer example not present")
-    chord = F.flatten(l2, method="chord", model=model).summary()
-    tube = F.flatten(l2, method="tube", model=model).summary()
+def test_chord_self_stockouts_where_tube_does_not(model: GameModel) -> None:
+    # The cautionary baseline: chord ignores the tube, so on surplus banking it
+    # dips below the requirement floor where tube doesn't.
+    chord = F.flatten(BANKING, method="chord", model=model).summary()
+    tube = F.flatten(BANKING, method="tube", model=model).summary()
     assert chord["self_stockouts"] > 0
     assert tube["self_stockouts"] == 0
-    # chord collapses more segments than the tube (at the cost of stockouts).
+    # chord collapses to fewer/equal segments than the tube (at that cost).
     assert chord["revisits"] <= tube["revisits"]
