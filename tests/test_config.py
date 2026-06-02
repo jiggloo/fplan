@@ -56,8 +56,35 @@ def test_explicit_config_file_missing_raises() -> None:
 
 def test_unparsable_yaml_raises(tmp_path: Path) -> None:
     p = _write(tmp_path / "c.yaml", "factorio: [unbalanced\n")
-    with pytest.raises(cfg.ConfigError, match="could not parse"):
+    with pytest.raises(cfg.ConfigError, match="could not read"):
         cfg.load_config(p)
+
+
+def test_unreadable_path_raises_config_error(tmp_path: Path) -> None:
+    # A directory passed as --config-file: exists, but read_text raises OSError.
+    with pytest.raises(cfg.ConfigError, match="could not read"):
+        cfg.load_config(tmp_path)
+
+
+def test_non_string_scalar_raises(tmp_path: Path) -> None:
+    p = _write(tmp_path / "c.yaml", "factorio:\n  data_dir: false\n")
+    with pytest.raises(cfg.ConfigError, match="must be a string path"):
+        cfg.load_config(p)
+
+
+def test_whitespace_value_is_unset(tmp_path: Path) -> None:
+    p = _write(tmp_path / "c.yaml", 'factorio:\n  data_dir: "   "\n')
+    assert cfg.load_config(p).data_dir is None
+
+
+def test_render_config_resists_quote_newline_injection(tmp_path: Path) -> None:
+    # A path with a quote + newline + a fake `binary:` line must not corrupt the
+    # file or inject a key.
+    nasty = '/x"y\n  binary: "/tmp/evil"\n#'
+    p = _write(tmp_path / "c.yaml", cfg.render_config(nasty, "/legit"))
+    conf = cfg.load_config(p)
+    assert conf.data_dir == Path(nasty)
+    assert conf.binary == Path("/legit")
 
 
 def test_non_mapping_top_level_raises(tmp_path: Path) -> None:

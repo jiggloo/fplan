@@ -12,6 +12,7 @@ stdout for those that don't).
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,10 +43,16 @@ def default_config_path() -> Path:
     return Path.cwd() / DEFAULT_CONFIG_NAME
 
 
-def _as_path(value: object) -> Path | None:
-    if not value:
+def _as_path(value: object, field: str) -> Path | None:
+    if value is None:
         return None
-    return Path(str(value)).expanduser()
+    if not isinstance(value, str):
+        raise ConfigError(
+            f"factorio.{field} must be a string path, got {type(value).__name__}"
+        )
+    if not value.strip():
+        return None
+    return Path(value).expanduser()
 
 
 def load_config(config_file: Path | None = None) -> FplanConfig:
@@ -66,16 +73,16 @@ def load_config(config_file: Path | None = None) -> FplanConfig:
 
     try:
         raw = yaml.safe_load(path.read_text()) or {}
-    except yaml.YAMLError as exc:
-        raise ConfigError(f"could not parse {path}: {exc}") from exc
+    except (OSError, yaml.YAMLError) as exc:
+        raise ConfigError(f"could not read {path}: {exc}") from exc
     if not isinstance(raw, dict):
         raise ConfigError(f"{path}: top-level YAML must be a mapping")
     factorio = raw.get("factorio") or {}
     if not isinstance(factorio, dict):
         raise ConfigError(f"{path}: 'factorio' must be a mapping")
     return FplanConfig(
-        data_dir=_as_path(factorio.get("data_dir")),
-        binary=_as_path(factorio.get("binary")),
+        data_dir=_as_path(factorio.get("data_dir"), "data_dir"),
+        binary=_as_path(factorio.get("binary"), "binary"),
         source=path,
     )
 
@@ -99,16 +106,22 @@ def require_data_dir(config: FplanConfig) -> Path:
 
 
 def render_config(data_dir: str | None, binary: str | None) -> str:
-    """Render the config file text (with comments) that ``fplan init`` writes."""
+    """Render the config file text (with comments) that ``fplan init`` writes.
+
+    Path values are emitted via ``json.dumps`` — a JSON string is a valid YAML
+    double-quoted scalar — so quotes/newlines in a path can't corrupt the file
+    or inject extra keys.
+    """
     return (
         "# .fplan-config.yaml — fplan configuration.\n"
-        "# CLI arguments override these values. There is no environment-variable\n"
-        "# support. Delete this file and re-run `fplan init` to regenerate it.\n"
+        "# CLI arguments will override these values where commands support it.\n"
+        "# There is no environment-variable support. Delete this file and re-run\n"
+        "# `fplan init` to regenerate it.\n"
         "factorio:\n"
         "  # Data directory (prototype files). Required by commands that load the\n"
         "  # game model (tech-order, rates, inspect, ...).\n"
-        f'  data_dir: "{data_dir or ""}"\n'
+        f"  data_dir: {json.dumps(data_dir or '')}\n"
         "  # Executable. Required by commands that run Factorio headless\n"
         "  # (map from-save, ...).\n"
-        f'  binary: "{binary or ""}"\n'
+        f"  binary: {json.dumps(binary or '')}\n"
     )

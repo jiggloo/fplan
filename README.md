@@ -69,10 +69,14 @@ never overwrites an existing file — delete it to regenerate. Auto-detection is
 only verified on macOS today; on Windows/Linux it warns and you should check the
 paths it writes.
 
-CLI arguments override config-file values (there is no environment-variable
-support), and `--config-file PATH` points at a file other than the default.
-`.fplan-config.yaml` is git-ignored; the committed `.example` file is the
-documentation.
+Commands that require Factorio treat a missing or invalid config as a fatal
+error (message to stderr, non-zero exit); `init` and bare `fplan` only warn (to
+stdout) and continue. No stage requires it yet — the planning stages are stubs.
+
+CLI arguments will take precedence over config-file values once commands expose
+such options; there is no environment-variable support. `--config-file PATH`
+selects a file other than the default. `.fplan-config.yaml` is git-ignored; the
+committed `.example` file is the documentation.
 
 ## Testing
 

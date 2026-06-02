@@ -200,12 +200,16 @@ def init(ctx: typer.Context, dry_run: DryRun = False) -> None:
         return
 
     install = _detect_factorio_interactively()
-    target.write_text(
-        cfg.render_config(
-            str(install.data_dir) if install else None,
-            str(install.binary) if install else None,
+    try:
+        target.write_text(
+            cfg.render_config(
+                str(install.data_dir) if install else None,
+                str(install.binary) if install else None,
+            )
         )
-    )
+    except OSError as exc:
+        typer.echo(f"error: could not write {target}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     if install is None:
         typer.echo(f"Created {target} as a template — fill in the Factorio paths.")
     elif install.data_dir.exists():

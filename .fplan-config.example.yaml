@@ -1,6 +1,7 @@
 # .fplan-config.example.yaml — example fplan configuration.
 # Copy to .fplan-config.yaml (or run `fplan init`) and edit for your system.
-# CLI arguments override these values. There is no environment-variable support.
+# CLI arguments will override these values where commands support it. There is
+# no environment-variable support.
 factorio:
   # Data directory (prototype files). Required by commands that load the game
   # model (tech-order, rates, inspect, ...). Example shows a macOS Steam install.

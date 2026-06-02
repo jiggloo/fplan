@@ -154,6 +154,15 @@ def test_init_unrecognized_platform(tmp_path, monkeypatch, interactive) -> None:
     assert (tmp_path / cfg.DEFAULT_CONFIG_NAME).exists()
 
 
+def test_init_write_failure_is_fatal(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_stdin_is_interactive", lambda: False)
+    target = tmp_path / "missing-dir" / "config.yaml"  # parent absent -> write fails
+    result = runner.invoke(app, ["--config-file", str(target), "init"])
+    assert result.exit_code == 1
+    assert not target.exists()
+
+
 def test_init_honors_config_file_target(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli_main, "_stdin_is_interactive", lambda: False)
