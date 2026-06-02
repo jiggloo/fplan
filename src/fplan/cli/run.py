@@ -67,11 +67,6 @@ def create(
         ("map", map_path),
     ]
     directory = _run_dir_or_exit(name)
-    for label, path in inputs:
-        if not path.exists():
-            typer.echo(f"error: {label} file not found: {path}", err=True)
-            raise typer.Exit(code=1)
-
     if directory.exists():
         typer.echo(
             f"error: run {name!r} already exists at {directory}; remove it or use "
@@ -79,6 +74,10 @@ def create(
             err=True,
         )
         raise typer.Exit(code=1)
+    for label, path in inputs:
+        if not path.exists():
+            typer.echo(f"error: {label} file not found: {path}", err=True)
+            raise typer.Exit(code=1)
 
     if dry_run:
         bindings = ", ".join(f"{label}={path}" for label, path in inputs)

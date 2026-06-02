@@ -38,7 +38,7 @@ def file_ref(path: str | Path, *, name: str | None = None) -> dict:
     return ref
 
 
-def is_current(ref: dict) -> bool | None:
+def is_current(ref: object) -> bool | None:
     """Whether the referenced file still matches its recorded hash.
 
     ``True`` matches, ``False`` drifted. ``None`` means "can't tell" — the

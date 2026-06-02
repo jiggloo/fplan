@@ -84,6 +84,19 @@ def test_manifest_preserves_unknown_keys(tmp_path: Path) -> None:
     assert yaml.safe_load((directory / run_mod.MANIFEST_NAME).read_text()) == raw
 
 
+def test_cloned_drops_extra(tmp_path: Path) -> None:
+    # Stage settings/outcomes (extra) are intentionally not carried into a clone.
+    src = run_mod.Manifest.from_dict(
+        {
+            "run": "r1",
+            "inputs": {"scenario": {"path": "s.yaml", "sha256": "h"}},
+            "l2": {"mode": "experimental"},
+        }
+    )
+    assert src.extra == {"l2": {"mode": "experimental"}}
+    assert src.cloned("r2", created="t").extra == {}
+
+
 def test_load_non_mapping_manifest_raises(tmp_path: Path) -> None:
     directory = tmp_path / "runs" / "r"
     directory.mkdir(parents=True)

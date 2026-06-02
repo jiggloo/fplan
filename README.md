@@ -60,8 +60,9 @@ self-explanatory:
   from a Factorio seed/save. An **input**, orthogonal to the scenario. →
   `maps/`
 - **run** — one *execution* of the L2→L4 pipeline. A run binds a scenario, a
-  tech-order, and a map, applies solver settings, and collects the per-level
-  outputs in `runs/<name>/`, described by a `manifest.yaml`. → `runs/`
+  tech-order, and a map in `runs/<name>/`, described by a `manifest.yaml`; as the
+  L2–L4 stages land it will apply their solver settings and collect the per-level
+  outputs there. → `runs/`
 
 The shape of it: scenario, tech-order, and map are **reusable inputs** that
 exist on their own (one scenario → many tech-orders → many runs); a **run** is
