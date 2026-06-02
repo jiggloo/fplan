@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fplan"
+description = "Factorio production and placement planner"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Henru Wang" }]
+keywords = ["factorio", "optimization", "planning"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+# Version is single-sourced from src/fplan/_version.py (see [tool.hatch.version]).
+dynamic = ["version"]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/jiggloo/fplan"
+Source = "https://github.com/jiggloo/fplan"
+Issues = "https://github.com/jiggloo/fplan/issues"
+
+# Single source of truth for the version: the __version__ literal in this file.
+[tool.hatch.version]
+path = "src/fplan/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fplan"]

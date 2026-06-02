@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Ephemeral working artifacts.
+# Keep the directories themselves visible in a fresh clone (via their
+# tracked .gitkeep), but never track the generated files inside them.
+/maps/*
+!/maps/.gitkeep
+/runs/*
+!/runs/.gitkeep
+/examples/runs/*
+!/examples/runs/.gitkeep
