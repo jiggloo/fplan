@@ -11,6 +11,7 @@ initializer wiring the real pool uses.
 from __future__ import annotations
 
 import concurrent.futures as cf
+import os
 import types
 from pathlib import Path
 
@@ -128,6 +129,31 @@ def test_solve_and_write_write_failure_is_errored(monkeypatch, tmp_path) -> None
     monkeypatch.setattr(l2_solve, "write_solution", boom)
     res = search._solve_and_write(None, None, 9, {}, tmp_path / "seed-9.yaml")
     assert res.status == "error" and "disk full" in (res.error or "")
+
+
+# --- _redirect_fds ---------------------------------------------------------
+
+
+def test_redirect_fds_captures_fd_level(tmp_path) -> None:
+    log = tmp_path / "x.log"
+    with search._redirect_fds(log):
+        # fd-level writes (what SCIP's C code does) must be captured, not just
+        # Python prints.
+        os.write(1, b"stdout-fd\n")
+        os.write(2, b"stderr-fd\n")
+    text = log.read_text()
+    assert "stdout-fd" in text and "stderr-fd" in text
+
+
+def test_redirect_fds_restores(tmp_path) -> None:
+    before = os.dup(1)
+    try:
+        with search._redirect_fds(tmp_path / "y.log"):
+            pass
+        # fd 1 still usable afterward (a sentinel write doesn't raise).
+        os.write(1, b"")
+    finally:
+        os.close(before)
 
 
 # --- run_search ------------------------------------------------------------

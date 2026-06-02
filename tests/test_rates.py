@@ -526,8 +526,42 @@ def test_search_parallel_promotes_best(
     )
     assert r.exit_code == 0 and "in parallel" in r.stdout
     rd = run_mod.run_dir("r")
-    assert (rd / "rates-search" / "seed-1.yaml").exists()
-    assert (rd / "rates-search" / "seed-2.yaml").exists()
+    search = rd / "rates-search"
+    assert (search / "seed-1.yaml").exists() and (search / "seed-2.yaml").exists()
+    # Per-seed logs are written and their paths announced for monitoring.
+    assert (search / "seed-1.log").exists() and (search / "seed-2.log").exists()
+    assert "seed-1.log" in r.stdout and "tail -f" in r.stdout
     assert run_mod.load(rd).extra["l2"]["seed"] == 2  # best (t_FINAL=240)
-    summary = yaml.safe_load((rd / "rates-search" / "summary.yaml").read_text())
+    summary = yaml.safe_load((search / "summary.yaml").read_text())
     assert summary["jobs"] == 2
+    # Full SCIP progress by default in parallel; candidates record their log.
+    assert summary["solver"]["verbose"] is True
+    assert {c["seed"]: c["log"] for c in summary["candidates"]}[2] == "seed-2.log"
+
+
+def test_search_parallel_quiet_solver(tmp_path, monkeypatch, use_fixture_model) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    from fplan.l2 import search as l2_search
+
+    _patch_solve(monkeypatch, _fake_solve_by_seed({1: 240.0, 2: 250.0}))
+    monkeypatch.setattr(l2_search, "ProcessPoolExecutor", _InlineExecutor)
+    r = runner.invoke(
+        app,
+        [
+            "rates",
+            "solve",
+            "r",
+            "--seeds",
+            "[1,2]",
+            "--jobs",
+            "2",
+            "--quiet-solver",
+            "--force",
+        ],
+    )
+    assert r.exit_code == 0
+    summary = yaml.safe_load(
+        (run_mod.run_dir("r") / "rates-search" / "summary.yaml").read_text()
+    )
+    assert summary["solver"]["verbose"] is False  # logs slimmed

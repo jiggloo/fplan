@@ -15,7 +15,9 @@ summary file, the promotion prompts, and all user-facing output stay in the CLI
 
 from __future__ import annotations
 
+import contextlib
 import os
+import sys
 from collections.abc import Iterator
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -36,17 +38,52 @@ class SeedResult:
     error: str | None = None
 
 
-def _solve_and_write(inst, model, seed: int, solver_kwargs: dict, cand_path: Path):
+@contextlib.contextmanager
+def _redirect_fds(path: Path) -> Iterator[None]:
+    """Redirect this process's stdout+stderr to ``path`` at the file-descriptor
+    level (``dup2`` on fd 1/2), so a C library's output — SCIP's live progress
+    table, written below Python — is captured too, not just Python ``print``s.
+    Restores on exit: pool workers are reused across seeds, so the redirect must
+    be scoped to a single task or the next seed would append to this seed's log.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    saved_out, saved_err = os.dup(1), os.dup(2)
+    logf = open(path, "w")
+    try:
+        os.dup2(logf.fileno(), 1)
+        os.dup2(logf.fileno(), 2)
+        yield
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(saved_out, 1)
+        os.dup2(saved_err, 2)
+        os.close(saved_out)
+        os.close(saved_err)
+        logf.close()
+
+
+def _solve_and_write(
+    inst, model, seed: int, solver_kwargs: dict, cand_path: Path, log_path=None
+):
     """Solve one seed and write its candidate. Never raises — a solve or write
     failure comes back as an errored :class:`SeedResult` so one bad seed can't
     sink the whole search (a disk problem still surfaces fatally later, when the
-    parent writes the summary)."""
+    parent writes the summary).
+
+    When ``log_path`` is given, the whole solve's output (Python + SCIP's
+    C-level progress) is redirected there — the mechanism that keeps parallel
+    seeds from interleaving in the console.
+    """
     from fplan.l2 import solve as l2_solve
 
+    ctx = _redirect_fds(log_path) if log_path is not None else contextlib.nullcontext()
     try:
-        sol, _m, _handles = l2_solve.solve(inst, model, **solver_kwargs, seed=seed)
-        sol.seed = seed
-        l2_solve.write_solution(inst, sol, model, cand_path)
+        with ctx:
+            sol, _m, _handles = l2_solve.solve(inst, model, **solver_kwargs, seed=seed)
+            sol.seed = seed
+            l2_solve.write_solution(inst, sol, model, cand_path)
     except Exception as exc:  # solve OR candidate-write failure → errored seed
         return SeedResult(seed, "error", None, None, None, error=str(exc))
     obj = float(sol.objective) if sol.objective is not None else None
@@ -65,8 +102,10 @@ def _worker_init(inst, model) -> None:
     _W_INST, _W_MODEL = inst, model
 
 
-def _worker_task(seed: int, solver_kwargs: dict, cand_path_str: str):
-    return _solve_and_write(_W_INST, _W_MODEL, seed, solver_kwargs, Path(cand_path_str))
+def _worker_task(seed: int, solver_kwargs: dict, cand_path_str: str, log_path_str: str):
+    return _solve_and_write(
+        _W_INST, _W_MODEL, seed, solver_kwargs, Path(cand_path_str), Path(log_path_str)
+    )
 
 
 def resolve_jobs(jobs: int | None, n_seeds: int) -> int:
@@ -88,14 +127,19 @@ def run_search(
 ) -> Iterator[SeedResult]:
     """Yield a :class:`SeedResult` per seed as solves complete.
 
-    ``jobs <= 1`` solves serially in-process, preserving the given seed order.
-    ``jobs > 1`` fans the seeds across that many worker processes and yields in
-    **completion** order (not seed order). A worker that dies outright (e.g. a
-    native SCIP crash) is reported as an errored seed rather than aborting.
+    ``jobs <= 1`` solves serially in-process, preserving the given seed order
+    and leaving output on the console. ``jobs > 1`` fans the seeds across that
+    many worker processes, redirects each seed's output to its own
+    ``seed-<N>.log`` (no interleaving), and yields in **completion** order (not
+    seed order). A worker that dies outright (e.g. a native SCIP crash) is
+    reported as an errored seed rather than aborting.
     """
 
     def cand(sd: int) -> Path:
         return search_dir / f"seed-{sd}.yaml"
+
+    def log(sd: int) -> Path:
+        return search_dir / f"seed-{sd}.log"
 
     if jobs <= 1:
         for sd in seeds:
@@ -106,7 +150,7 @@ def run_search(
         max_workers=jobs, initializer=_worker_init, initargs=(inst, model)
     ) as ex:
         futs = {
-            ex.submit(_worker_task, sd, solver_kwargs, str(cand(sd))): sd
+            ex.submit(_worker_task, sd, solver_kwargs, str(cand(sd)), str(log(sd))): sd
             for sd in seeds
         }
         for fut in as_completed(futs):

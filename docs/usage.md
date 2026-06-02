@@ -269,6 +269,17 @@ command, stores each candidate, ranks them by `t_FINAL`, and promotes the best:
   schema as `rates.yaml`), with a **`summary.yaml`** index recording every seed's
   objective / status / solve-time, the search settings, and the chosen best. The
   promoted `rates.yaml` is never touched during the search itself.
+- **Per-seed logs (parallel).** When solving in parallel, each seed's full
+  output — including SCIP's live progress table — is redirected to its own
+  **`runs/<run>/rates-search/seed-<N>.log`** (captured at the file-descriptor
+  level, so the solver's C-level output lands there too, not just Python's). The
+  console prints the log paths up front so you can monitor any one solve:
+  ```bash
+  tail -f runs/<run>/rates-search/seed-<N>.log
+  ```
+  This keeps the parent console readable instead of interleaving every worker's
+  output. `--quiet-solver` slims the logs (omits SCIP's progress table). Serial
+  / single-seed solves are unaffected — their output stays on the console.
 - One seed failing or coming back infeasible does not abort the search — it is
   recorded in `summary.yaml` and the rest continue. **Best** = lowest `t_FINAL`
   among feasible seeds (infeasible seeds are never promotable).

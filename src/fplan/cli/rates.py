@@ -97,6 +97,14 @@ NoPlayerTimeOpt = Annotated[
         "--no-player-time", help="Disable the per-step player-time constraint."
     ),
 ]
+QuietSolverOpt = Annotated[
+    bool,
+    typer.Option(
+        "--quiet-solver",
+        help="Slim the per-seed logs (parallel search only): omit SCIP's live "
+        "progress table. By default each seed's log captures full progress.",
+    ),
+]
 ForceOpt = Annotated[
     bool,
     typer.Option("--force", help="Overwrite an existing rates.yaml without prompting."),
@@ -167,6 +175,7 @@ def solve(
     no_player_time: NoPlayerTimeOpt = False,
     out: OutOpt = None,
     jobs: JobsOpt = None,
+    quiet_solver: QuietSolverOpt = False,
     force: ForceOpt = False,
     dry_run: DryRun = False,
 ) -> None:
@@ -298,6 +307,7 @@ def solve(
             solver_kwargs=solver_kwargs,
             config_ref=config_ref,
             jobs=jobs,
+            quiet_solver=quiet_solver,
             force=force,
             run_mod=run_mod,
             cli_main=cli_main,
@@ -397,6 +407,7 @@ def _run_search(
     solver_kwargs,
     config_ref,
     jobs,
+    quiet_solver,
     force,
     run_mod,
     cli_main,
@@ -415,8 +426,21 @@ def _run_search(
     search_dir.mkdir(parents=True, exist_ok=True)
 
     n_jobs = l2_search.resolve_jobs(jobs, len(seeds))
-    how = "serially" if n_jobs == 1 else f"up to {n_jobs} in parallel"
-    typer.echo(f"Searching {len(seeds)} seed(s) {how} …")
+    parallel = n_jobs > 1
+    # Parallel seeds each get full SCIP progress in their own log (so they're
+    # monitorable with tail -f) — interleaving the console is the whole problem.
+    # --quiet-solver slims those logs. Serial stays quiet on the console as before.
+    solver_kwargs = {**solver_kwargs, "verbose": parallel and not quiet_solver}
+
+    if parallel:
+        typer.echo(
+            f"Searching {len(seeds)} seed(s), up to {n_jobs} in parallel — "
+            f"per-seed logs (tail -f to monitor):"
+        )
+        for sd in seeds:
+            typer.echo(f"  seed {sd} → {search_dir / f'seed-{sd}.log'}")
+    else:
+        typer.echo(f"Searching {len(seeds)} seed(s) serially …")
 
     candidates: list[dict] = []
     total = len(seeds)
@@ -435,6 +459,8 @@ def _run_search(
             "solve_time_s": res.solve_time_s,
             "file": res.file,
         }
+        if parallel:
+            entry["log"] = f"seed-{res.seed}.log"
         if res.error is not None:
             entry["error"] = res.error
         candidates.append(entry)
