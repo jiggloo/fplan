@@ -53,6 +53,9 @@ After [installing](#install), from the repository root:
 `viz` opens a zoomable timeline and a capacity-saturation heatmap (written under
 `runs/steelaxe/viz/`).
 
+Ready to plan a goal of your own? Follow
+[Plan your own factory](docs/usage.md#plan-your-own-factory).
+
 Orient yourself any time with:
 
 ```bash

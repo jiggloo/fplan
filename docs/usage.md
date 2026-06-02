@@ -10,6 +10,7 @@ are implemented.
 - [Invoking the CLI](#invoking-the-cli)
 - [The command tree](#the-command-tree)
 - [Configuration](#configuration)
+- [Plan your own factory](#plan-your-own-factory)
 - [Commands](#commands) (alphabetical by group)
   - [`inspect`](#inspect)
   - [`map`](#map)
@@ -126,6 +127,62 @@ bare `fplan` only warn (to stdout) and continue.
 There is no environment-variable support; CLI arguments take precedence over
 config-file values where commands expose such options. `.fplan-config.yaml` is
 git-ignored; the committed `.example` file is the documentation.
+
+## Plan your own factory
+
+The [Quickstart](../README.md#quickstart) solves a bundled example; this walks
+the same flow for a goal of your own. It's deliberately minimal — each step
+links to its command's reference below, where the options and variations live.
+
+**1. Describe the goal — a scenario.** A scenario is the *problem*: the world you
+want (and, optionally, the world you start from). Write a YAML file under
+`scenarios/`:
+
+```yaml
+# scenarios/my-plan.yaml
+name: my-plan
+techs_researched:      # technologies to research
+  - automation
+items_produced:        # items to have produced (by name → count)
+  iron-gear-wheel: 100
+```
+
+That's the whole contract for a from-scratch goal. To plan from an existing
+world instead of nothing, add an `initial_state:` block (what exists at t₀) — see
+[`examples/scenarios/steelaxe.yaml`](../examples/scenarios/steelaxe.yaml).
+
+**2. Order the research (L1).** Turn the goal into a layered tech-order:
+
+```bash
+.venv/bin/fplan tech-order build scenarios/my-plan.yaml --out tech-orders/my-plan.yaml
+```
+
+**3. Pick a map.** The map is the resources / water / oil around spawn. Reuse a
+bundled one (`fplan init --copy-examples` drops `maps/zaspar-wr.yaml`) or extract
+your own from a save with [`map from-save`](#map-from-save).
+
+**4. Bind them into a run.** A run ties one scenario + tech-order + map together:
+
+```bash
+.venv/bin/fplan run create my-plan \
+    --scenario scenarios/my-plan.yaml \
+    --tech-order tech-orders/my-plan.yaml \
+    --map maps/zaspar-wr.yaml
+```
+
+**5. Solve, then look (L2).** Solve the production plan and open the result:
+
+```bash
+.venv/bin/fplan rates solve my-plan
+.venv/bin/fplan rates viz my-plan --open
+```
+
+From here, explore variations in the reference below: ordering
+[`--method`](#tech-order-build)s, [`rates solve`](#rates-solve) options
+(multi-seed search, L2 tuning), and post-processing with
+[`rates post`](#rates-post). If a from-scratch goal won't solve, it usually wants
+an `initial_state` (step 1) — the bundled examples are known-good baselines to
+copy and edit.
 
 ## Commands
 
