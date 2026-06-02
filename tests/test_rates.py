@@ -194,6 +194,22 @@ def test_solve_random_seed_when_omitted(
     assert isinstance(run_mod.load(run_mod.run_dir("r")).extra["l2"]["seed"], int)
 
 
+def test_solve_solver_exception_is_clean(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    from fplan.l2 import solve as l2_solve
+
+    def boom(*a, **k):
+        raise RuntimeError("SCIP exploded")
+
+    monkeypatch.setattr(l2_solve, "solve", boom)
+    r = runner.invoke(app, ["rates", "solve", "r", "--force"])
+    assert r.exit_code == 1 and "solve failed" in (r.stdout + (r.stderr or ""))
+    assert r.exception is None or isinstance(r.exception, SystemExit)
+
+
 def test_solve_write_failure_is_fatal(tmp_path, monkeypatch, use_fixture_model) -> None:
     monkeypatch.chdir(tmp_path)
     _make_run(tmp_path)

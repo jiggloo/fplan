@@ -1,9 +1,9 @@
 """Shared L2/L3 pseudo-recipe definitions.
 
-L2 introduces synthetic recipes that don't exist in `factorio_model.py`'s
+L2 introduces synthetic recipes that don't exist in `fplan.model`'s
 data: tech research (one per tech), rocket launch (per payload), and
 boiler-engine burn (per chemical fuel). Their stoichiometry was
-previously hardcoded inside `l2_phases.py`, invisible to L3 — which
+previously hardcoded inside `fplan.l2.instance`, invisible to L3 — which
 caused L3 to silently drop research's science-pack consumption (the
 `research/<tech>` recipe names don't appear in `model.recipes`).
 

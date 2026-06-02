@@ -31,9 +31,10 @@ def deployed_facility(
 
     Calls the base (deployment-free) ``model.make_facility`` and applies the
     building's registered ``infrastructure_items`` and ``tile_footprint``. An
-    unregistered building keeps the bare prototype footprint and no
-    infrastructure — so no spatial cap fires for it, matching pre-deployment
-    behavior.
+    unregistered building keeps the bare prototype footprint (so it still counts
+    against the total-area cap) but gets no infrastructure reservation and no
+    per-resource tile-pool cap — matching pre-deployment behavior on the
+    infra/per-resource dimensions.
     """
     base = model.make_facility(building)
     pattern = config.deployment_for(building.name)

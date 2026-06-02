@@ -246,6 +246,47 @@ def test_build_instance_deployed_facility_method(
     assert f.tile_footprint == 15.0
 
 
+def test_build_instance_checkpoint_carves_step(
+    model: GameModel, tmp_path: Path
+) -> None:
+    s = scn.from_dict(
+        {
+            "name": "t",
+            "checkpoints": [
+                {
+                    "name": "cp",
+                    "trigger": {"kind": "before_recipe", "recipe": "iron-gear-wheel"},
+                    "requires": {"items": {"iron-gear-wheel": 3}},
+                }
+            ],
+        }
+    )
+    inst = instance.build_instance(s, _l1(tmp_path, [["automation"]]), model)
+    assert "carve/iron-gear-wheel" in [st.label for st in inst.steps]
+    assert any("iron-gear-wheel" in st.forbidden_real_recipes for st in inst.steps)
+    assert len(inst.checkpoints) == 1
+    assert inst.checkpoints[0].items_floor["iron-gear-wheel"] == 3.0
+
+
+def test_build_instance_checkpoint_dropped(model: GameModel, tmp_path: Path) -> None:
+    # A checkpoint naming a recipe absent from the model is dropped with a warning.
+    s = scn.from_dict(
+        {
+            "name": "t",
+            "checkpoints": [
+                {
+                    "name": "cp",
+                    "trigger": {"kind": "before_recipe", "recipe": "no-such-recipe"},
+                    "requires": {},
+                }
+            ],
+        }
+    )
+    inst = instance.build_instance(s, _l1(tmp_path, [["automation"]]), model)
+    assert inst.checkpoints == ()
+    assert any("checkpoint" in w for w in inst.warnings)
+
+
 def test_build_instance_bad_l1(model: GameModel, tmp_path: Path) -> None:
     bad = tmp_path / "bad.yaml"
     bad.write_text("not_layers: 1\n")

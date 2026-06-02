@@ -95,11 +95,11 @@ def solve(
     force: ForceOpt = False,
     dry_run: DryRun = False,
 ) -> None:
-    """Solve a run's production-rate LP, writing runs/<run>/rates.yaml.
+    """Solve a run's production-rate plan (MINLP) with SCIP, writing rates.yaml.
 
     Reads the run manifest's scenario / tech-order / map (resolved relative to
-    the current directory), builds the L2 instance, solves with SCIP, and
-    records the L2 settings + outcome back into the manifest.
+    the current directory), builds the L2 instance, solves the nonconvex MINLP
+    with SCIP, and records the L2 settings + outcome back into the manifest.
     """
     from fplan import refs
     from fplan import run as run_mod
@@ -184,15 +184,19 @@ def solve(
 
     from fplan.l2 import solve as l2_solve
 
-    sol, _m, _handles = l2_solve.solve(
-        inst,
-        model,
-        time_limit_s=time_limit_s,
-        gap_limit=gap_limit,
-        stall_nodes=stall_nodes,
-        node_limit=node_limit,
-        seed=seed,
-    )
+    try:
+        sol, _m, _handles = l2_solve.solve(
+            inst,
+            model,
+            time_limit_s=time_limit_s,
+            gap_limit=gap_limit,
+            stall_nodes=stall_nodes,
+            node_limit=node_limit,
+            seed=seed,
+        )
+    except Exception as exc:  # SCIP-side failure → clean error, not a traceback
+        typer.echo(f"error: solve failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     sol.seed = seed
 
     if sol.objective is None:

@@ -255,9 +255,9 @@ deployment:
     tile_footprint: 18.0
 ```
 
-Game-physics facts (boiler/rocket constants) and the SCIP random seed are not in
-the config — the former stay authoritative in code, the latter is a per-solve
-flag recorded in the manifest.
+Game-physics facts (boiler/rocket constants), the constraint formulation itself,
+and the SCIP random seed are not in the config — the first two stay authoritative
+in code, the seed is a per-solve flag recorded in the manifest.
 
 #### `rates post` / `rates viz`
 
@@ -311,7 +311,7 @@ content-hash check flags edits since `create`), and which stage artifacts exist:
 ```
 run: steelaxe-exp
 created: 2026-06-02T09:24:42+00:00
-fplan: 0.0.7
+fplan: 0.0.8
 inputs:
   scenario: scenarios/steelaxe.yaml [✓ current]
   tech-order: tech-orders/steelaxe.yaml [⚠ changed]

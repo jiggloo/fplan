@@ -29,15 +29,12 @@ that deduct from the chosen fuel item and supply that building's
 energy demand. Wood is excluded as fuel everywhere.
 
 Solver isolation: this is the only module that imports pyscipopt.
-`L2Instance` and `l2_phases.py` stay solver-neutral.
+`L2Instance` and :mod:`fplan.l2.instance` stay solver-neutral.
 
 Still NOT modeled (subsequent rounds): steam as an intermediate item,
 modules and beacons, nuclear (reactor + turbine + fuel cells).
 
-Smoke-test:
-
-    .venv/bin/python l2_lp.py --scenario inputs/steelaxe.yaml \\
-        --l1 outputs/01_steelaxe.yaml
+Driven by the CLI: `fplan rates solve <run>` (see :mod:`fplan.cli.rates`).
 """
 
 from __future__ import annotations
@@ -114,7 +111,7 @@ class Solution:
 # hits "unresolved numerical troubles" on the wider span; rescaling
 # preserves the model exactly while putting every term within ~6 orders
 # of magnitude of each other. Conversion happens at LP-construction and
-# post-solve extraction points; the model layer (factorio_model.py) still
+# post-solve extraction points; the model layer (fplan.model) still
 # exposes raw J/W and is not changed.
 _J_PER_MJ = 1.0e6
 

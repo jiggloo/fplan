@@ -120,10 +120,12 @@ first with `fplan init` (see
   ../.venv/bin/fplan --config-file ../.fplan-config.yaml run show steelaxe
   ```
 
-  Confirm it reports a feasible `t_FINAL`, writes `rates.yaml`, and `run show`
-  lists it as an artifact and the manifest gains an `l2:` block. (The committed
-  `fishminer` run binds the full `default-victory` campaign — solvable the same
-  way, but larger and may need several seeds to land an incumbent.)
+  Confirm it reports a feasible `t_FINAL` and writes `rates.yaml`; `run show
+  steelaxe` then lists `rates.yaml` under artifacts, and
+  `runs/steelaxe/manifest.yaml` has gained an `l2:` block
+  (mode/seed/objective_s/status/solve_time_s/config). (The committed `fishminer`
+  run binds the full `default-victory` campaign — solvable the same way, but
+  larger and may need several seeds to land an incumbent.)
 
 ## Development
 
@@ -181,6 +183,8 @@ obvious without reading the docs.
 
 - [Usage reference](docs/usage.md) — the full CLI reference
 - [Repository structure & conventions](docs/structure.md)
+- [Stage enrichment](docs/stage-enrichment.md) — why per-stage knowledge (e.g.
+  L2 deployment) enriches downward and never lives in the base model layer
 
 ## License
 

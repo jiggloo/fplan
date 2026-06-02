@@ -1,17 +1,13 @@
-"""L2 — production phases (instance builder, no LP yet).
+"""L2 — production phases (solver-neutral instance builder).
 
 Reads (scenario, L1 output) and constructs an L2Instance: a linearized
 per-tech timestep skeleton with pseudo-recipes for tech research and
-rocket launches, plus the derived final-state floors. Does NOT yet
-build the Gurobi LP — its job is to produce the structure the LP code
-will consume, and to surface structural issues (items without
-producers, trigger-based techs, etc.) early.
-
-CLI usage:
-
-    .venv/bin/python l2_phases.py \\
-        --scenario inputs/default-victory.yaml \\
-        --l1 outputs/01_tech_order.yaml
+rocket launches, plus the derived final-state floors. Does NOT build the
+SCIP model — its job is to produce the structure the solver
+(:mod:`fplan.l2.solve`) consumes, and to surface structural issues (items
+without producers, trigger-based techs, etc.) early. Driven by the CLI
+(`fplan rates solve <run>`), which loads the run manifest and the tuning
+config, then calls `build_instance`.
 """
 
 from __future__ import annotations
