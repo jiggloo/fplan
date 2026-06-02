@@ -20,6 +20,9 @@ htmlcov/
 .vscode/
 .DS_Store
 
+# Local config — the real file is per-machine; the committed example documents it.
+/.fplan-config.yaml
+
 # Ephemeral working artifacts.
 # Keep the directories themselves visible in a fresh clone (via their
 # tracked .gitkeep), but never track the generated files inside them.

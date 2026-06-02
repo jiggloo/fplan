@@ -52,6 +52,28 @@ The package version is also importable directly:
 .venv/bin/python -c "import fplan; print(fplan.__version__)"
 ```
 
+## Configuration
+
+fplan reads `.fplan-config.yaml` from the current working directory. It mainly
+records where Factorio is installed (its data directory and executable), which
+the planning stages need. Generate it with:
+
+```bash
+.venv/bin/fplan init
+```
+
+`init` asks before scanning the known install locations for your OS, fills in
+what it finds, and otherwise writes a template for you to complete (see
+[`.fplan-config.example.yaml`](.fplan-config.example.yaml) for the format). It
+never overwrites an existing file — delete it to regenerate. Auto-detection is
+only verified on macOS today; on Windows/Linux it warns and you should check the
+paths it writes.
+
+CLI arguments override config-file values (there is no environment-variable
+support), and `--config-file PATH` points at a file other than the default.
+`.fplan-config.yaml` is git-ignored; the committed `.example` file is the
+documentation.
+
 ## Testing
 
 Install the development dependencies and run the suite:

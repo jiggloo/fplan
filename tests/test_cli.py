@@ -37,7 +37,6 @@ LEAVES = [
     (["execution", "generate"], EXIT_NOT_IMPLEMENTED),
     (["execution", "viz"], EXIT_NOT_IMPLEMENTED),
     (["full-run"], EXIT_NOT_IMPLEMENTED),
-    (["init"], EXIT_NOT_IMPLEMENTED),
 ]
 
 # Commands that accept --dry-run.
