@@ -1,0 +1,62 @@
+# Hand-crafted tech order based on default-victory and Zaspar's WR TAS:
+# https://www.youtube.com/watch?v=fkmRd5uJoKI
+level: 1
+produced_by: fplan tech-order build
+method: forward
+goal:
+  name: default-victory
+  techs_researched:
+  - fast-inserter
+  - research-speed-2
+  - steel-axe
+  items_produced:
+    beacon: 20.0
+    productivity-module: 4.0
+    speed-module: 40.0
+  rocket_launches: 1.0
+tech_count: 43
+layer_count: 10
+layers:
+- - automation
+  - logistic-science-pack
+  - logistics
+  - steel-processing
+  - electronics
+- - automation-2
+  - advanced-material-processing
+  - fast-inserter
+  - steel-axe
+- - engine
+  - fluid-handling
+  - research-speed-1
+  - research-speed-2
+- - oil-processing
+  - plastics
+  - sulfur-processing
+  - advanced-electronics
+  - chemical-science-pack
+- - modules
+  - productivity-module
+  - speed-module
+- - advanced-oil-processing
+  - advanced-electronics-2
+  - low-density-structure
+  - logistics-2
+  - advanced-material-processing-2
+  - battery
+  - railway
+  - production-science-pack
+- - lubricant
+  - electric-engine
+  - robotics
+- - utility-science-pack
+  - flammables
+  - rocket-fuel
+  - effect-transmission
+  - productivity-module-2
+  - speed-module-2
+  - productivity-module-3
+- - rocket-control-unit
+  - speed-module-3
+  - concrete
+- - rocket-silo

@@ -83,6 +83,41 @@ def factorio_binary_or_exit(config_file: Path | None) -> Path:
         raise typer.Exit(code=1) from exc
 
 
+def load_model_or_exit(config_file: Path | None):
+    """Load the cleaned game model for a command that needs it; fatal-to-stderr.
+
+    Resolves the data dir from config, then loads. A config pointed at a
+    non-Factorio directory surfaces as a clean error, not a traceback. Tests
+    monkeypatch this to inject a fixture model.
+    """
+    from fplan.model import GameModel, load_model
+
+    data_dir = factorio_data_dir_or_exit(config_file)
+    try:
+        model: GameModel = load_model(data_dir=data_dir)
+    except (OSError, UnicodeDecodeError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    return model
+
+
+def confirm_overwrite_or_exit(target: Path) -> None:
+    """Guard an artifact write: if ``target`` exists, confirm the overwrite when
+    interactive, refuse fatally when not. Shared by the artifact-producing
+    commands (``map from-save``, ``tech-order build``)."""
+    if not target.exists():
+        return
+    if not _stdin_is_interactive():
+        typer.echo(
+            f"error: {target} already exists; remove it or choose another --out.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    if not typer.confirm(f"{target} already exists. Overwrite?", default=False):
+        typer.echo("Aborted; nothing written.")
+        raise typer.Exit(code=0)
+
+
 def _version_callback(value: bool) -> None:
     if value:
         typer.echo(f"fplan {__version__}")

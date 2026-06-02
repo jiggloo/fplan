@@ -267,13 +267,14 @@ def _load_raw(data_dir: Path) -> dict:  # pragma: no cover - runs Lua over game 
         try:
             lua.execute(path.read_text(encoding="utf-8"))
         except lupa.LuaError:
-            # entities.lua occasionally errors on a late graphics-helper
-            # call (~line 15k in 1.1). All structurally important entities
-            # are defined earlier and have already been registered into
-            # data.raw, so we keep going rather than abort the whole load.
-            # Breadcrumb so a partial load isn't silent — a different version
-            # erroring earlier could drop real prototypes.
-            print(f"note: {fname} partially loaded (Lua error swallowed)")
+            # entities.lua reliably errors on a late graphics-helper call
+            # (~line 15k in 1.1). All structurally important entities are
+            # defined earlier and have already been registered into data.raw,
+            # so that one is expected and we stay silent. ANY OTHER file
+            # erroring is a real surprise (a different version could drop real
+            # prototypes), so surface it rather than load a silent partial.
+            if fname != "entity/entities.lua":
+                print(f"note: {fname} partially loaded (Lua error swallowed)")
 
     return _lua_to_py(lua.globals().data.raw)
 

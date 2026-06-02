@@ -1,0 +1,14 @@
+level: 1
+produced_by: fplan tech-order build
+method: forward
+goal:
+  name: steelaxe
+  techs_researched:
+  - automation
+  - steel-axe
+tech_count: 3
+layer_count: 2
+layers:
+- - automation
+  - steel-processing
+- - steel-axe

@@ -1,0 +1,28 @@
+# Steelaxe% — the shortest established Factorio speedrun category.
+# Goal: research the `steel-axe` technology. The community route researches
+# `automation` first (to build assembling machines for the science-pack and
+# steel chain), then `steel-axe`.
+# See https://www.speedrun.com/factorio for the category rules.
+name: steelaxe
+techs_researched:
+  - automation
+  - steel-axe
+
+# L2+ inputs: the world-state at t0. This snapshot is NOT t=0 — it's the world
+# after ~3m12s of hand-play (crafting the seeded burner-drill / stone-furnace
+# base) from a reference TAS run. L1 ignores this block; L2 solves in time
+# relative to this t0.
+initial_state:
+  # The snapshot is NOT at t=0: it's the world after ~3m12s of Zaspar's WR TAS:
+  # https://www.youtube.com/watch?v=fkmRd5uJoKI&t=192s
+  # Accepts "M:SS" or a number of seconds.
+  timestamp: "3:12"
+  items:
+    burner-mining-drill: 30
+    stone-furnace: 31
+    stone: 25
+    iron-plate: 63
+    copper-plate: 15
+    automation-science-pack: 4
+    wood: 44
+  techs_researched: []
