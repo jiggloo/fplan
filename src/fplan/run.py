@@ -3,7 +3,7 @@
 A *run* is one execution of the L2→L4 pipeline (L1, the tech-order, is an
 *input* to a run, not part of it). A run lives in ``runs/<name>/`` and is
 described by a ``manifest.yaml`` that binds the run's inputs — scenario,
-tech-order, and an optional map — by reference (path + content hash, see
+tech-order, and map — by reference (path + content hash, see
 :mod:`fplan.refs`).
 
 The manifest is deliberately **minimal now and grows per stage**: today it
@@ -53,17 +53,20 @@ class Manifest:
         *,
         scenario: str | Path,
         tech_order: str | Path,
-        map_path: str | Path | None = None,
+        map_path: str | Path,
         created: str = "",
         version: str = __version__,
     ) -> Manifest:
-        """A fresh manifest binding the given inputs by reference."""
+        """A fresh manifest binding the given inputs by reference.
+
+        All three inputs are required — a run is L2→L4, and placement (L3)
+        needs a map (L2's spatial caps want one too).
+        """
         inputs: dict = {
             "scenario": refs.file_ref(scenario),
             "tech-order": refs.file_ref(tech_order),
+            "map": refs.file_ref(map_path),
         }
-        if map_path is not None:
-            inputs["map"] = refs.file_ref(map_path)
         return cls(run=name, inputs=inputs, fplan_version=version, created=created)
 
     def cloned(self, new_name: str, *, created: str = "") -> Manifest:

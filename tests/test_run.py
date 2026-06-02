@@ -59,10 +59,7 @@ def test_manifest_new_clone_roundtrip(tmp_path: Path) -> None:
         "r1", scenario=scn, tech_order=order, map_path=mp, created="t0"
     )
     assert set(m.inputs) == {"scenario", "tech-order", "map"}
-    # Map is optional.
-    m2 = run_mod.Manifest.new("r2", scenario=scn, tech_order=order, created="t0")
-    assert "map" not in m2.inputs
-    # Clone keeps inputs, fresh identity, drops nothing-but-inputs.
+    # Clone keeps the input bindings with a fresh identity.
     c = m.cloned("r3", created="t1")
     assert c.run == "r3" and c.inputs == m.inputs and c.created == "t1"
 
@@ -107,36 +104,34 @@ def test_stage_artifacts(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_create_writes_manifest_with_map(tmp_path, monkeypatch) -> None:
+def _create(
+    name: str = "r1", *extra: str, scenario="s.yaml", tech_order="o.yaml", map="m.yaml"
+):
+    """Invoke `run create` with all inputs by default; pass a kwarg None to omit
+    it, or `*extra` for trailing flags like --dry-run."""
+    args = ["run", "create", name]
+    if scenario is not None:
+        args += ["--scenario", scenario]
+    if tech_order is not None:
+        args += ["--tech-order", tech_order]
+    if map is not None:
+        args += ["--map", map]
+    return runner.invoke(app, [*args, *extra])
+
+
+def test_create_writes_manifest(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    scn, order, mp = _inputs(tmp_path)
-    r = runner.invoke(
-        app,
-        [
-            "run",
-            "create",
-            "r1",
-            "--scenario",
-            "s.yaml",
-            "--tech-order",
-            "o.yaml",
-            "--map",
-            "m.yaml",
-        ],
-    )
-    assert r.exit_code == 0
+    _inputs(tmp_path)
+    assert _create("r1").exit_code == 0
     m = run_mod.load(run_mod.run_dir("r1"))
     assert set(m.inputs) == {"scenario", "tech-order", "map"} and m.created
 
 
-def test_create_without_map(tmp_path, monkeypatch) -> None:
+def test_create_requires_map(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     _inputs(tmp_path)
-    r = runner.invoke(
-        app, ["run", "create", "r1", "--scenario", "s.yaml", "--tech-order", "o.yaml"]
-    )
-    assert r.exit_code == 0
-    assert "map" not in run_mod.load(run_mod.run_dir("r1")).inputs
+    # Missing the required --map option is a usage error (exit 2).
+    assert _create("r1", map=None).exit_code == 2
 
 
 @pytest.mark.parametrize("missing", ["s.yaml", "o.yaml", "m.yaml"])
@@ -144,48 +139,22 @@ def test_create_missing_input_is_fatal(tmp_path, monkeypatch, missing) -> None:
     monkeypatch.chdir(tmp_path)
     _inputs(tmp_path)
     (tmp_path / missing).unlink()
-    r = runner.invoke(
-        app,
-        [
-            "run",
-            "create",
-            "r1",
-            "--scenario",
-            "s.yaml",
-            "--tech-order",
-            "o.yaml",
-            "--map",
-            "m.yaml",
-        ],
-    )
+    r = _create("r1")
     assert r.exit_code == 1 and "not found" in (r.stdout + (r.stderr or ""))
 
 
 def test_create_refuses_existing(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     _inputs(tmp_path)
-    args = ["run", "create", "r1", "--scenario", "s.yaml", "--tech-order", "o.yaml"]
-    assert runner.invoke(app, args).exit_code == 0
-    r = runner.invoke(app, args)
+    assert _create("r1").exit_code == 0
+    r = _create("r1")
     assert r.exit_code == 1 and "already exists" in (r.stdout + (r.stderr or ""))
 
 
 def test_create_dry_run_writes_nothing(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     _inputs(tmp_path)
-    r = runner.invoke(
-        app,
-        [
-            "run",
-            "create",
-            "r1",
-            "--scenario",
-            "s.yaml",
-            "--tech-order",
-            "o.yaml",
-            "--dry-run",
-        ],
-    )
+    r = _create("r1", "--dry-run")
     assert r.exit_code == 0 and "dry run" in r.stdout
     assert not run_mod.run_dir("r1").exists()
 
@@ -198,18 +167,14 @@ def test_create_save_failure_is_fatal(tmp_path, monkeypatch) -> None:
         raise OSError("disk full")
 
     monkeypatch.setattr(run_mod, "save", boom)
-    r = runner.invoke(
-        app, ["run", "create", "r1", "--scenario", "s.yaml", "--tech-order", "o.yaml"]
-    )
+    r = _create("r1")
     assert r.exit_code == 1 and "could not create run" in (r.stdout + (r.stderr or ""))
 
 
 def test_clone_copies_inputs_drops_artifacts(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     _inputs(tmp_path)
-    runner.invoke(
-        app, ["run", "create", "r1", "--scenario", "s.yaml", "--tech-order", "o.yaml"]
-    )
+    _create("r1")
     # Simulate a stage artifact from a prior solve.
     (run_mod.run_dir("r1") / "rates.yaml").write_text("x: 1\n")
     r = runner.invoke(app, ["run", "clone", "r1", "r2"])
@@ -230,11 +195,8 @@ def test_clone_source_missing_is_fatal(tmp_path, monkeypatch) -> None:
 def test_clone_dest_exists_is_fatal(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     _inputs(tmp_path)
-    for name in ("r1", "r2"):
-        runner.invoke(
-            app,
-            ["run", "create", name, "--scenario", "s.yaml", "--tech-order", "o.yaml"],
-        )
+    _create("r1")
+    _create("r2")
     r = runner.invoke(app, ["run", "clone", "r1", "r2"])
     assert r.exit_code == 1 and "already exists" in (r.stdout + (r.stderr or ""))
 
@@ -242,27 +204,19 @@ def test_clone_dest_exists_is_fatal(tmp_path, monkeypatch) -> None:
 def test_clone_dry_run_and_bad_source(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     _inputs(tmp_path)
-    runner.invoke(
-        app, ["run", "create", "r1", "--scenario", "s.yaml", "--tech-order", "o.yaml"]
-    )
+    _create("r1")
     dry = runner.invoke(app, ["run", "clone", "r1", "r2", "--dry-run"])
-    assert (
-        dry.exit_code == 0
-        and "dry run" in dry.stdout
-        and not run_mod.run_dir("r2").exists()
-    )
+    assert dry.exit_code == 0 and "dry run" in dry.stdout
+    assert not run_mod.run_dir("r2").exists()
     # Malformed source manifest → clean error.
     (run_mod.run_dir("r1") / run_mod.MANIFEST_NAME).write_text("- bad\n")
-    bad = runner.invoke(app, ["run", "clone", "r1", "r3"])
-    assert bad.exit_code == 1
+    assert runner.invoke(app, ["run", "clone", "r1", "r3"]).exit_code == 1
 
 
 def test_clone_save_failure_is_fatal(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     _inputs(tmp_path)
-    runner.invoke(
-        app, ["run", "create", "r1", "--scenario", "s.yaml", "--tech-order", "o.yaml"]
-    )
+    _create("r1")
 
     def boom(*a, **k):
         raise OSError("disk full")
@@ -275,20 +229,7 @@ def test_clone_save_failure_is_fatal(tmp_path, monkeypatch) -> None:
 def test_show_reports_status_and_artifacts(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     scn, order, mp = _inputs(tmp_path)
-    runner.invoke(
-        app,
-        [
-            "run",
-            "create",
-            "r1",
-            "--scenario",
-            "s.yaml",
-            "--tech-order",
-            "o.yaml",
-            "--map",
-            "m.yaml",
-        ],
-    )
+    _create("r1")
     # scenario current, tech-order changed, map missing.
     order.write_text("level: 2\n")
     mp.unlink()
@@ -314,12 +255,23 @@ def test_show_bad_manifest_is_fatal(tmp_path, monkeypatch) -> None:
     assert runner.invoke(app, ["run", "show", "r1"]).exit_code == 1
 
 
+def test_show_tolerates_missing_input_key(tmp_path, monkeypatch) -> None:
+    # A manifest lacking an input (e.g. hand-edited) is shown, not crashed.
+    monkeypatch.chdir(tmp_path)
+    directory = run_mod.run_dir("r1")
+    directory.mkdir(parents=True)
+    (directory / run_mod.MANIFEST_NAME).write_text(
+        "run: r1\ninputs:\n  scenario: {path: s.yaml, sha256: x}\n"
+    )
+    r = runner.invoke(app, ["run", "show", "r1"])
+    assert r.exit_code == 0
+    assert "scenario:" in r.stdout and "map:" not in r.stdout
+
+
 def test_show_no_artifacts(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     _inputs(tmp_path)
-    runner.invoke(
-        app, ["run", "create", "r1", "--scenario", "s.yaml", "--tech-order", "o.yaml"]
-    )
+    _create("r1")
     r = runner.invoke(app, ["run", "show", "r1"])
     assert r.exit_code == 0 and "(none yet)" in r.stdout
 

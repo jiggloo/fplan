@@ -60,8 +60,8 @@ self-explanatory:
   from a Factorio seed/save. An **input**, orthogonal to the scenario. →
   `maps/`
 - **run** — one *execution* of the L2→L4 pipeline. A run binds a scenario, a
-  tech-order, and (optionally) a map, applies solver settings, and collects the
-  per-level outputs in `runs/<name>/`, described by a `manifest.yaml`. → `runs/`
+  tech-order, and a map, applies solver settings, and collects the per-level
+  outputs in `runs/<name>/`, described by a `manifest.yaml`. → `runs/`
 
 The shape of it: scenario, tech-order, and map are **reusable inputs** that
 exist on their own (one scenario → many tech-orders → many runs); a **run** is
@@ -145,7 +145,8 @@ fplan/
     ├── scenarios/      example problem descriptions          (tracked)
     ├── tech-orders/    example tech-orders                   (tracked)
     ├── maps/           example map(s)                        (tracked)
-    └── runs/           output when running the examples      (ignored)
+    └── runs/           example run manifest(s)               (manifest tracked,
+                                                               artifacts ignored)
 ```
 
 The committed-vs-ephemeral split is the core convention — see

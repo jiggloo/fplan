@@ -203,7 +203,7 @@ implemented — `fplan map from-string` currently exits with code `71`.
 
 A *run* is one execution of the L2→L4 pipeline. It lives in `runs/<name>/` and
 is described by a `manifest.yaml` that binds the run's inputs — a **scenario**,
-a **tech-order**, and an optional **map** — by reference (path + content hash),
+a **tech-order**, and a **map** — by reference (path + content hash),
 and (as later stages land) accumulates their settings and outputs. L1 is an
 *input* to a run, not part of it. See [Concepts](../README.md#concepts).
 
@@ -215,13 +215,13 @@ Create a run directory and write its manifest:
 .venv/bin/fplan run create steelaxe-exp \
     --scenario scenarios/steelaxe.yaml \
     --tech-order tech-orders/steelaxe.yaml \
-    --map maps/world.yaml          # optional
+    --map maps/world.yaml
 ```
 
 - A run is **named** — `run create <name>` creates `runs/<name>/`. `runs/` is a
   managed, git-ignored directory like `maps/`.
-- `--scenario` and `--tech-order` are required; `--map` is optional (spatial
-  caps simply don't fire without it).
+- `--scenario`, `--tech-order`, and `--map` are all required — a run is L2→L4,
+  and placement (L3) needs a map.
 - Refuses if the run already exists (remove it, or use `run clone`).
 - `--dry-run` reports what would be created and writes nothing.
 

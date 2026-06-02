@@ -1,9 +1,9 @@
 """Runs — create and manage L2→L4 pipeline runs.
 
-A run binds a scenario, a tech-order, and an optional map into a
-``runs/<name>/`` directory described by a ``manifest.yaml`` (see
-:mod:`fplan.run`). ``create``/``clone``/``show`` manage that structure;
-``full`` (executing L2→L4) is stubbed until those stages land.
+A run binds a scenario, a tech-order, and a map into a ``runs/<name>/``
+directory described by a ``manifest.yaml`` (see :mod:`fplan.run`).
+``create``/``clone``/``show`` manage that structure; ``full`` (executing
+L2→L4) is stubbed until those stages land.
 """
 
 from __future__ import annotations
@@ -30,8 +30,7 @@ TechOrderOpt = Annotated[
     Path, typer.Option("--tech-order", help="Tech-order YAML (L1 output) to solve.")
 ]
 MapOpt = Annotated[
-    Path | None,
-    typer.Option("--map", help="Map artifact (optional; enables spatial caps)."),
+    Path, typer.Option("--map", help="Map artifact the run is placed against.")
 ]
 
 _LOAD_ERRORS = (OSError, ValueError, yaml.YAMLError)
@@ -48,16 +47,15 @@ def create(
     name: NameArg,
     scenario: ScenarioOpt,
     tech_order: TechOrderOpt,
-    map: MapOpt = None,
+    map: MapOpt,
     dry_run: DryRun = False,
 ) -> None:
-    """Create a run directory and manifest binding scenario + tech-order [+ map]."""
+    """Create a run directory and manifest binding scenario + tech-order + map."""
     inputs: list[tuple[str, Path]] = [
         ("scenario", scenario),
         ("tech-order", tech_order),
+        ("map", map),
     ]
-    if map is not None:
-        inputs.append(("map", map))
     for label, path in inputs:
         if not path.exists():
             typer.echo(f"error: {label} file not found: {path}", err=True)

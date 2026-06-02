@@ -19,7 +19,7 @@ conventions the incremental migration follows. It is intentionally about
 | `examples/scenarios/` | Example problem descriptions. | yes |
 | `examples/tech-orders/` | Example tech-orders. | yes |
 | `examples/maps/` | Example map(s) — lets the examples run without Factorio. | yes |
-| `examples/runs/` | Output produced when running the examples in place. | no (contents) |
+| `examples/runs/` | Example run(s): the `manifest.yaml` is tracked; generated stage artifacts are not. | manifest only |
 
 ## The committed-vs-ephemeral rule
 
@@ -38,7 +38,12 @@ Applied per artifact type:
 - **Maps** (`maps/`) — regenerable from save files → a cache, not tracked. The
   one exception is the canonical example map under `examples/maps/`, committed
   so the examples can run without a Factorio install.
-- **Runs** (`runs/`, `examples/runs/`) — always output → never tracked.
+- **Runs** (`runs/`) — always output → never tracked. The exception is
+  `examples/runs/`: each example run's **`manifest.yaml`** is committed as
+  reference material (it binds a scenario + tech-order + map and is stable),
+  while the **stage artifacts** a run generates (`rates`/`layout`/`execution`)
+  stay ignored — they're regenerable output. So an example run is a tracked
+  manifest plus ignored, reproducible results.
 
 Rationale: generated artifacts never pollute git history or diffs, while the
 inputs worth versioning are kept. Because the artifacts are regenerable, losing
@@ -46,19 +51,21 @@ the ignored directories' contents costs nothing.
 
 ### Why the ephemeral directories still appear in a fresh clone
 
-Each ephemeral directory keeps a tracked `.gitkeep`, and `.gitignore` ignores
-only the *contents* (`/maps/*` with `!/maps/.gitkeep`). So the intended input
-and output locations are visible immediately after cloning — discoverable
-without reading any docs — yet generated files inside them stay untracked and
-`git status` stays clean after a run.
+The fully-ephemeral directories (`maps/`, `runs/`) each keep a tracked
+`.gitkeep`, and `.gitignore` ignores only the *contents* (`/maps/*` with
+`!/maps/.gitkeep`). `examples/runs/` needs no `.gitkeep` — its committed
+example `manifest.yaml` already keeps the directory present. So the intended
+input and output locations are visible immediately after cloning —
+discoverable without reading any docs — yet generated files inside them stay
+untracked and `git status` stays clean after a run.
 
 ## Examples and running in place
 
 `examples/` mirrors the working layout (`scenarios/`, `tech-orders/`, `maps/`,
 `runs/`). It holds curated reference material to learn from, and is positioned
-so a later run can use it *in place* — reading the example inputs and writing to
-the ignored `examples/runs/` — without copying files and without owning
-Factorio. The mechanism for selecting where the tool reads and writes (a
+so a later run can use it *in place* — reading the example inputs and writing
+its (ignored) stage artifacts under `examples/runs/<name>/`, alongside the
+committed manifest — without copying files and without owning Factorio. The mechanism for selecting where the tool reads and writes (a
 working-directory concept) is part of the CLI; the CLI skeleton now exists
 (bare `fplan` reports the working directory it would operate from), but the
 working-directory / run-directory *resolution* is not wired up yet.
