@@ -2,10 +2,13 @@
 
 Factorio production and placement planner.
 
-> **Status: early scaffolding.** The CLI command surface is complete and
-> navigable, but most stages are stubs being migrated incrementally — the
-> structure, conventions, and packaging baseline are in place ahead of the
-> planning logic that fills them in.
+> **Status: early — and tested only on macOS so far.** The CLI surface is
+> complete and navigable, and the front of the pipeline runs end-to-end today:
+> **L1** (`tech-order`) and **L2** (`rates` — solve, viz, post). **L3**
+> (`layout`) and **L4** (`execution`) are still stubs, filled in incrementally
+> (each unbuilt command says so in its `--help`). Factorio integration is
+> exercised on macOS only; on Windows/Linux it's untested — detection warns and
+> you confirm the paths yourself.
 
 fplan is **clone-first**: the documentation and example/reference material live
 in the repository and come with a `git clone`. Start with this README, then see
