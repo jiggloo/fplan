@@ -157,7 +157,9 @@ def test_pseudo_recipes(model: GameModel) -> None:
     assert bare.name == "launch/bare"
     burn = pseudo_recipes.for_burn("coal", model)
     assert burn is not None and burn.electric_output_j_per_cycle > 0
-    assert pseudo_recipes.for_burn("wood", model) is None  # FUEL_EXCLUDED
+    assert pseudo_recipes.for_burn("wood", model) is None  # default FUEL_EXCLUDED
+    # The exclusion set is config-threadable: excluding coal bars it too.
+    assert pseudo_recipes.for_burn("coal", model, frozenset({"coal"})) is None
     # lookup resolves names back to recipes.
     assert pseudo_recipes.lookup("research/automation", model) is not None
     looked = pseudo_recipes.lookup("launch/bare", model)
@@ -254,6 +256,9 @@ def test_build_instance_bad_l1(model: GameModel, tmp_path: Path) -> None:
 def test_load_map_data(tmp_path: Path) -> None:
     assert instance.load_map_data(None, 4.0).map_area == 0.0
     assert instance.load_map_data(tmp_path / "missing.yaml", 4.0).tile_pool == {}
+    # Empty / non-mapping map file → empty MapData, not a traceback.
+    (tmp_path / "empty.yaml").write_text("")
+    assert instance.load_map_data(tmp_path / "empty.yaml", 4.0).map_area == 0.0
     p = tmp_path / "map.yaml"
     p.write_text(
         yaml.safe_dump(

@@ -28,8 +28,9 @@ the stage(s) below it and never reaches up.** This is the Clean/Onion
 Concretely:
 
 - `fplan/model/` is base-pure and imports nothing from `fplan/l2/` (or above).
-  `make_facility` returns a bare `Facility`: empty `infrastructure_items`, the
-  prototype-derived `base_tile_footprint`.
+  `make_facility` returns a bare `Facility`: empty `infrastructure_items` and the
+  bare prototype footprint (`Facility.tile_footprint` = the building's
+  `base_tile_footprint`).
 - `fplan/l2/` owns its own enrichment. `l2.deployment.deployed_facility(model,
   building, config)` calls the base factory and overlays the deployment pattern
   from the L2 config. L2 code uses *that* when it needs a deployment-aware
@@ -60,4 +61,4 @@ populates"). This note **refines #14** for the packaged layout: deployment is
 still a Facility extension populated from a registry, but the population happens
 in `l2.deployment.deployed_facility`, not in the base `make_facility` — so the
 model layer carries no L2 knowledge. The registry itself moved into the tunable
-L2 config (`fplan/l2/config.py`, `resources/l2-defaults.yaml`).
+L2 config (`fplan/l2/config.py`, `src/fplan/resources/l2-defaults.yaml`).

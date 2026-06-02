@@ -169,6 +169,31 @@ def test_solve_infeasible_exits_nonzero(
     assert "l2" not in run_mod.load(run_mod.run_dir("r")).extra
 
 
+def test_solve_overwrite_guard_without_force(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    (run_mod.run_dir("r") / "rates.yaml").write_text("old\n")
+    # No --force, non-interactive (CliRunner) → refuse rather than clobber.
+    r = runner.invoke(app, ["rates", "solve", "r"])
+    assert r.exit_code == 1 and "already exists" in (r.stdout + (r.stderr or ""))
+
+
+def test_solve_random_seed_when_omitted(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    from fplan.l2 import solve as l2_solve
+
+    monkeypatch.setattr(l2_solve, "solve", _fake_solve())
+    monkeypatch.setattr(l2_solve, "write_solution", lambda *a, **k: None)
+    r = runner.invoke(app, ["rates", "solve", "r", "--force"])  # no --seed
+    assert r.exit_code == 0 and "SCIP seed:" in r.stdout
+    assert isinstance(run_mod.load(run_mod.run_dir("r")).extra["l2"]["seed"], int)
+
+
 def test_solve_write_failure_is_fatal(tmp_path, monkeypatch, use_fixture_model) -> None:
     monkeypatch.chdir(tmp_path)
     _make_run(tmp_path)

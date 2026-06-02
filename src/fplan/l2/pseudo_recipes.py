@@ -129,10 +129,14 @@ def for_launch(payload: str, count: float | None = None) -> PseudoRecipe:
     )
 
 
-def for_burn(fuel_name: str, model: GameModel) -> PseudoRecipe | None:
+def for_burn(
+    fuel_name: str, model: GameModel, fuel_excluded: frozenset[str] = FUEL_EXCLUDED
+) -> PseudoRecipe | None:
     """Boiler-engine burn pseudo-recipe for one chemical fuel.
-    Returns None if the boiler doesn't exist, the item isn't a
-    chemical fuel, or the fuel is in FUEL_EXCLUDED.
+    Returns None if the boiler doesn't exist, the item isn't a chemical fuel,
+    or the fuel is excluded. `fuel_excluded` defaults to the module's
+    `FUEL_EXCLUDED` (used by L3's `lookup`); L2 passes its config's
+    `fuel_excluded` so the exclusion is fully config-driven.
     """
     boiler = model.buildings.get("boiler")
     if boiler is None or "chemical" not in boiler.fuel_categories:
@@ -142,7 +146,7 @@ def for_burn(fuel_name: str, model: GameModel) -> PseudoRecipe | None:
         return None
     if not item.fuel_value_j or item.fuel_value_j <= 0:
         return None
-    if fuel_name in FUEL_EXCLUDED:
+    if fuel_name in fuel_excluded:
         return None
     t = BOILER_CYCLE_SECONDS
     j_per_cycle = BOILER_POWER_W * t

@@ -519,18 +519,18 @@ def build_lp(
     # variables that:
     #   (a) deduct from the chosen fuel item's flow, and
     #   (b) supply the building's electric/heat demand (constraint below).
-    # Wood is excluded from the allowed fuel set per FUEL_EXCLUDED. Fuels not
-    # producible in this scenario (e.g. nuclear-fuel without nuclear research)
-    # are excluded too — otherwise they add dead fuel_burn variables and drag
-    # their fuel-value coefficient (nuclear-fuel = 1210 MJ) into the energy
-    # balance, widening the coefficient range for no benefit.
+    # Wood is excluded from the allowed fuel set per the config's fuel_excluded.
+    # Fuels not producible in this scenario (e.g. nuclear-fuel without nuclear
+    # research) are excluded too — otherwise they add dead fuel_burn variables
+    # and drag their fuel-value coefficient (nuclear-fuel = 1210 MJ) into the
+    # energy balance, widening the coefficient range for no benefit.
     allowed_fuels: list[str] = sorted(
         n
         for n, it in model.items.items()
         if it.fuel_category == "chemical"
         and it.fuel_value_j
         and it.fuel_value_j > 0
-        and n not in l2_phases.FUEL_EXCLUDED
+        and n not in inst.cfg.fuel_excluded
         and n in inst.producible_items
     )
     burner_buildings: dict[str, object] = {}  # name -> Building

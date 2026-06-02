@@ -467,9 +467,11 @@ def _burn_pseudo_recipes(
     exclusion."""
     out: list[PseudoRecipe] = []
     for fuel_name in model.items:
-        if fuel_name not in producible or fuel_name in fuel_excluded:
+        if fuel_name not in producible:
             continue
-        pr = pseudo_recipes.for_burn(fuel_name, model)
+        # for_burn applies fuel_excluded itself (config-driven), so the
+        # exclusion is authoritative whether tightened or loosened.
+        pr = pseudo_recipes.for_burn(fuel_name, model, fuel_excluded)
         if pr is not None:
             out.append(pr)
     out.sort(key=lambda p: p.name)
@@ -538,6 +540,8 @@ def load_map_data(path: Path | str | None, wood_per_tree: float) -> MapData:
     if not path.exists():
         return empty
     data = yaml.safe_load(path.read_text())
+    if not isinstance(data, dict):  # empty or scalar map file → treat as no probe
+        return empty
     pool: dict[str, float] = {}
     for p in data.get("patches") or []:
         name = p.get("resource")

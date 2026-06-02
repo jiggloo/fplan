@@ -110,18 +110,20 @@ first with `fplan init` (see
 - **L2 solve** — the SCIP optimize needs the full model and is a per-seed primal
   coin flip, so it's exercised here rather than in CI (the automated tests cover
   the solver-*neutral* L2 layer — config, scenario, instance build, deployment —
-  against the fixture). Solve the committed example run in place:
+  against the fixture). Solve the committed **steelaxe** example run in place
+  (the quickest smoke):
 
   ```bash
   cd examples
   ../.venv/bin/fplan --config-file ../.fplan-config.yaml \
-      rates solve fishminer --seed 1 --time-limit-s 600
-  ../.venv/bin/fplan run show fishminer        # artifacts: rates.yaml
+      rates solve steelaxe --seed 1 --time-limit-s 120
+  ../.venv/bin/fplan --config-file ../.fplan-config.yaml run show steelaxe
   ```
 
-  Confirm it reports a feasible `t_FINAL`, writes `rates.yaml`, and grows the
-  manifest's `l2:` block. (steelaxe is the quickest smoke; default-victory is the
-  full campaign and may need several seeds to land an incumbent.)
+  Confirm it reports a feasible `t_FINAL`, writes `rates.yaml`, and `run show`
+  lists it as an artifact and the manifest gains an `l2:` block. (The committed
+  `fishminer` run binds the full `default-victory` campaign — solvable the same
+  way, but larger and may need several seeds to land an incumbent.)
 
 ## Development
 
