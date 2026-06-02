@@ -356,8 +356,68 @@ freely (it's regenerated from `rates.yaml`); the manifest is not modified.
 
 #### `rates post`
 
-Flattening the rates into the layout-stage input (`rates post`) is not yet
-ported (exit `70`).
+Post-process a solved `rates.yaml` into the **layout-stage (L3) input**.
+`rates post` is the L2→L3 post-processing stage; it's still under development and
+will grow more operations. Its **current operation is rate-flattening**:
+replacing each item's per-step production rate with the smoothest
+constant-rate-per-segment schedule that still meets every deadline — minimizing
+the number of assembler revisits (real TAS player-time) without producing ahead
+of game causality. Writes `runs/<run>/rates-post.yaml` and, by default, a
+visualization (for flattening, a diff of original vs flattened):
+
+```bash
+.venv/bin/fplan rates post steelaxe-exp                # chord (default) + viz
+.venv/bin/fplan rates post steelaxe-exp --method tube  # taut-string method
+.venv/bin/fplan rates post steelaxe-exp --no-viz       # data output only
+```
+
+The output `rates-post.yaml` is the same step/item schema as `rates.yaml` with
+the post-processed production characteristics (`production_rate_per_s` /
+`produced`), plus a sibling `post:` block recording the operation's settings, the
+source, a summary, and the per-item / unmet-input diagnostics. It's the run's L3
+input; the manifest gains a matching `post:` block.
+
+> **Provisional.** `rates-post.yaml` is the *temporary* L3 input and **its
+> schema is temporary too** — it mirrors `rates.yaml` only because L3's
+> preferred format isn't decided yet. Don't build anything downstream that
+> assumes the schema is stable.
+
+Flattening methods (`--method`, default `chord`):
+- **`chord`** (default) — straight chords between surplus-zero deadlines; the
+  fewest revisits, but can self-stockout (counted and reported as unmet inputs).
+- **`tube`** — the taut string through the causal tube; smoothest schedule that
+  never stocks out and never front-loads past causality (zero self-stockouts by
+  construction).
+- **`mrp`** — cross-dependency backward demand explosion; fewer revisits on
+  intermediates, still stage-1 (can self-stockout).
+
+Other options:
+- `--from PATH` post-processes any rates-shaped YAML instead of the run's
+  `rates.yaml` (e.g. a search candidate); the output is still the run's
+  `rates-post.yaml`.
+- `--no-viz` skips the auto-generated viz; `--open` opens it after writing
+  (same platform convention as `rates viz`); `--force` overwrites an existing
+  `rates-post.yaml` without prompting; `--dry-run` reports what it would write.
+
+Unlike `rates viz`, `post` **requires** the game model (a configured `data_dir`):
+the unmet-input diagnostics and the `mrp` dependency graph both need the
+recipe→ingredient map. See [L2 rate-flattening](L2-rate-flattening.md) for the
+formulation.
+
+The diff visualization (original vs flattened production, faint vs solid, plus
+the unmet-input table) is auto-detected by `rates viz`: pointing it at a
+post-processed file renders the diff view instead of the timeline —
+
+```bash
+.venv/bin/fplan rates viz steelaxe-exp --from runs/steelaxe-exp/rates-post.yaml
+```
+
+This regeneration is a **pure render** — it reads the flattened series and the
+persisted `post:` diagnostics, plus the original series from the referenced
+source `rates.yaml`; **no re-flattening**, and the model is loaded only
+best-effort (to enrich the legend's facility counts), so it works without a
+Factorio install. It has no companion heatmap (capacity is unchanged by
+flattening).
 
 ### `run`
 
