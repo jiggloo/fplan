@@ -7,6 +7,14 @@ dist/
 .venv/
 venv/
 
+# Test & tooling caches
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
 # IDE / OS
 .idea/
 .vscode/

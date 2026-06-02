@@ -43,6 +43,27 @@ Install the development dependencies and run the suite:
 .venv/bin/pytest
 ```
 
+## Development
+
+Install the dev toolchain (above) and the pre-commit hooks:
+
+```bash
+.venv/bin/pre-commit install
+```
+
+Run the checks locally — these mirror what CI enforces:
+
+```bash
+.venv/bin/ruff check .        # lint
+.venv/bin/ruff format .       # format
+.venv/bin/mypy                # type-check
+.venv/bin/pytest              # tests + coverage
+```
+
+Pre-commit runs the hygiene, lint/format, and secret-detection checks on each
+commit; CI re-runs them (plus the test matrix and a build check) as the
+authoritative gate.
+
 ## Repository layout
 
 ```
