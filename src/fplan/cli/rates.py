@@ -50,6 +50,15 @@ OutOpt = Annotated[
         "(manifest is NOT updated). Mutually exclusive with --seeds.",
     ),
 ]
+JobsOpt = Annotated[
+    int | None,
+    typer.Option(
+        "--jobs",
+        "-j",
+        help="Parallel worker processes for --seeds (default: up to CPU count). "
+        "1 = serial. Each seed solve is heavy — cap this if memory-bound.",
+    ),
+]
 L2ConfigOpt = Annotated[
     Path | None,
     typer.Option(
@@ -157,6 +166,7 @@ def solve(
     no_deployment: NoDeploymentOpt = False,
     no_player_time: NoPlayerTimeOpt = False,
     out: OutOpt = None,
+    jobs: JobsOpt = None,
     force: ForceOpt = False,
     dry_run: DryRun = False,
 ) -> None:
@@ -277,8 +287,6 @@ def solve(
         "node_limit": node_limit,
     }
 
-    from fplan.l2 import solve as l2_solve
-
     if chosen_seeds is not None:
         _run_search(
             run_dir=run_dir,
@@ -289,12 +297,14 @@ def solve(
             seeds=chosen_seeds,
             solver_kwargs=solver_kwargs,
             config_ref=config_ref,
+            jobs=jobs,
             force=force,
             run_mod=run_mod,
-            l2_solve=l2_solve,
             cli_main=cli_main,
         )
         return
+
+    from fplan.l2 import solve as l2_solve
 
     _run_single(
         run_dir=run_dir,
@@ -386,61 +396,62 @@ def _run_search(
     seeds,
     solver_kwargs,
     config_ref,
+    jobs,
     force,
     run_mod,
-    l2_solve,
     cli_main,
 ) -> None:
-    """Solve every seed, store candidates, rank by t_FINAL, and (after a prompt)
-    promote the best to rates.yaml.
+    """Solve every seed (serial or parallel), store candidates, rank by t_FINAL,
+    and (after a prompt) promote the best to rates.yaml.
 
     The instance is solver-neutral and reused across seeds — only SCIP's
-    randomseedshift varies — so the build cost is paid once.
+    randomseedshift varies — so the build cost is paid once and shipped to each
+    worker. The fan-out itself lives in :mod:`fplan.l2.search`; this stays the
+    CLI-facing ranking / summary / promotion shell.
     """
+    from fplan.l2 import search as l2_search
+
     search_dir = run_dir / SEARCH_DIRNAME
     search_dir.mkdir(parents=True, exist_ok=True)
 
+    n_jobs = l2_search.resolve_jobs(jobs, len(seeds))
+    how = "serially" if n_jobs == 1 else f"up to {n_jobs} in parallel"
+    typer.echo(f"Searching {len(seeds)} seed(s) {how} …")
+
     candidates: list[dict] = []
-    for sd in seeds:
-        typer.echo(f"→ seed {sd} …")
-        try:
-            sol, _m, _handles = l2_solve.solve(inst, model, **solver_kwargs, seed=sd)
-            sol.seed = sd
-        except Exception as exc:  # one bad seed must not abort the whole search
-            typer.echo(f"  ✗ seed {sd} failed: {exc}")
-            candidates.append(
-                {
-                    "seed": sd,
-                    "status": "error",
-                    "objective_s": None,
-                    "solve_time_s": None,
-                    "file": None,
-                    "error": str(exc),
-                }
+    total = len(seeds)
+    for res in l2_search.run_search(
+        inst,
+        model,
+        seeds,
+        solver_kwargs=solver_kwargs,
+        search_dir=search_dir,
+        jobs=n_jobs,
+    ):
+        entry: dict = {
+            "seed": res.seed,
+            "status": res.status,
+            "objective_s": res.objective_s,
+            "solve_time_s": res.solve_time_s,
+            "file": res.file,
+        }
+        if res.error is not None:
+            entry["error"] = res.error
+        candidates.append(entry)
+
+        done = len(candidates)
+        if res.error is not None:
+            typer.echo(f"  [{done}/{total}] ✗ seed {res.seed} failed: {res.error}")
+        elif res.objective_s is None:
+            typer.echo(
+                f"  [{done}/{total}] ✗ seed {res.seed}: no feasible incumbent "
+                f"({res.status})"
             )
-            continue
-
-        cand_path = search_dir / f"seed-{sd}.yaml"
-        try:
-            l2_solve.write_solution(inst, sol, model, cand_path)
-        except OSError as exc:  # disk failure is fatal — we can't store results
-            typer.echo(f"error: could not write {cand_path}: {exc}", err=True)
-            raise typer.Exit(code=1) from exc
-
-        obj = float(sol.objective) if sol.objective is not None else None
-        candidates.append(
-            {
-                "seed": sd,
-                "status": sol.status,
-                "objective_s": obj,
-                "solve_time_s": float(sol.solve_time_s),
-                "file": cand_path.name,
-            }
-        )
-        if obj is None:
-            typer.echo(f"  ✗ seed {sd}: no feasible incumbent ({sol.status})")
         else:
-            typer.echo(f"  ✓ seed {sd}: t_FINAL = {obj:.1f}s ({sol.status})")
+            typer.echo(
+                f"  [{done}/{total}] ✓ seed {res.seed}: "
+                f"t_FINAL = {res.objective_s:.1f}s ({res.status})"
+            )
 
     # Rank: feasible seeds by t_FINAL then seed (deterministic tie-break);
     # infeasible / errored seeds are never promotable.
@@ -453,10 +464,12 @@ def _run_search(
     summary = {
         "mode": mode,
         "config": config_ref,
+        "jobs": n_jobs,
         "solver": dict(solver_kwargs),
         "seeds": list(seeds),
         "best_seed": best["seed"] if best else None,
-        "candidates": candidates,
+        # Stored seed-sorted for a stable diff; live output is completion order.
+        "candidates": sorted(candidates, key=lambda c: c["seed"]),
     }
     summary_path = search_dir / SEARCH_SUMMARY
     try:

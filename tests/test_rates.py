@@ -321,7 +321,9 @@ def test_search_force_promotes_best(tmp_path, monkeypatch, use_fixture_model) ->
     monkeypatch.chdir(tmp_path)
     _make_run(tmp_path)
     _patch_solve(monkeypatch, _fake_solve_by_seed({1: 250.0, 2: 240.0, 3: 260.0}))
-    r = runner.invoke(app, ["rates", "solve", "r", "--seeds", "[1,2,3]", "--force"])
+    r = runner.invoke(
+        app, ["rates", "solve", "r", "--seeds", "[1,2,3]", "--jobs", "1", "--force"]
+    )
     assert r.exit_code == 0 and "★ best" in r.stdout
     rd = run_mod.run_dir("r")
     search = rd / "rates-search"
@@ -345,7 +347,9 @@ def test_search_count_runs_n_random_seeds(
     monkeypatch.chdir(tmp_path)
     _make_run(tmp_path)
     _patch_solve(monkeypatch, _fake_solve_any())
-    r = runner.invoke(app, ["rates", "solve", "r", "--seeds", "3", "--force"])
+    r = runner.invoke(
+        app, ["rates", "solve", "r", "--seeds", "3", "--jobs", "1", "--force"]
+    )
     assert r.exit_code == 0
     summary = yaml.safe_load(
         (run_mod.run_dir("r") / "rates-search" / "summary.yaml").read_text()
@@ -361,7 +365,9 @@ def test_search_all_infeasible_exits_nonzero(
     monkeypatch.chdir(tmp_path)
     _make_run(tmp_path)
     _patch_solve(monkeypatch, _fake_solve_by_seed({1: None, 2: None}))
-    r = runner.invoke(app, ["rates", "solve", "r", "--seeds", "[1,2]", "--force"])
+    r = runner.invoke(
+        app, ["rates", "solve", "r", "--seeds", "[1,2]", "--jobs", "1", "--force"]
+    )
     assert r.exit_code == 1 and "no feasible incumbent" in r.stdout
     rd = run_mod.run_dir("r")
     assert (rd / "rates-search" / "summary.yaml").exists()
@@ -388,7 +394,9 @@ def test_search_one_seed_errors_continues(
         )
 
     _patch_solve(monkeypatch, _solve)
-    r = runner.invoke(app, ["rates", "solve", "r", "--seeds", "[1,2,3]", "--force"])
+    r = runner.invoke(
+        app, ["rates", "solve", "r", "--seeds", "[1,2,3]", "--jobs", "1", "--force"]
+    )
     assert r.exit_code == 0
     rd = run_mod.run_dir("r")
     assert not (rd / "rates-search" / "seed-2.yaml").exists()
@@ -406,7 +414,7 @@ def test_search_noninteractive_skips_promotion(
     _make_run(tmp_path)
     _patch_solve(monkeypatch, _fake_solve_by_seed({1: 240.0, 2: 250.0}))
     # CliRunner has no tty → non-interactive; without --force, leave candidates.
-    r = runner.invoke(app, ["rates", "solve", "r", "--seeds", "[1,2]"])
+    r = runner.invoke(app, ["rates", "solve", "r", "--seeds", "[1,2]", "--jobs", "1"])
     assert r.exit_code == 0 and "non-interactive" in r.stdout
     rd = run_mod.run_dir("r")
     assert (rd / "rates-search" / "seed-1.yaml").exists()
@@ -421,7 +429,9 @@ def test_search_interactive_promote_yes(
     _make_run(tmp_path)
     monkeypatch.setattr(cli_main, "_stdin_is_interactive", lambda: True)
     _patch_solve(monkeypatch, _fake_solve_by_seed({1: 240.0, 2: 250.0}))
-    r = runner.invoke(app, ["rates", "solve", "r", "--seeds", "[1,2]"], input="y\n")
+    r = runner.invoke(
+        app, ["rates", "solve", "r", "--seeds", "[1,2]", "--jobs", "1"], input="y\n"
+    )
     assert r.exit_code == 0
     assert run_mod.load(run_mod.run_dir("r")).extra["l2"]["seed"] == 1
 
@@ -433,7 +443,9 @@ def test_search_interactive_promote_declined(
     _make_run(tmp_path)
     monkeypatch.setattr(cli_main, "_stdin_is_interactive", lambda: True)
     _patch_solve(monkeypatch, _fake_solve_by_seed({1: 240.0, 2: 250.0}))
-    r = runner.invoke(app, ["rates", "solve", "r", "--seeds", "[1,2]"], input="n\n")
+    r = runner.invoke(
+        app, ["rates", "solve", "r", "--seeds", "[1,2]", "--jobs", "1"], input="n\n"
+    )
     assert r.exit_code == 0 and "Not promoted" in r.stdout
     rd = run_mod.run_dir("r")
     assert not (rd / "rates.yaml").exists()
@@ -450,7 +462,9 @@ def test_search_interactive_overwrite_declined(
     monkeypatch.setattr(cli_main, "_stdin_is_interactive", lambda: True)
     _patch_solve(monkeypatch, _fake_solve_by_seed({1: 240.0}))
     # Promote yes, then decline the overwrite of the existing rates.yaml.
-    r = runner.invoke(app, ["rates", "solve", "r", "--seeds", "[1]"], input="y\nn\n")
+    r = runner.invoke(
+        app, ["rates", "solve", "r", "--seeds", "[1]", "--jobs", "1"], input="y\nn\n"
+    )
     assert r.exit_code == 0 and "kept" in r.stdout
     assert (rd / "rates.yaml").read_text() == "OLD\n"
     assert "l2" not in run_mod.load(rd).extra
@@ -471,3 +485,49 @@ def test_out_export_single_leaves_manifest(
     rd = run_mod.run_dir("r")
     assert not (rd / "rates.yaml").exists()
     assert "l2" not in run_mod.load(rd).extra
+
+
+class _InlineExecutor:
+    """In-process stand-in for ProcessPoolExecutor (see test_l2_search)."""
+
+    def __init__(self, max_workers=None, initializer=None, initargs=()):
+        if initializer is not None:
+            initializer(*initargs)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def submit(self, fn, *args, **kw):
+        import concurrent.futures as cf
+
+        fut: cf.Future = cf.Future()
+        try:
+            fut.set_result(fn(*args, **kw))
+        except Exception as exc:
+            fut.set_exception(exc)
+        return fut
+
+
+def test_search_parallel_promotes_best(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    from fplan.l2 import search as l2_search
+
+    _patch_solve(monkeypatch, _fake_solve_by_seed({1: 250.0, 2: 240.0}))
+    # Run the parallel branch in-process so the mocked solve applies.
+    monkeypatch.setattr(l2_search, "ProcessPoolExecutor", _InlineExecutor)
+    r = runner.invoke(
+        app, ["rates", "solve", "r", "--seeds", "[1,2]", "--jobs", "2", "--force"]
+    )
+    assert r.exit_code == 0 and "in parallel" in r.stdout
+    rd = run_mod.run_dir("r")
+    assert (rd / "rates-search" / "seed-1.yaml").exists()
+    assert (rd / "rates-search" / "seed-2.yaml").exists()
+    assert run_mod.load(rd).extra["l2"]["seed"] == 2  # best (t_FINAL=240)
+    summary = yaml.safe_load((rd / "rates-search" / "summary.yaml").read_text())
+    assert summary["jobs"] == 2

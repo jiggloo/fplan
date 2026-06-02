@@ -256,7 +256,15 @@ command, stores each candidate, ranks them by `t_FINAL`, and promotes the best:
   those seeds** (quote it so the shell doesn't glob/split the brackets).
 - Mutually exclusive with `--seed` and `--out`. The other per-solve options
   (`--mode`, the solver controls, `--l2-config`, the modeling A/B flags) apply
-  uniformly to every seed. Seeds run **serially**.
+  uniformly to every seed.
+- **Seeds solve in parallel** — `--jobs N` / `-j N` sets how many worker
+  processes run concurrently (default: up to the CPU count, capped by the seed
+  count; `--jobs 1` forces serial). Each solve is its own process (SCIP is
+  single-threaded and not thread-safe), so this scales an 8-seed search from
+  ~8× a single solve down to roughly one solve's wall-clock on enough cores.
+  Each solve is heavy on CPU **and memory**, so cap `--jobs` if you're
+  memory-bound. In parallel, the live per-seed lines print in completion order;
+  `summary.yaml` is always seed-sorted.
 - Each candidate is written to **`runs/<run>/rates-search/seed-<N>.yaml`** (same
   schema as `rates.yaml`), with a **`summary.yaml`** index recording every seed's
   objective / status / solve-time, the search settings, and the chosen best. The
