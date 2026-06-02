@@ -127,6 +127,19 @@ first with `fplan init` (see
   run binds the full `default-victory` campaign — solvable the same way, but
   larger and may need several seeds to land an incumbent.)
 
+  For the larger run, drive several seeds in one command (solved in parallel,
+  up to one process per seed, capped at your CPU count) and promote the best:
+
+  ```bash
+  ../.venv/bin/fplan --config-file ../.fplan-config.yaml \
+      rates solve fishminer --seeds 8 --time-limit-s 300   # add -j N to cap workers
+  ```
+
+  Each seed's candidate lands under `runs/fishminer/rates-search/` (with a
+  `summary.yaml` index); the best is promoted to `runs/fishminer/rates.yaml`
+  after a prompt (`--force` to skip). The `rates-search/` scratch is ephemeral
+  (ignored like the rest of `runs/`).
+
 ## Development
 
 Install the dev toolchain (above) and the pre-commit hooks:

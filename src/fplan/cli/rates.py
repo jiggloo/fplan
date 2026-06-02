@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import random
+import shutil
 from pathlib import Path
 from typing import Annotated
 
@@ -13,6 +15,15 @@ from fplan.cli._options import DryRun
 from fplan.cli._stub import not_migrated
 
 group = typer.Typer(help="L2 — production rates.", no_args_is_help=True)
+
+# Search candidates live in their own subdir of the run so a search never
+# collides with the promoted rates.yaml until the user explicitly promotes.
+SEARCH_DIRNAME = "rates-search"
+SEARCH_SUMMARY = "summary.yaml"
+RATES_NAME = "rates.yaml"
+# Inclusive upper bound for a random SCIP seed; shared by single-solve and
+# search so both draw from the same [1, SEED_MAX] range.
+SEED_MAX = 2**31 - 1
 
 RunArg = Annotated[str, typer.Argument(help="Run name (under runs/) to solve.")]
 ModeOpt = Annotated[
@@ -25,6 +36,31 @@ SeedOpt = Annotated[
     int | None,
     typer.Option(
         "--seed", help="SCIP randomization seed (random + printed if omitted)."
+    ),
+]
+SeedsOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--seeds",
+        help="Multi-seed search: N (run N random seeds) or \\[a,b,c] (those "
+        "seeds). Mutually exclusive with --seed/--out.",
+    ),
+]
+OutOpt = Annotated[
+    Path | None,
+    typer.Option(
+        "--out",
+        help="Single-solve export path instead of runs/<run>/rates.yaml "
+        "(manifest is NOT updated). Mutually exclusive with --seeds.",
+    ),
+]
+JobsOpt = Annotated[
+    int | None,
+    typer.Option(
+        "--jobs",
+        "-j",
+        help="Parallel worker processes for --seeds (default: up to CPU count). "
+        "1 = serial. Each seed solve is heavy — cap this if memory-bound.",
     ),
 ]
 L2ConfigOpt = Annotated[
@@ -65,6 +101,14 @@ NoPlayerTimeOpt = Annotated[
         "--no-player-time", help="Disable the per-step player-time constraint."
     ),
 ]
+QuietSolverOpt = Annotated[
+    bool,
+    typer.Option(
+        "--quiet-solver",
+        help="Silence SCIP in the per-seed logs (parallel search only); the logs "
+        "then stay near-empty. By default each seed's log captures full progress.",
+    ),
+]
 ForceOpt = Annotated[
     bool,
     typer.Option("--force", help="Overwrite an existing rates.yaml without prompting."),
@@ -78,12 +122,64 @@ def _input_path(manifest, label: str) -> Path | None:
     return Path(ref["path"])
 
 
+def _seed_spec(spec: str) -> int | list[int]:
+    """Parse a ``--seeds`` value into either a count (bare int) or an explicit
+    list (bracketed). Raises ``ValueError`` with a clean message on bad syntax.
+
+    ``"5"`` → ``5`` (run 5 random seeds); ``"[1,2,3]"`` → ``[1, 2, 3]`` (exactly
+    those, de-duplicated preserving order).
+    """
+    s = spec.strip()
+    if s.startswith("["):
+        if not s.endswith("]"):
+            raise ValueError(f"malformed seed list {spec!r}: missing closing ']'")
+        body = s[1:-1].strip()
+        if not body:
+            raise ValueError(f"empty seed list {spec!r}")
+        seen: dict[int, None] = {}
+        for tok in body.split(","):
+            tok = tok.strip()
+            try:
+                val = int(tok)
+            except ValueError:
+                raise ValueError(
+                    f"bad seed {tok!r} in {spec!r}: seeds must be integers"
+                ) from None
+            if not 1 <= val <= SEED_MAX:
+                raise ValueError(
+                    f"seed {val} out of range in {spec!r}: must be 1..{SEED_MAX}"
+                )
+            seen[val] = None
+        return list(seen)
+    try:
+        n = int(s)
+    except ValueError:
+        raise ValueError(
+            f"bad --seeds {spec!r}: use N (a count) or [a,b,c] (explicit seeds)"
+        ) from None
+    if n < 1:
+        raise ValueError(f"--seeds count must be ≥ 1, got {n}")
+    # Random seeds are drawn distinctly from [1, SEED_MAX]; a count beyond that
+    # population would otherwise blow up in random.sample with a raw traceback.
+    if n > SEED_MAX:
+        raise ValueError(
+            f"--seeds count {n} exceeds the {SEED_MAX} distinct seeds available"
+        )
+    return n
+
+
+def _random_seeds(n: int) -> list[int]:
+    """``n`` distinct random SCIP seeds in ``[1, SEED_MAX]``."""
+    return random.sample(range(1, SEED_MAX + 1), n)
+
+
 @group.command()
 def solve(
     ctx: typer.Context,
     run: RunArg,
     mode: ModeOpt = "experimental",
     seed: SeedOpt = None,
+    seeds: SeedsOpt = None,
     l2_config: L2ConfigOpt = None,
     time_limit_s: TimeLimitOpt = None,
     gap_limit: GapLimitOpt = None,
@@ -92,6 +188,9 @@ def solve(
     max_area_fraction: MaxAreaOpt = None,
     no_deployment: NoDeploymentOpt = False,
     no_player_time: NoPlayerTimeOpt = False,
+    out: OutOpt = None,
+    jobs: JobsOpt = None,
+    quiet_solver: QuietSolverOpt = False,
     force: ForceOpt = False,
     dry_run: DryRun = False,
 ) -> None:
@@ -100,6 +199,11 @@ def solve(
     Reads the run manifest's scenario / tech-order / map (resolved relative to
     the current directory), builds the L2 instance, solves the nonconvex MINLP
     with SCIP, and records the L2 settings + outcome back into the manifest.
+
+    With --seeds it runs a multi-seed search instead: every seed is solved, each
+    candidate is written under runs/<run>/rates-search/ (never touching the
+    promoted rates.yaml), the seeds are ranked by t_FINAL, and the best is
+    promoted to rates.yaml after a prompt (--force to skip).
     """
     from fplan import refs
     from fplan import run as run_mod
@@ -108,6 +212,29 @@ def solve(
     from fplan.l2 import instance as l2_instance
 
     state: cli_main.CLIState = ctx.obj
+
+    # Cheap argument validation first: surface usage errors (exit 2) before any
+    # model load or solve.
+    if seeds is not None and seed is not None:
+        typer.echo("error: --seed and --seeds are mutually exclusive.", err=True)
+        raise typer.Exit(code=2)
+    if seeds is not None and out is not None:
+        typer.echo("error: --out cannot be combined with --seeds.", err=True)
+        raise typer.Exit(code=2)
+    if seeds is None and (jobs is not None or quiet_solver):
+        typer.echo(
+            "error: --jobs / --quiet-solver only apply to a --seeds search.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    chosen_seeds: list[int] | None = None
+    if seeds is not None:
+        try:
+            spec = _seed_spec(seeds)
+            chosen_seeds = _random_seeds(spec) if isinstance(spec, int) else spec
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
 
     run_dir = run_mod.run_dir(run)
     if not run_mod.manifest_path(run_dir).exists():
@@ -169,31 +296,93 @@ def solve(
     for w in inst.warnings:
         typer.echo(f"  ⚠ {w}")
 
-    out_path = run_dir / "rates.yaml"
     if dry_run:
         l2_instance._print_summary(inst, model)
-        typer.echo(f"\n(dry run; would solve and write {out_path})")
+        if chosen_seeds is not None:
+            search_dir = run_dir / SEARCH_DIRNAME
+            typer.echo(
+                f"\n(dry run; would solve {len(chosen_seeds)} seed(s) and write "
+                f"candidates under {search_dir})"
+            )
+        else:
+            dest = out if out is not None else run_dir / RATES_NAME
+            typer.echo(f"\n(dry run; would solve and write {dest})")
         return
 
+    config_ref = refs.file_ref(l2_config) if l2_config is not None else "default"
+    solver_kwargs = {
+        "time_limit_s": time_limit_s,
+        "gap_limit": gap_limit,
+        "stall_nodes": stall_nodes,
+        "node_limit": node_limit,
+    }
+
+    if chosen_seeds is not None:
+        _run_search(
+            run_dir=run_dir,
+            manifest=manifest,
+            inst=inst,
+            model=model,
+            mode=mode,
+            seeds=chosen_seeds,
+            solver_kwargs=solver_kwargs,
+            config_ref=config_ref,
+            jobs=jobs,
+            quiet_solver=quiet_solver,
+            force=force,
+            run_mod=run_mod,
+            cli_main=cli_main,
+        )
+        return
+
+    from fplan.l2 import solve as l2_solve
+
+    _run_single(
+        run_dir=run_dir,
+        manifest=manifest,
+        inst=inst,
+        model=model,
+        mode=mode,
+        seed=seed,
+        out=out,
+        solver_kwargs=solver_kwargs,
+        config_ref=config_ref,
+        force=force,
+        run_mod=run_mod,
+        l2_solve=l2_solve,
+        cli_main=cli_main,
+    )
+
+
+def _run_single(
+    *,
+    run_dir,
+    manifest,
+    inst,
+    model,
+    mode,
+    seed,
+    out,
+    solver_kwargs,
+    config_ref,
+    force,
+    run_mod,
+    l2_solve,
+    cli_main,
+) -> None:
+    """Single-seed solve. Writes the canonical rates.yaml (and grows the
+    manifest), or — when ``out`` is given — a pure export to that path that
+    leaves the manifest untouched."""
+    out_path = out if out is not None else run_dir / RATES_NAME
     if not force:
         cli_main.confirm_overwrite_or_exit(out_path)
 
     if seed is None:
-        seed = random.randint(1, 2**31 - 1)
+        seed = random.randint(1, SEED_MAX)
     typer.echo(f"SCIP seed: {seed}  (re-pass --seed {seed} to reproduce)")
 
-    from fplan.l2 import solve as l2_solve
-
     try:
-        sol, _m, _handles = l2_solve.solve(
-            inst,
-            model,
-            time_limit_s=time_limit_s,
-            gap_limit=gap_limit,
-            stall_nodes=stall_nodes,
-            node_limit=node_limit,
-            seed=seed,
-        )
+        sol, _m, _handles = l2_solve.solve(inst, model, **solver_kwargs, seed=seed)
     except Exception as exc:  # SCIP-side failure → clean error, not a traceback
         typer.echo(f"error: solve failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -209,19 +398,260 @@ def solve(
         typer.echo(f"error: could not write {out_path}: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
-    # Grow the manifest with this stage's settings + outcome.
-    config_ref = refs.file_ref(l2_config) if l2_config is not None else "default"
-    manifest.extra["l2"] = {
-        "mode": mode,
-        "seed": seed,
-        "objective_s": float(sol.objective),
-        "status": sol.status,
-        "solve_time_s": float(sol.solve_time_s),
-        "config": config_ref,
-    }
-    run_mod.save(run_dir, manifest)
+    if out is None:
+        # Grow the manifest with this stage's settings + outcome. An --out
+        # export is deliberately not recorded — the l2: block only ever points
+        # at the promoted rates.yaml inside the run.
+        manifest.extra["l2"] = {
+            "mode": mode,
+            "seed": seed,
+            "objective_s": float(sol.objective),
+            "status": sol.status,
+            "solve_time_s": float(sol.solve_time_s),
+            "config": config_ref,
+        }
+        run_mod.save(run_dir, manifest)
+    else:
+        typer.echo("(--out export; manifest not updated)")
 
     typer.echo(f"✓ t_FINAL = {sol.objective:.1f}s (status: {sol.status})\n→ {out_path}")
+
+
+def _run_search(
+    *,
+    run_dir,
+    manifest,
+    inst,
+    model,
+    mode,
+    seeds,
+    solver_kwargs,
+    config_ref,
+    jobs,
+    quiet_solver,
+    force,
+    run_mod,
+    cli_main,
+) -> None:
+    """Solve every seed (serial or parallel), store candidates, rank by t_FINAL,
+    and (after a prompt) promote the best to rates.yaml.
+
+    The instance is solver-neutral and reused across seeds — only SCIP's
+    randomseedshift varies — so the build cost is paid once and shipped to each
+    worker. The fan-out itself lives in :mod:`fplan.l2.search`; this stays the
+    CLI-facing ranking / summary / promotion shell.
+    """
+    from fplan.l2 import search as l2_search
+
+    search_dir = run_dir / SEARCH_DIRNAME
+    search_dir.mkdir(parents=True, exist_ok=True)
+    # Clear a prior search's residue so rates-search/ reflects only this search
+    # (summary.yaml is rewritten below; orphaned seed-*.yaml/.log would otherwise
+    # mislead a casual `ls` into mixing two searches).
+    for stale in (
+        *search_dir.glob("seed-*.yaml"),
+        *search_dir.glob("seed-*.log"),
+        search_dir / SEARCH_SUMMARY,
+    ):
+        stale.unlink(missing_ok=True)
+
+    n_jobs = l2_search.resolve_jobs(jobs, len(seeds))
+    parallel = n_jobs > 1
+    # Parallel seeds each get full SCIP progress in their own log (so they're
+    # monitorable with tail -f) — interleaving the console is the whole problem.
+    # --quiet-solver silences SCIP, leaving the logs near-empty. Serial runs SCIP
+    # quietly (verbose stays False), as a single solve does.
+    solver_kwargs = {**solver_kwargs, "verbose": parallel and not quiet_solver}
+
+    if parallel and quiet_solver:
+        typer.echo(
+            f"Searching {len(seeds)} seed(s), up to {n_jobs} in parallel "
+            "(SCIP silenced via --quiet-solver; per-seed logs stay near-empty)."
+        )
+    elif parallel:
+        typer.echo(
+            f"Searching {len(seeds)} seed(s), up to {n_jobs} in parallel "
+            "(each worker holds a full model copy) — per-seed logs "
+            "(tail -f to monitor):"
+        )
+        for sd in seeds:
+            typer.echo(f"  seed {sd} → {search_dir / f'seed-{sd}.log'}")
+    else:
+        typer.echo(f"Searching {len(seeds)} seed(s) serially …")
+
+    candidates: list[dict] = []
+    total = len(seeds)
+    for res in l2_search.run_search(
+        inst,
+        model,
+        seeds,
+        solver_kwargs=solver_kwargs,
+        search_dir=search_dir,
+        jobs=n_jobs,
+    ):
+        entry: dict = {
+            "seed": res.seed,
+            "status": res.status,
+            "objective_s": res.objective_s,
+            "solve_time_s": res.solve_time_s,
+            "file": res.file,
+        }
+        if parallel:
+            entry["log"] = f"seed-{res.seed}.log"
+        if res.error is not None:
+            entry["error"] = res.error
+        candidates.append(entry)
+
+        done = len(candidates)
+        if res.error is not None:
+            typer.echo(f"  [{done}/{total}] ✗ seed {res.seed} failed: {res.error}")
+        elif res.objective_s is None:
+            typer.echo(
+                f"  [{done}/{total}] ✗ seed {res.seed}: no feasible incumbent "
+                f"({res.status})"
+            )
+        else:
+            typer.echo(
+                f"  [{done}/{total}] ✓ seed {res.seed}: "
+                f"t_FINAL = {res.objective_s:.1f}s ({res.status})"
+            )
+
+    # Rank: feasible seeds by t_FINAL then seed (deterministic tie-break);
+    # infeasible / errored seeds are never promotable.
+    feasible = sorted(
+        (c for c in candidates if c["objective_s"] is not None),
+        key=lambda c: (c["objective_s"], c["seed"]),
+    )
+    best = feasible[0] if feasible else None
+
+    summary = {
+        "mode": mode,
+        "config": config_ref,
+        "jobs": n_jobs,
+        "solver": dict(solver_kwargs),
+        "seeds": list(seeds),
+        "best_seed": best["seed"] if best else None,
+        # Stored seed-sorted for a stable diff; live output is completion order.
+        "candidates": sorted(candidates, key=lambda c: c["seed"]),
+    }
+    summary_path = search_dir / SEARCH_SUMMARY
+    try:
+        summary_path.write_text(yaml.safe_dump(summary, sort_keys=False))
+    except OSError as exc:
+        typer.echo(f"error: could not write {summary_path}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    _print_ranked(candidates, best)
+
+    if best is None:
+        typer.echo(f"\n✗ no feasible incumbent across {len(seeds)} seed(s).")
+        typer.echo(f"  candidates + summary left in {search_dir}")
+        raise typer.Exit(code=1)
+
+    _promote(
+        run_dir=run_dir,
+        manifest=manifest,
+        search_dir=search_dir,
+        best=best,
+        mode=mode,
+        seeds=seeds,
+        jobs=n_jobs,
+        config_ref=config_ref,
+        force=force,
+        run_mod=run_mod,
+        cli_main=cli_main,
+    )
+
+
+def _print_ranked(candidates: list[dict], best: dict | None) -> None:
+    """Print the search candidates, feasible (by t_FINAL) first."""
+    ordered = sorted(
+        candidates,
+        key=lambda c: (
+            c["objective_s"] is None,
+            c["objective_s"] if c["objective_s"] is not None else 0.0,
+            c["seed"],
+        ),
+    )
+    typer.echo("\nSearch results (ranked):")
+    for c in ordered:
+        obj = f"{c['objective_s']:.1f}s" if c["objective_s"] is not None else "—"
+        mark = "  ★ best" if best is not None and c["seed"] == best["seed"] else ""
+        typer.echo(f"  seed {c['seed']:>10}   t_FINAL = {obj:>9}   {c['status']}{mark}")
+
+
+def _promote(
+    *,
+    run_dir,
+    manifest,
+    search_dir,
+    best,
+    mode,
+    seeds,
+    jobs,
+    config_ref,
+    force,
+    run_mod,
+    cli_main,
+) -> None:
+    """Promote the best candidate to rates.yaml after confirmation.
+
+    ``--force`` skips both prompts. A non-interactive session never silently
+    clobbers rates.yaml — it leaves the candidates and explains how to promote.
+    """
+    out_path = run_dir / RATES_NAME
+    best_obj = best["objective_s"]
+
+    if not force:
+        if not cli_main._stdin_is_interactive():
+            typer.echo(
+                f"\nnon-interactive: not promoting. Best is seed {best['seed']} "
+                f"(t_FINAL = {best_obj:.1f}s) at {search_dir / best['file']}.\n"
+                "Re-run with --force (or in an interactive shell) to promote."
+            )
+            return
+        if not typer.confirm(
+            f"\nPromote seed {best['seed']} (t_FINAL = {best_obj:.1f}s) → {out_path}?",
+            default=True,
+        ):
+            typer.echo(f"Not promoted; candidates left in {search_dir}.")
+            return
+        if out_path.exists() and not typer.confirm(
+            f"{out_path} already exists. Overwrite?", default=False
+        ):
+            typer.echo(f"Not promoted; existing {out_path} kept.")
+            return
+
+    cand_path = search_dir / best["file"]
+    # Atomic replace: copy to a temp sibling, then os.replace onto rates.yaml so
+    # an interruption mid-copy can't truncate a previously-promoted good plan.
+    tmp_path = out_path.with_name(out_path.name + ".tmp")
+    try:
+        shutil.copyfile(cand_path, tmp_path)
+        os.replace(tmp_path, out_path)
+    except OSError as exc:
+        tmp_path.unlink(missing_ok=True)
+        typer.echo(f"error: could not write {out_path}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    manifest.extra["l2"] = {
+        "mode": mode,
+        "seed": best["seed"],
+        "objective_s": best_obj,
+        "status": best["status"],
+        "solve_time_s": best["solve_time_s"],
+        "config": config_ref,
+        "search": {
+            "seeds": list(seeds),
+            "jobs": jobs,
+            "promoted_from": f"{SEARCH_DIRNAME}/{best['file']}",
+            "summary": f"{SEARCH_DIRNAME}/{SEARCH_SUMMARY}",
+        },
+    }
+    run_mod.save(run_dir, manifest)
+    typer.echo(
+        f"✓ promoted seed {best['seed']} (t_FINAL = {best_obj:.1f}s) → {out_path}"
+    )
 
 
 @group.command()
