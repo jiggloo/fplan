@@ -57,6 +57,31 @@ _LAYOUTS: dict[str, list[tuple[str, str]]] = {
 }
 
 
+# Platform key -> Factorio's user-data root, where it writes saves, logs, and
+# `script-output/` (the only place mods can write files). This is *not* the
+# install directory: Factorio always uses the per-user data dir below. Same
+# "verified on macOS, taken from the wiki elsewhere" posture as the install
+# roots above (https://wiki.factorio.com/Application_directory).
+_USER_DATA_ROOTS: dict[str, str] = {
+    "darwin": "~/Library/Application Support/factorio",
+    "win32": "~/AppData/Roaming/Factorio",
+    "linux": "~/.factorio",
+}
+
+
+def script_output_dir(platform: str) -> Path | None:
+    """The ``script-output`` directory mods write to, or None if unrecognized.
+
+    Headless Factorio writes ``game.write_file`` output here regardless of where
+    the binary or ``--mod-directory`` live, so the extractor must read results
+    from this per-OS location rather than next to the save.
+    """
+    root = _USER_DATA_ROOTS.get(platform)
+    if root is None:
+        return None
+    return Path(root).expanduser() / "script-output"
+
+
 def current_platform() -> str | None:
     """Return the normalized platform key, or None if unrecognized."""
     p = sys.platform

@@ -105,6 +105,25 @@ def require_data_dir(config: FplanConfig) -> Path:
     return config.data_dir
 
 
+def require_binary(config: FplanConfig) -> Path:
+    """Return the Factorio executable, canonicalized, or raise ConfigError.
+
+    For commands that *run* Factorio (the first being ``map from-save``). The
+    path is ``resolve()``-d so the subprocess sees a canonical, absolute target
+    rather than whatever relative/symlinked form the config happened to hold.
+    """
+    if config.binary is None:
+        raise ConfigError(
+            f"no Factorio executable configured — run `fplan init` to create "
+            f"{DEFAULT_CONFIG_NAME}, or pass --config-file"
+        )
+    if not config.binary.exists():
+        raise ConfigError(
+            f"configured Factorio executable does not exist: {config.binary}"
+        )
+    return config.binary.resolve()
+
+
 def render_config(data_dir: str | None, binary: str | None) -> str:
     """Render the config file text (with comments) that ``fplan init`` writes.
 

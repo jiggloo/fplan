@@ -78,6 +78,24 @@ such options; there is no environment-variable support. `--config-file PATH`
 selects a file other than the default. `.fplan-config.yaml` is git-ignored; the
 committed `.example` file is the documentation.
 
+## Maps
+
+`fplan map from-save` turns a Factorio save into a reproducible **map artifact**
+— a single YAML bundle (seed, map-gen settings, resource patches, oil fields,
+water bodies, tree count) describing the world around spawn:
+
+```bash
+.venv/bin/fplan map from-save ~/Downloads/MySave.zip   # -> maps/MySave.yaml
+.venv/bin/fplan map show maps/MySave.yaml              # text summary
+```
+
+It runs Factorio headless with a bundled extraction mod, so it needs the
+configured Factorio **executable** (`fplan init`, or `binary:` in the config).
+The original save is never modified — it's copied first, because headless
+Factorio autosaves on exit. Artifacts default to the regenerable `maps/`
+directory (`--out` overrides). As with `init`, the headless interaction is only
+verified on macOS; on Windows/Linux it warns.
+
 ## Testing
 
 Install the development dependencies and run the suite:

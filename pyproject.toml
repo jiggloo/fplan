@@ -20,7 +20,7 @@ classifiers = [
 dynamic = ["version"]
 # Typer is a core dependency, not an optional extra: the CLI is the project's
 # primary human interface.
-dependencies = ["typer>=0.12,<1.0", "pyyaml>=6"]
+dependencies = ["typer>=0.12,<1.0", "pyyaml>=6", "numpy>=1.26"]
 
 [project.scripts]
 fplan = "fplan.cli:app"
