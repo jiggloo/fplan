@@ -24,15 +24,18 @@ python3 -m venv .venv
 
 ## Usage
 
-The CLI is the primary interface. Installing the package puts `fplan` on your
-PATH. Run it with no arguments to see the working directory it operates from,
-and `--help` to explore the command tree:
+The CLI is the primary interface. After installing into the virtualenv (above),
+invoke it via `.venv/bin/fplan` — run it with no arguments to see the working
+directory it operates from, and `--help` to explore the command tree:
 
 ```bash
-fplan                 # prints the working directory
-fplan --help          # the full command tree
-fplan tech-order --help
+.venv/bin/fplan                 # prints the working directory
+.venv/bin/fplan --help          # the full command tree
+.venv/bin/fplan tech-order --help
 ```
+
+(Activate the virtualenv with `source .venv/bin/activate` if you'd rather type
+`fplan` directly.)
 
 The command tree mirrors the planning pipeline — `tech-order` (L1), `rates`
 (L2), `map`, `layout` (L3), `execution` (L4), plus `inspect`, `init`, and
