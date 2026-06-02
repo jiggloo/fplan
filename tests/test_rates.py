@@ -15,6 +15,7 @@ from typer.testing import CliRunner
 from fplan import run as run_mod
 from fplan.cli import app
 from fplan.cli import main as cli_main
+from fplan.cli import rates as rates_cli
 from fplan.model import GameModel, build_game_data, load_model
 
 runner = CliRunner()
@@ -652,3 +653,298 @@ def test_search_clears_prior_search_residue(
     assert present == {"seed-4.yaml", "seed-5.yaml"}  # 1/2/3 cleared
     summary = yaml.safe_load((search / "summary.yaml").read_text())
     assert summary["seeds"] == [4, 5]
+
+
+# --- rates post ------------------------------------------------------------
+
+# A minimal solved-rates doc: 100 widgets built in step 0, consumed in step 1.
+POST_RATES = {
+    "scenario": "t",
+    "mode": "lower-bound",
+    "l1_method": "forward",
+    "initial_time_s": 0.0,
+    "steps": [
+        {
+            "label": "s0",
+            "duration_s": 10.0,
+            "items": [
+                {
+                    "name": "widget",
+                    "produced": 100.0,
+                    "production_rate_per_s": 10.0,
+                    "consumption_rate_per_s": 0.0,
+                    "consumed": 0.0,
+                    "count_start": 0.0,
+                    "count_end": 100.0,
+                }
+            ],
+        },
+        {
+            "label": "s1",
+            "duration_s": 10.0,
+            "items": [
+                {
+                    "name": "widget",
+                    "produced": 0.0,
+                    "production_rate_per_s": 0.0,
+                    "consumption_rate_per_s": 10.0,
+                    "consumed": 100.0,
+                    "count_start": 100.0,
+                    "count_end": 0.0,
+                }
+            ],
+        },
+    ],
+}
+
+
+def _make_run_with_rates(tmp_path: Path, name: str = "r") -> Path:
+    _make_run(tmp_path, name)
+    rd = run_mod.run_dir(name)
+    (rd / "rates.yaml").write_text(yaml.safe_dump(POST_RATES))
+    return rd
+
+
+def test_post_run_not_found(tmp_path, monkeypatch, use_fixture_model) -> None:
+    monkeypatch.chdir(tmp_path)
+    r = runner.invoke(app, ["rates", "post", "nope"])
+    assert r.exit_code == 1 and "not found" in (r.stdout + (r.stderr or ""))
+
+
+def test_post_unknown_method(tmp_path, monkeypatch, use_fixture_model) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run_with_rates(tmp_path)
+    r = runner.invoke(app, ["rates", "post", "r", "--method", "bogus"])
+    assert r.exit_code == 2 and "unknown method" in (r.stdout + (r.stderr or ""))
+
+
+def test_post_rates_missing(tmp_path, monkeypatch, use_fixture_model) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)  # manifest but no rates.yaml
+    r = runner.invoke(app, ["rates", "post", "r"])
+    assert r.exit_code == 1 and "rates file not found" in (r.stdout + (r.stderr or ""))
+    assert "rates solve" in (r.stdout + (r.stderr or ""))
+
+
+def test_post_dry_run_writes_nothing(tmp_path, monkeypatch, use_fixture_model) -> None:
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run_with_rates(tmp_path)
+    r = runner.invoke(app, ["rates", "post", "r", "--dry-run"])
+    assert r.exit_code == 0 and "dry run" in r.stdout
+    assert "rates-post.yaml" in r.stdout
+    assert not (rd / "rates-post.yaml").exists()
+    assert not (rd / "viz").exists()
+
+
+def test_post_writes_output_viz_and_manifest(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run_with_rates(tmp_path)
+    r = runner.invoke(app, ["rates", "post", "r"])
+    assert r.exit_code == 0, r.stdout + (r.stderr or "")
+
+    out = rd / "rates-post.yaml"
+    assert out.exists()
+    doc = yaml.safe_load(out.read_text())
+    assert doc["post"]["method"] == "chord"  # default
+    assert doc["post"]["source"] == "rates.yaml"
+    # Production flattened (10,0 → 5,5); inventory passes through.
+    assert doc["steps"][0]["items"][0]["production_rate_per_s"] == pytest.approx(5.0)
+
+    assert (rd / "viz" / "rates-post-timeline.html").exists()
+    # No companion heatmap for the diff view.
+    assert not (rd / "viz" / "rates-post-heatmap.html").exists()
+
+    m = run_mod.load(rd)
+    assert m.extra["post"]["method"] == "chord"
+    assert "summary" in m.extra["post"]
+
+
+def test_post_no_viz(tmp_path, monkeypatch, use_fixture_model) -> None:
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run_with_rates(tmp_path)
+    r = runner.invoke(app, ["rates", "post", "r", "--no-viz"])
+    assert r.exit_code == 0
+    assert (rd / "rates-post.yaml").exists()
+    assert not (rd / "viz").exists()
+
+
+@pytest.mark.parametrize("method", ["tube", "chord", "mrp"])
+def test_post_methods(tmp_path, monkeypatch, use_fixture_model, method) -> None:
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run_with_rates(tmp_path)
+    r = runner.invoke(app, ["rates", "post", "r", "--method", method, "--no-viz"])
+    assert r.exit_code == 0
+    assert (
+        yaml.safe_load((rd / "rates-post.yaml").read_text())["post"]["method"] == method
+    )
+
+
+def test_post_from_override_still_writes_canonical(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run_with_rates(tmp_path)
+    cand = rd / "rates-search" / "seed-9.yaml"
+    cand.parent.mkdir(parents=True)
+    cand.write_text(yaml.safe_dump(POST_RATES))
+    r = runner.invoke(app, ["rates", "post", "r", "--from", str(cand), "--no-viz"])
+    assert r.exit_code == 0
+    out = rd / "rates-post.yaml"
+    assert out.exists()
+    # source is recorded run-dir-relative (so the overlay resolves under the post
+    # file's dir and a crafted ../ traversal can't be stored).
+    assert (
+        yaml.safe_load(out.read_text())["post"]["source"] == "rates-search/seed-9.yaml"
+    )
+
+
+def test_post_open_invokes_helper(tmp_path, monkeypatch, use_fixture_model) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run_with_rates(tmp_path)
+    called: dict = {}
+    monkeypatch.setattr(
+        rates_cli, "_open_in_browser", lambda p: called.setdefault("p", p)
+    )
+    r = runner.invoke(app, ["rates", "post", "r", "--open"])
+    assert r.exit_code == 0
+    assert called["p"].name == "rates-post-timeline.html"
+
+
+def test_post_open_with_no_viz_notes_noop(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run_with_rates(tmp_path)
+    r = runner.invoke(app, ["rates", "post", "r", "--no-viz", "--open"])
+    assert r.exit_code == 0
+    assert "--open has no effect with --no-viz" in r.stdout
+
+
+def test_post_viz_failure_still_writes_data(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    # A viz render failure must not lose the data output or fail the command.
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run_with_rates(tmp_path)
+    from fplan.l2 import viz as l2_viz
+
+    def _boom(*a, **k):
+        raise ValueError("render exploded")
+
+    monkeypatch.setattr(l2_viz, "render_flatten_html", _boom)
+    r = runner.invoke(app, ["rates", "post", "r"])
+    assert r.exit_code == 0  # data still written, exit 0
+    assert (rd / "rates-post.yaml").exists()
+    assert "could not render viz" in (r.stdout + (r.stderr or ""))
+
+
+def test_post_existing_without_force_refuses(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run_with_rates(tmp_path)
+    (rd / "rates-post.yaml").write_text("pre-existing: true\n")
+    r = runner.invoke(app, ["rates", "post", "r", "--no-viz"])  # non-interactive
+    assert r.exit_code == 1 and "already exists" in (r.stdout + (r.stderr or ""))
+    # Untouched.
+    assert yaml.safe_load((rd / "rates-post.yaml").read_text()) == {
+        "pre-existing": True
+    }
+
+
+def test_post_force_overwrites(tmp_path, monkeypatch, use_fixture_model) -> None:
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run_with_rates(tmp_path)
+    (rd / "rates-post.yaml").write_text("pre-existing: true\n")
+    r = runner.invoke(app, ["rates", "post", "r", "--no-viz", "--force"])
+    assert r.exit_code == 0
+    assert "post" in yaml.safe_load((rd / "rates-post.yaml").read_text())
+
+
+def test_post_malformed_yaml_clean_error(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    rd = run_mod.run_dir("r")
+    (rd / "rates.yaml").write_text("steps: not-a-list\n")  # str → AttributeError
+    r = runner.invoke(app, ["rates", "post", "r", "--no-viz"])
+    assert r.exit_code == 1 and "malformed rates YAML" in (r.stdout + (r.stderr or ""))
+    assert r.exception is None or isinstance(r.exception, SystemExit)
+
+
+def test_post_not_a_mapping_clean_error(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    rd = run_mod.run_dir("r")
+    (rd / "rates.yaml").write_text("- just\n- a\n- list\n")
+    r = runner.invoke(app, ["rates", "post", "r", "--no-viz"])
+    assert r.exit_code == 1 and "not a valid rates YAML" in (
+        r.stdout + (r.stderr or "")
+    )
+
+
+def test_post_zero_duration_steps_no_traceback(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    # Consecutive zero-duration steps make duplicate timestamps that used to
+    # divide-by-zero in the tube taut string (a raw traceback). tube now
+    # degrades gracefully — the command completes, never crashes.
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    rd = run_mod.run_dir("r")
+    item = {
+        "name": "w",
+        "produced": 1.0,
+        "production_rate_per_s": 0.0,
+        "consumption_rate_per_s": 0.0,
+        "consumed": 0.0,
+        "count_start": 0.0,
+        "count_end": 1.0,
+    }
+    degenerate = {
+        "initial_time_s": 0.0,
+        "steps": [
+            {"label": "a", "duration_s": 10.0, "items": [dict(item, count_end=1.0)]},
+            {
+                "label": "b",
+                "duration_s": 0.0,
+                "items": [dict(item, count_start=1.0, count_end=2.0)],
+            },
+            {
+                "label": "c",
+                "duration_s": 0.0,
+                "items": [dict(item, count_start=2.0, count_end=3.0)],
+            },
+            {
+                "label": "d",
+                "duration_s": 10.0,
+                "items": [dict(item, count_start=3.0, count_end=0.0)],
+            },
+        ],
+    }
+    (rd / "rates.yaml").write_text(yaml.safe_dump(degenerate))
+    r = runner.invoke(app, ["rates", "post", "r", "--method", "tube", "--no-viz"])
+    assert r.exit_code == 0, r.stdout + (r.stderr or "")
+    assert (rd / "rates-post.yaml").exists()
+    assert r.exception is None or isinstance(r.exception, SystemExit)
+
+
+def test_post_from_outside_run_dir_records_basename(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    # A --from outside the run dir can't be made run-dir-relative, so the source
+    # is recorded as a bare basename (the overlay then degrades gracefully).
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run_with_rates(tmp_path)
+    ext = tmp_path / "elsewhere.yaml"
+    ext.write_text(yaml.safe_dump(POST_RATES))
+    r = runner.invoke(app, ["rates", "post", "r", "--from", str(ext), "--no-viz"])
+    assert r.exit_code == 0
+    assert yaml.safe_load((rd / "rates-post.yaml").read_text())["post"]["source"] == (
+        "elsewhere.yaml"
+    )
