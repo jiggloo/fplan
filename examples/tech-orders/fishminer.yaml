@@ -1,19 +1,12 @@
 # Hand-crafted tech order based on default-victory and Zaspar's WR TAS:
 # https://www.youtube.com/watch?v=fkmRd5uJoKI
 level: 1
-produced_by: fplan tech-order build
+produced_by: hand crafted
 method: forward
-goal:
+scenario:
   name: default-victory
-  techs_researched:
-  - fast-inserter
-  - research-speed-2
-  - steel-axe
-  items_produced:
-    beacon: 20.0
-    productivity-module: 4.0
-    speed-module: 40.0
-  rocket_launches: 1.0
+  path: examples/scenarios/default-victory.yaml
+  sha256: a5f63cabdd9d4dd50e35e29b554106042e54ba87461b776396f701338effe75c
 tech_count: 43
 layer_count: 10
 layers:

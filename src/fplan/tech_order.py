@@ -315,18 +315,31 @@ def format_layers(
     return "\n".join(lines).rstrip()
 
 
-def build_payload(result: OrderResult, goal: goals.GoalState, method: str) -> dict:
-    """The L1 output YAML document. The embedded `goal` block is what
-    `verify` reads back; the schema is consumed by L2."""
+def build_payload(
+    result: OrderResult, method: str, scenario_ref: dict | None = None
+) -> dict:
+    """The L1 output YAML document.
+
+    A tech-order is L1's *output*; the scenario is L1's *input*. The two are
+    kept disjoint — the order carries no goal content, only a lightweight
+    `scenario:` *reference* (name + path + content hash) recording what it was
+    built from. `verify` resolves the goal by loading that referenced scenario
+    (and warns if the hash has drifted). The schema is consumed by L2.
+    """
     payload: dict = {
         "level": 1,
         "produced_by": "fplan tech-order build",
         "method": method,
-        "goal": goal.as_dict(),
-        "tech_count": sum(len(layer) for layer in result.layers),
-        "layer_count": len(result.layers),
-        "layers": [list(layer) for layer in result.layers],
     }
+    if scenario_ref:
+        payload["scenario"] = scenario_ref
+    payload.update(
+        {
+            "tech_count": sum(len(layer) for layer in result.layers),
+            "layer_count": len(result.layers),
+            "layers": [list(layer) for layer in result.layers],
+        }
+    )
     if result.notes:
         payload["notes"] = result.notes
     return payload

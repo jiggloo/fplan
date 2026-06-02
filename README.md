@@ -34,13 +34,40 @@ invoke it via `.venv/bin/fplan` (or activate the venv and type `fplan`):
 ```
 
 The command tree mirrors the planning pipeline — `tech-order` (L1), `rates`
-(L2), `map`, `layout` (L3), `execution` (L4), plus `inspect`, `init`, and
-`full-run`. The surface is complete; the stages are being filled in
-incrementally, and an un-built command prints a clear notice with a reserved
-exit code rather than failing cryptically.
+(L2), `map`, `layout` (L3), `execution` (L4), plus `inspect`, `init`, and `run`
+(which manages whole L2→L4 executions). The surface is complete; the stages are
+being filled in incrementally, and an un-built command prints a clear notice
+with a reserved exit code rather than failing cryptically.
 
 **See [docs/usage.md](docs/usage.md) for the full command reference** —
 invocation, configuration, exit codes, and per-command examples.
+
+## Concepts
+
+A few words fplan uses in a specific way. They map directly onto the
+[top-level directories](#repository-layout), so knowing them makes the layout
+self-explanatory:
+
+- **scenario** — the *problem*: the world you start from and the world you
+  want, as a `GoalState` (techs to research, items to produce, rockets to
+  launch) plus an optional `initial_state` (what exists at t₀). An authored
+  **input**. → `scenarios/`
+- **tech-order** — the *research plan*: the order techs get researched in,
+  layered. It's L1's **output** (or hand-authored), built from a scenario and
+  consumed by L2. It records a lightweight reference to the scenario it came
+  from, not the scenario's content. → `tech-orders/`
+- **map** — the *environment*: resources, water, and oil around spawn, derived
+  from a Factorio seed/save. An **input**, orthogonal to the scenario. →
+  `maps/`
+- **run** — one *execution* of the L2→L4 pipeline. A run binds a scenario, a
+  tech-order, and a map in `runs/<name>/`, described by a `manifest.yaml`; as the
+  L2–L4 stages land it will apply their solver settings and collect the per-level
+  outputs there. → `runs/`
+
+The shape of it: scenario, tech-order, and map are **reusable inputs** that
+exist on their own (one scenario → many tech-orders → many runs); a **run** is
+the thing that ties a specific combination together and produces results.
+**L1 (the tech-order) is an input to a run, not part of it** — a run is L2→L4.
 
 ## Testing
 
@@ -119,15 +146,18 @@ fplan/
     ├── scenarios/      example problem descriptions          (tracked)
     ├── tech-orders/    example tech-orders                   (tracked)
     ├── maps/           example map(s)                        (tracked)
-    └── runs/           output when running the examples      (ignored)
+    └── runs/           example run manifest(s)               (manifest tracked,
+                                                               artifacts ignored)
 ```
 
 The committed-vs-ephemeral split is the core convention — see
 [Repository structure & conventions](docs/structure.md) for the rule and the
 reasoning. In short: **authored/curated inputs are tracked; generated and
-regenerable artifacts are not.** The ephemeral directories are still visible in
-a fresh clone (each keeps a `.gitkeep`) so the intended layout is obvious
-without reading the docs; their generated contents are ignored.
+regenerable artifacts are not.** The fully-ephemeral directories (`maps/`,
+`runs/`) keep a tracked `.gitkeep` so they're visible in a fresh clone;
+`examples/runs/` is kept present by its committed example `manifest.yaml` (its
+generated stage artifacts stay ignored). Either way the intended layout is
+obvious without reading the docs.
 
 ## Documentation
 

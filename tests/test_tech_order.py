@@ -272,12 +272,16 @@ def test_format_layers_and_payload() -> None:
     assert "across 1 layer " in ordering.format_layers(
         one, {"x": _tech("x")}, goal, "forward"
     )
-    payload = ordering.build_payload(res, goal, "forward")
+    ref = {"name": "demo", "path": "scenarios/demo.yaml", "sha256": "abc"}
+    payload = ordering.build_payload(res, "forward", ref)
     assert payload["level"] == 1 and payload["method"] == "forward"
     assert payload["layers"] == [["a"], ["b", "c"], ["d"]]
-    assert payload["goal"]["name"] == "demo"
+    # The order carries a scenario *reference*, not goal content.
+    assert payload["scenario"] == ref and "goal" not in payload
+    # Reference is optional (omitted entirely when not supplied).
+    assert "scenario" not in ordering.build_payload(res, "forward")
     bal = ordering.balanced_order(techs, {"a", "b", "c", "d"}, goal)
-    assert "notes" in ordering.build_payload(bal, goal, "balanced")  # notes included
+    assert "notes" in ordering.build_payload(bal, "balanced", ref)  # notes included
 
 
 # --------------------------------------------------------------------------- #
@@ -421,11 +425,13 @@ def test_verify_no_layers(tmp_path, monkeypatch, use_fixture_model) -> None:
     assert runner.invoke(app, ["tech-order", "verify", "empty.yaml"]).exit_code == 1
 
 
-def test_verify_no_goal_no_scenario(tmp_path, monkeypatch, use_fixture_model) -> None:
+def test_verify_no_reference_no_scenario(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "ng.yaml").write_text("layers:\n- [a]\n")
     r = runner.invoke(app, ["tech-order", "verify", "ng.yaml"])
-    assert r.exit_code == 1 and "no embedded 'goal'" in (r.stdout + (r.stderr or ""))
+    assert r.exit_code == 1 and "no scenario reference" in (r.stdout + (r.stderr or ""))
 
 
 def test_verify_reports_warnings(tmp_path, monkeypatch, use_fixture_model) -> None:
@@ -455,16 +461,42 @@ def test_verify_bad_yaml(tmp_path, monkeypatch, use_fixture_model) -> None:
     assert runner.invoke(app, ["tech-order", "verify", "bad.yaml"]).exit_code == 1
 
 
-def test_verify_malformed_embedded_goal_is_fatal(
+def test_verify_referenced_scenario_resolves(
     tmp_path, monkeypatch, use_fixture_model
 ) -> None:
-    # A schema-invalid embedded goal must be a clean error, not a traceback.
+    # No --scenario: the goal is resolved from the order's `scenario:` reference.
+    monkeypatch.chdir(tmp_path)
+    scn = _scenario(tmp_path, ["plastics"])
+    runner.invoke(app, ["tech-order", "build", str(scn), "--out", "o.yaml"])
+    r = runner.invoke(app, ["tech-order", "verify", "o.yaml"])
+    assert r.exit_code == 0
+    assert "referenced scenario" in r.stdout and "VALID" in r.stdout
+
+
+def test_verify_referenced_scenario_drift_warns(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    # Editing the scenario after build → hash drift → non-fatal warning, still
+    # verified against current content.
+    monkeypatch.chdir(tmp_path)
+    scn = _scenario(tmp_path, ["plastics"])
+    runner.invoke(app, ["tech-order", "build", str(scn), "--out", "o.yaml"])
+    scn.write_text(scn.read_text() + "\n# touched\n")
+    r = runner.invoke(app, ["tech-order", "verify", "o.yaml"])
+    assert r.exit_code == 0 and "has changed since" in r.stdout
+
+
+def test_verify_referenced_scenario_missing_is_fatal(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    # A `scenario:` reference whose file is gone is a clean error, not a traceback.
     monkeypatch.chdir(tmp_path)
     (tmp_path / "o.yaml").write_text(
-        "layers:\n- [a]\ngoal:\n  techs_researched: not-a-list\n"
+        "layers:\n- [a]\nscenario:\n  path: gone.yaml\n  sha256: x\n"
     )
     r = runner.invoke(app, ["tech-order", "verify", "o.yaml"])
     assert r.exit_code == 1
+    assert "referenced scenario not found" in (r.stdout + (r.stderr or ""))
     assert r.exception is None or isinstance(r.exception, SystemExit)
 
 
