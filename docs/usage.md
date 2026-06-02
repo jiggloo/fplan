@@ -224,10 +224,14 @@ L2 settings + outcome back into the manifest. Needs the configured `data_dir`.
   with an `l2:` block: `mode`, `seed`, `objective_s`, `status`, `solve_time_s`,
   and the config reference.
 - `--mode lower-bound|experimental|trapezoidal` (default `experimental`).
-- `--seed N` sets SCIP's randomization (a random seed is picked and printed if
-  omitted, so a good run replays exactly). Primal reliability is a coin flip per
-  seed; re-run with different seeds and keep the best (parallel multi-seed search
-  is a later addition).
+- `--seed N` sets SCIP's randomization for a single solve (a random seed is
+  picked and printed if omitted, so a good run replays exactly). Primal
+  reliability is a coin flip per seed — for several seeds in one command, use
+  `--seeds` (below).
+- `--out PATH` redirects a **single** solve to an arbitrary file instead of
+  `runs/<run>/rates.yaml`. It is a pure export: only the YAML is written, the
+  manifest is **not** updated (the `l2:` block always means the promoted
+  `rates.yaml`). Mutually exclusive with `--seeds`.
 - `--l2-config PATH` deep-merges a tuning override over the packaged defaults —
   see [the L2 config](#l2-tuning-config) below.
 - Solver controls: `--time-limit-s`, `--gap-limit`, `--stall-nodes`,
@@ -236,6 +240,38 @@ L2 settings + outcome back into the manifest. Needs the configured `data_dir`.
 - `--dry-run` builds the instance and prints a summary without solving. An
   existing `rates.yaml` is not clobbered silently (`--force` to overwrite).
 - Exit `0` if a feasible incumbent was found, non-zero otherwise.
+
+#### Multi-seed search (`--seeds`)
+
+Because the primal is a per-seed coin flip, `--seeds` solves several seeds in one
+command, stores each candidate, ranks them by `t_FINAL`, and promotes the best:
+
+```bash
+.venv/bin/fplan rates solve steelaxe-exp --seeds 8          # 8 random seeds
+.venv/bin/fplan rates solve steelaxe-exp --seeds '[1,2,3]'  # exactly these seeds
+```
+
+- **`--seeds N`** (a bare integer) runs **N distinct random seeds**, each printed
+  for reproducibility. **`--seeds '[a,b,c]'`** (a bracketed list) runs **exactly
+  those seeds** (quote it so the shell doesn't glob/split the brackets).
+- Mutually exclusive with `--seed` and `--out`. The other per-solve options
+  (`--mode`, the solver controls, `--l2-config`, the modeling A/B flags) apply
+  uniformly to every seed. Seeds run **serially**.
+- Each candidate is written to **`runs/<run>/rates-search/seed-<N>.yaml`** (same
+  schema as `rates.yaml`), with a **`summary.yaml`** index recording every seed's
+  objective / status / solve-time, the search settings, and the chosen best. The
+  promoted `rates.yaml` is never touched during the search itself.
+- One seed failing or coming back infeasible does not abort the search — it is
+  recorded in `summary.yaml` and the rest continue. **Best** = lowest `t_FINAL`
+  among feasible seeds (infeasible seeds are never promotable).
+- After ranking, you are prompted to **promote** the best seed to
+  `runs/<run>/rates.yaml`; if one already exists, a second confirm guards the
+  overwrite. Promotion copies the winning candidate and grows the manifest's
+  `l2:` block (adding a `search:` record of the seeds tried + the promoted file).
+  `--force` skips both prompts; a **non-interactive** session never clobbers
+  `rates.yaml` — it leaves the candidates in place and tells you how to promote.
+- If every seed is infeasible, the candidates + summary are still written, nothing
+  is promoted, and the command exits non-zero.
 
 #### L2 tuning config
 
@@ -311,7 +347,7 @@ content-hash check flags edits since `create`), and which stage artifacts exist:
 ```
 run: steelaxe-exp
 created: 2026-06-02T09:24:42+00:00
-fplan: 0.0.8
+fplan: 0.0.9
 inputs:
   scenario: scenarios/steelaxe.yaml [✓ current]
   tech-order: tech-orders/steelaxe.yaml [⚠ changed]
