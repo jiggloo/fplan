@@ -16,12 +16,8 @@ in the repository and come with a `git clone`. Start with this README, then see
 ### Prerequisites
 
 - **Python 3.11+**.
-- **A Factorio installation.** fplan reads Factorio's prototype data to build its
-  game model, so every command that *solves* or *inspects* the model needs one
-  (`fplan init` detects it, or writes a template for you to fill in). Pure
-  consumers like `rates viz` work without it. Auto-detection is verified on macOS
-  today; on Windows/Linux you confirm the paths (see
-  [Configuration](docs/usage.md#configuration)).
+- **A Factorio installation** — fplan reads its game data to compute plans. See
+  [Configuration](docs/usage.md#configuration) to point fplan at it.
 
 Clone, then install into an isolated environment:
 
@@ -34,30 +30,26 @@ python3 -m venv .venv
 
 ## Quickstart
 
-Go from a fresh clone to a solved plan and an interactive visualization in a few
-commands. The CLI is the primary interface; invoke it via `.venv/bin/fplan` (or
-activate the venv with `source .venv/bin/activate` and type `fplan`).
+Go from a fresh clone to a solved plan and an interactive visualization. The CLI
+is the primary interface; invoke it via `.venv/bin/fplan` (or activate the venv
+with `source .venv/bin/activate` and type `fplan`).
 
-After [installing](#install) into the virtualenv, from the repository root:
+After [installing](#install), from the repository root:
 
 ```bash
-# 1. Detect Factorio and copy the bundled examples into the working directory.
+# Detect Factorio and copy the bundled examples into the working directory.
 .venv/bin/fplan init --copy-examples
 
-# 2. Solve the steelaxe example's production rates (L2). SCIP is bounded to 120s;
-#    the command prints the (random) seed it chose, so you can reproduce a run.
-.venv/bin/fplan rates solve steelaxe --time-limit-s 120
+# Solve the steelaxe example's production plan (needs Factorio).
+.venv/bin/fplan rates solve steelaxe
 
-# 3. Render the result as interactive HTML and open it.
+# Open an interactive visualization of the result.
 .venv/bin/fplan rates viz steelaxe --open
 ```
 
-That's it — `viz` writes a zoomable timeline + a capacity-saturation heatmap
-under `runs/steelaxe/viz/` and opens the timeline. No `cd` needed:
-`--copy-examples` drops the example scenarios, tech-orders, maps, and run
-manifests into the current directory, and every command resolves from there.
-(The solve needs the Factorio install from [Prerequisites](#prerequisites);
-`rates viz` doesn't.)
+`viz` opens a zoomable timeline and a capacity-saturation heatmap (written under
+`runs/steelaxe/viz/`). No `cd` needed — `--copy-examples` put the examples in the
+current directory, and every command resolves from there.
 
 Orient yourself any time with:
 
