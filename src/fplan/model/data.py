@@ -251,6 +251,10 @@ def _load_raw(data_dir: Path) -> dict:  # pragma: no cover - runs Lua over game 
     if not proto_dir.is_dir():
         raise FileNotFoundError(f"Factorio prototypes not found at {proto_dir}")
 
+    # The runtime is intentionally unsandboxed (Lua's os/io stay reachable): we
+    # only execute the user's own vanilla `base` prototype files, which they run
+    # every time they launch Factorio. Sandbox this if mod prototypes are ever
+    # loaded (an untrusted source).
     lua = lupa.LuaRuntime(unpack_returned_tuples=True)
     lua.execute(LUA_HARNESS)
 
@@ -261,13 +265,15 @@ def _load_raw(data_dir: Path) -> dict:  # pragma: no cover - runs Lua over game 
             # elsewhere in some releases). Skip silently.
             continue
         try:
-            lua.execute(path.read_text())
+            lua.execute(path.read_text(encoding="utf-8"))
         except lupa.LuaError:
             # entities.lua occasionally errors on a late graphics-helper
             # call (~line 15k in 1.1). All structurally important entities
             # are defined earlier and have already been registered into
             # data.raw, so we keep going rather than abort the whole load.
-            pass
+            # Breadcrumb so a partial load isn't silent — a different version
+            # erroring earlier could drop real prototypes.
+            print(f"note: {fname} partially loaded (Lua error swallowed)")
 
     return _lua_to_py(lua.globals().data.raw)
 

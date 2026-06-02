@@ -193,6 +193,21 @@ def test_load_model_requires_input() -> None:
         load_model()
 
 
+def test_main_reports_missing_prototypes_cleanly(tmp_path, monkeypatch, capsys) -> None:
+    # A configured data_dir that exists but isn't a Factorio data dir reaches the
+    # loader (require_data_dir only checks existence) → FileNotFoundError. The
+    # entrypoint must surface it as a clean error, not a leaked traceback.
+    from fplan import config as cfg
+    from fplan.model import __main__ as model_main
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / cfg.DEFAULT_CONFIG_NAME).write_text(
+        cfg.render_config(str(tmp_path), None)  # data_dir exists, no base/prototypes
+    )
+    assert model_main.main() == 1
+    assert "error:" in capsys.readouterr().err
+
+
 # --------------------------------------------------------------------------- #
 # game.py helpers
 # --------------------------------------------------------------------------- #

@@ -16,11 +16,14 @@ from fplan.model import load_model
 def main() -> int:
     try:
         data_dir = cfg.require_data_dir(cfg.load_config())
-    except cfg.ConfigError as exc:
+        model = load_model(data_dir=data_dir)
+    except (cfg.ConfigError, OSError, UnicodeDecodeError) as exc:
+        # Never leak a traceback. require_data_dir only checks the dir exists, so
+        # a config pointed at a non-Factorio directory (e.g. the install root
+        # instead of its `data` dir) reaches the loader and raises
+        # FileNotFoundError — surface it cleanly per the stream convention.
         print(f"error: {exc}", file=sys.stderr)
         return 1
-
-    model = load_model(data_dir=data_dir)
     crafting = sum(1 for r in model.recipes.values() if r.kind == "crafting")
     mining = sum(1 for r in model.recipes.values() if r.kind == "mining")
     pumping = sum(1 for r in model.recipes.values() if r.kind == "pumping")

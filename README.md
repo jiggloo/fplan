@@ -55,8 +55,10 @@ Install the development dependencies and run the suite:
 
 Some functionality needs a real Factorio installation and can't run in CI, so
 the automated suite covers the pure logic and these steps cover the rest. Run
-them by hand after changes that touch the loaders. They need a configured
-`data_dir` / `binary` (see [Configuration](#configuration) — `fplan init`).
+them by hand after changes that touch the loaders; configure the relevant path
+first with `fplan init` (see
+[Configuration](docs/usage.md#configuration)) — the model-load step needs
+`data_dir`, the map step needs `binary`.
 
 - **Game model load** — parse the installed Factorio prototype data and print a
   summary (item/recipe/building/technology counts):
