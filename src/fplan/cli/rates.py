@@ -661,6 +661,9 @@ def post(ctx: typer.Context, dry_run: DryRun = False) -> None:
     not_migrated(ctx)
 
 
+VizRunArg = Annotated[
+    str, typer.Argument(help="Run (under runs/) whose rates.yaml to visualize.")
+]
 FromOpt = Annotated[
     Path | None,
     typer.Option(
@@ -716,7 +719,7 @@ def _open_in_browser(path: Path) -> None:
 @group.command()
 def viz(
     ctx: typer.Context,
-    run: RunArg,
+    run: VizRunArg,
     from_path: FromOpt = None,
     no_heatmap: NoHeatmapOpt = False,
     open_browser: OpenVizOpt = False,
@@ -735,7 +738,11 @@ def viz(
 
     state: cli_main.CLIState = ctx.obj
 
-    run_dir = run_mod.run_dir(run)
+    try:
+        run_dir = run_mod.run_dir(run)
+    except ValueError as exc:  # bad run name (traversal/empty) → usage error
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
     if not run_mod.manifest_path(run_dir).exists():
         typer.echo(f"error: run {run!r} not found at {run_dir}", err=True)
         raise typer.Exit(code=1)
@@ -786,13 +793,16 @@ def viz(
         if not no_heatmap:
             heatmap_path.write_text(l2_viz.build_heatmap_html(l2))
             outputs.append(heatmap_path)
+    except (KeyError, ValueError, TypeError) as exc:  # malformed rates shape
+        typer.echo(f"error: malformed rates YAML in {src}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     except OSError as exc:
         typer.echo(f"error: could not write viz: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
-    if not dataset.get("model_loaded"):
-        typer.echo("  (model not loaded — legend omits the facility-count breakdown)")
     for p in outputs:
         typer.echo(f"✓ wrote {p}")
+    if not dataset.get("model_loaded"):
+        typer.echo("note: model not loaded — legend omits the facility-count breakdown")
     if open_browser:
         _open_in_browser(timeline_path)

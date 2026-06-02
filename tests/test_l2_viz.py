@@ -343,3 +343,118 @@ def test_heatmap_slack_absent_and_multistep() -> None:
     # Both capacity-constrained buildings appear as rows; two step columns.
     assert "lab" in hm and "chemical-plant" in hm
     assert "s0" in hm and "s1" in hm
+
+
+# --- WF-MAR round-1 fixes: injection, stable colors, error paths, coverage ---
+
+INJECT = {
+    "scenario": "</script><img src=x onerror=alert(1)>",
+    "mode": "m",
+    "l1_method": "f",
+    "initial_time_s": 0.0,
+    "steps": [
+        {
+            "label": "</span><b>x</b>",
+            "duration_s": 10.0,
+            "items": [
+                {
+                    "name": "</script><svg onload=alert(2)>",
+                    "production_rate_per_s": 1.0,
+                    "consumption_rate_per_s": 0.0,
+                    "count_start": 0.0,
+                    "count_end": 1.0,
+                }
+            ],
+            "capacity": [
+                {
+                    "building": '"></th><script>alert(4)</script>',
+                    "saturated": True,
+                    "utilization": 1.0,
+                }
+            ],
+        }
+    ],
+    "solver": {"objective_s": 1.0, "seed": "1<script>alert(5)</script>"},
+}
+
+
+def test_timeline_no_script_breakout() -> None:
+    html = viz.render_html(viz.build_dataset(INJECT))
+    # Payloads must not survive as live markup; the dataset JSON is </-escaped.
+    assert "</script><img" not in html
+    assert "</script><svg" not in html
+    assert "onerror=alert(1)" not in html or "&lt;/script&gt;" in html
+    assert "<\\/script>" in html  # script-safe JSON in the <script> block
+
+
+def test_heatmap_escapes_building_label_seed() -> None:
+    hm = viz.build_heatmap_html(INJECT)
+    assert "<script>alert(4)" not in hm  # building name escaped
+    assert "<script>alert(5)" not in hm  # seed escaped
+    assert "onerror=alert(3)" not in hm
+    assert "&lt;script&gt;" in hm  # escaped form present
+
+
+def test_color_for_item_is_stable() -> None:
+    # Deterministic across processes (hashlib, not the salted builtin hash()).
+    assert viz.color_for_item("iron-plate") == "hsl(234, 55%, 41%)"
+
+
+def test_facility_breakdown_when_model_loaded(monkeypatch) -> None:
+    # Inject fake model maps so the model-loaded branch + facilities math run
+    # without a Factorio install.
+    monkeypatch.setattr(
+        viz,
+        "_load_model_maps",
+        lambda data_dir=None: (
+            {"assembling-machine-1": 1.0},
+            {"iron-gear-wheel": [("iron-gear-wheel", 1.0)]},
+            True,
+        ),
+    )
+    ds = viz.build_dataset(RICH)
+    assert ds["model_loaded"] is True
+    detail = ds["steps"][0]["prod_detail"]["iron-gear-wheel"]
+    assert detail[0]["recipe"] == "iron-gear-wheel"
+    # facilities = recipe_sec_used / (base_speed · duration) = 5 / (1·50) = 0.1
+    assert abs(detail[0]["facilities"] - 0.1) < 1e-9
+
+
+def test_viz_malformed_yaml_is_clean_error(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run(tmp_path, with_rates=False)
+    # An item missing "name" → build_dataset KeyError → clean exit 1, no traceback.
+    (rd / "rates.yaml").write_text(
+        yaml.safe_dump({"steps": [{"duration_s": 1.0, "items": [{"prod": 1}]}]})
+    )
+    r = runner.invoke(app, ["rates", "viz", "r"])
+    assert r.exit_code == 1 and "malformed rates YAML" in (r.stdout + (r.stderr or ""))
+    assert r.exception is None or isinstance(r.exception, SystemExit)
+
+
+def test_viz_bad_run_name_is_usage_error(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    r = runner.invoke(app, ["rates", "viz", "../evil"])
+    assert r.exit_code == 2
+    assert r.exception is None or isinstance(r.exception, SystemExit)
+
+
+def test_open_success_is_quiet(tmp_path, monkeypatch) -> None:
+    from fplan import factorio
+
+    monkeypatch.setattr(factorio, "current_platform", lambda: "darwin")
+    monkeypatch.setattr(factorio, "is_untested", lambda p: False)
+    monkeypatch.setattr(webbrowser, "open", lambda *a, **k: True)
+    p = tmp_path / "x.html"
+    p.write_text("x")
+    out = _capture(lambda: rates_cli._open_in_browser(p))
+    assert out.strip() == ""  # happy path emits nothing
+
+
+def test_viz_open_dry_run_does_not_open(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    opened = {"n": 0}
+    monkeypatch.setattr(rates_cli, "_open_in_browser", lambda p: opened.update(n=1))
+    r = runner.invoke(app, ["rates", "viz", "r", "--open", "--dry-run"])
+    assert r.exit_code == 0 and opened["n"] == 0  # dry-run returns before opening

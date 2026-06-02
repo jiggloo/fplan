@@ -28,6 +28,7 @@ template. See ``DEFAULT_CHARTS``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import defaultdict
 from html import escape
@@ -103,12 +104,19 @@ def categorize(name: str) -> str:
     return "Other"
 
 
+def _stable_hash(s: str) -> int:
+    """A process-independent hash. Python's builtin ``hash`` is salted per run
+    (``PYTHONHASHSEED``), which would re-color every item on each invocation and
+    defeat comparing two viz outputs (the promoted run vs a ``--from`` candidate)."""
+    return int(hashlib.md5(s.encode()).hexdigest(), 16)
+
+
 def color_for_item(name: str) -> str:
     """Stable per-item HSL color from a hash, with mild S/L jitter to
-    spread visually-similar hues."""
-    h = abs(hash(name + "_hue")) % 360
-    s = 55 + (abs(hash(name + "_sat")) % 25)  # 55-80
-    L = 38 + (abs(hash(name + "_lum")) % 18)  # 38-56
+    spread visually-similar hues. Stable across runs (see ``_stable_hash``)."""
+    h = _stable_hash(name + "_hue") % 360
+    s = 55 + (_stable_hash(name + "_sat") % 25)  # 55-80
+    L = 38 + (_stable_hash(name + "_lum") % 18)  # 38-56
     return f"hsl({h}, {s}%, {L}%)"
 
 
@@ -476,6 +484,10 @@ __CHART_PANES__
 <div id="cell-popup"></div>
 <script>
 const DATA = __DATA_JSON__;
+// HTML-escape DATA-derived strings before any innerHTML interpolation. Item /
+// step / recipe / building names come from the rates YAML, which --from makes
+// externally supplied, so they are untrusted in the DOM.
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]); }
 const MARGIN = { top: 6, right: 10, bottom: 22, left: 60 };
 
 // Per-chart spec: which value to plot, what label. Injected by render_html
@@ -606,7 +618,7 @@ function buildNav() {
     row.className = "tech-row";
     row.dataset.step = tech.i;
     row.title = `${tech.label} @ ${fmtTime(tech.time)}`;
-    row.innerHTML = `<span class="t">${fmtTime(tech.time)}</span>${tech.label}`;
+    row.innerHTML = `<span class="t">${fmtTime(tech.time)}</span>${esc(tech.label)}`;
     row.addEventListener("click", () => {
       // Center viewport on this step.
       const step = DATA.steps[tech.i];
@@ -884,7 +896,7 @@ function renderDetails() {
     const net = r.prod - r.cons;
     const dc = r.count_end - r.count_start;
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td class="item-cell" data-item="${it}" title="click for production-facility breakdown"><span class="swatch" style="background:${DATA.colors[it]}"></span>${it}</td>
+    tr.innerHTML = `<td class="item-cell" data-item="${esc(it)}" title="click for production-facility breakdown"><span class="swatch" style="background:${DATA.colors[it]}"></span>${esc(it)}</td>
       <td>${fmt(r.prod)}</td><td>${fmt(r.cons)}</td><td>${fmt(net)}</td>
       <td>${fmt(r.count_start)}</td><td>${fmt(r.count_end)}</td><td>${fmt(dc)}</td>`;
     body.appendChild(tr);
@@ -904,8 +916,8 @@ function showCellPopup(item, ev) {
   const pop = document.getElementById("cell-popup");
   const sw = DATA.colors[item] || "#9ca3af";
   let html = `<div class="cp-head"><span class="swatch" style="background:${sw}"></span>`
-    + `<span class="cp-title">${item}</span><span class="cp-x" title="close">×</span></div>`
-    + `<div class="cp-sub">step ${step.i}: ${step.label} — produced by</div>`;
+    + `<span class="cp-title">${esc(item)}</span><span class="cp-x" title="close">×</span></div>`
+    + `<div class="cp-sub">step ${step.i}: ${esc(step.label)} — produced by</div>`;
   if (detail.length === 0) {
     html += DATA.model_loaded
       ? `<div class="cp-empty">not produced this step</div>`
@@ -919,7 +931,7 @@ function showCellPopup(item, ev) {
       if (f != null) { totF += f; anyF = true; }
       totR += (d.item_rate || 0);
       const fcell = (f == null) ? "—" : f.toFixed(3);
-      html += `<tr><td>${d.recipe}</td><td>${d.building}</td>`
+      html += `<tr><td>${esc(d.recipe)}</td><td>${esc(d.building)}</td>`
         + `<td>${fcell}</td><td>${fmt(d.item_rate)}</td></tr>`;
     }
     if (detail.length > 1) {
@@ -1035,11 +1047,11 @@ function setupZoomPan(svgEl) {
                                         step.rates[b].prod - step.rates[b].cons;
       return Math.abs(vb) - Math.abs(va);
     });
-    let html = `<b>step ${step.i}: ${step.label}</b> @ ${fmtTime(tCursor)}<br>`;
+    let html = `<b>step ${step.i}: ${esc(step.label)}</b> @ ${fmtTime(tCursor)}<br>`;
     for (const it of items.slice(0, 6)) {
       const r = step.rates[it];
       let v = spec.key === "count" ? r.count_end : spec.key === "prod" ? r.prod : (r.prod - r.cons);
-      html += `<span style="display:inline-block;width:8px;height:8px;background:${DATA.colors[it]};margin-right:4px"></span>${it}: ${fmt(v)}<br>`;
+      html += `<span style="display:inline-block;width:8px;height:8px;background:${DATA.colors[it]};margin-right:4px"></span>${esc(it)}: ${fmt(v)}<br>`;
     }
     tt.innerHTML = html;
     tt.style.display = "block";
@@ -1118,6 +1130,13 @@ DEFAULT_CHARTS = [
 ]
 
 
+def _script_safe(json_text: str) -> str:
+    """Make a JSON string safe to embed in an inline <script>: ``</`` → ``<\\/``
+    so a value containing ``</script>`` can't terminate the element early. Valid
+    JSON, inert to the JS parser."""
+    return json_text.replace("</", "<\\/")
+
+
 def _chart_panes_html(charts: list[dict]) -> str:
     return "\n".join(
         '      <div class="chart-pane">\n'
@@ -1182,13 +1201,16 @@ def render_html(
             for c in charts
         ]
     )
+    data_json = json.dumps(dataset, separators=(",", ":"))
     html = HTML_TEMPLATE
     html = html.replace("__HEADING__", escape(heading))
     html = html.replace("__CHART_PANES__", _chart_panes_html(charts))
-    html = html.replace("__CHARTS_JSON__", charts_json)
+    # `</` → `<\/` keeps the JSON valid but inert inside a <script> block, so a
+    # string value containing `</script>` can't close the element early.
+    html = html.replace("__CHARTS_JSON__", _script_safe(charts_json))
     html = html.replace("__TITLE__", escape(title))
     html = html.replace("__META__", escape(meta))
-    html = html.replace("__DATA_JSON__", json.dumps(dataset, separators=(",", ":")))
+    html = html.replace("__DATA_JSON__", _script_safe(data_json))
     return html
 
 
@@ -1257,7 +1279,7 @@ def build_heatmap_html(l2: dict) -> str:
     cells: dict[str, dict[int, dict]] = defaultdict(dict)
     for i, s in enumerate(steps):
         dur = float(s.get("duration_s", 0.0) or 0.0)
-        cols.append((i, s.get("label") or "FINAL", clock))
+        cols.append((i, s.get("label") or f"step-{i}", clock))
         clock += dur
         for c in s.get("capacity", []) or []:
             b = c.get("building")
@@ -1286,12 +1308,12 @@ def build_heatmap_html(l2: dict) -> str:
     legend = "".join(
         f'<div class="lg-row" data-col="{i}">'
         f'<span class="lg-idx">{i}</span>'
-        f'<span class="lg-tech">{label}</span>'
+        f'<span class="lg-tech">{escape(label)}</span>'
         f'<span class="lg-time">{_fmt_clock(t0)}</span></div>'
         for i, label, t0 in cols
     )
     head = "".join(
-        f'<th class="col-h" data-col="{i}" title="{label} · {_fmt_clock(t0)}">{i}</th>'
+        f'<th class="col-h" data-col="{i}" title="{escape(label)} · {_fmt_clock(t0)}">{i}</th>'
         for i, label, t0 in cols
     )
     body_rows = []
@@ -1306,7 +1328,7 @@ def build_heatmap_html(l2: dict) -> str:
             us = f"{util:.2f}" if util is not None else "—"
             du = f"{util:.4f}" if util is not None else ""
             tip = (
-                f"{b} · col {i} · util={us} · "
+                f"{escape(b)} · col {i} · util={us} · "
                 f"used {(v['rs'] or 0):.1f}s / cap {(v['cap'] or 0):.1f}s"
             )
             cls = "c-sat" if v["sat"] else "c-slack"
@@ -1319,8 +1341,8 @@ def build_heatmap_html(l2: dict) -> str:
         fs = first_sat(b)
         ts = sum(1 for v in cells[b].values() if v["sat"])
         body_rows.append(
-            f'<tr data-name="{b}" data-firstsat="{fs}" data-totalsat="{ts}">'
-            f'<th class="row-h" title="{b}">{b}</th>{"".join(tds)}</tr>'
+            f'<tr data-name="{escape(b)}" data-firstsat="{fs}" data-totalsat="{ts}">'
+            f'<th class="row-h" title="{escape(b)}">{escape(b)}</th>{"".join(tds)}</tr>'
         )
 
     obj = (l2.get("solver", {}) or {}).get("objective_s")
@@ -1329,7 +1351,7 @@ def build_heatmap_html(l2: dict) -> str:
     if obj is not None:
         sub += f" · t_FINAL {_fmt_clock(float(obj))}"
     if seed is not None:
-        sub += f" · seed {seed}"
+        sub += f" · seed {escape(str(seed))}"
 
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"

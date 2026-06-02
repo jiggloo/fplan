@@ -342,8 +342,10 @@ Options:
   (`rates.yaml` → `rates-*`, `seed-9.yaml` → `seed-9-*`) so candidate views never
   clobber the promoted run's.
 - `--open` opens the timeline in the default browser after writing. It follows
-  `fplan init`'s platform convention: it abstracts the OS-specific open, warns on
-  an unrecognized or untested platform, and falls back to printing the path.
+  `fplan init`'s platform convention: it abstracts the OS-specific open
+  (`webbrowser`). On an **unrecognized** platform it skips opening and prints the
+  path; on a **recognized-but-untested** one it notes that and still attempts; on
+  any failure it falls back to printing the path.
 - `--dry-run` reports what it would write without writing.
 
 The game model is loaded **best-effort** (from the configured `data_dir`, to
