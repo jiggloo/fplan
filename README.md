@@ -25,58 +25,22 @@ python3 -m venv .venv
 ## Usage
 
 The CLI is the primary interface. After installing into the virtualenv (above),
-invoke it via `.venv/bin/fplan` — run it with no arguments to see the working
-directory it operates from, and `--help` to explore the command tree:
+invoke it via `.venv/bin/fplan` (or activate the venv and type `fplan`):
 
 ```bash
-.venv/bin/fplan                 # prints the working directory
+.venv/bin/fplan                 # working directory + config status
 .venv/bin/fplan --help          # the full command tree
-.venv/bin/fplan tech-order --help
+.venv/bin/fplan init            # create the config file
 ```
-
-(Activate the virtualenv with `source .venv/bin/activate` if you'd rather type
-`fplan` directly.)
 
 The command tree mirrors the planning pipeline — `tech-order` (L1), `rates`
 (L2), `map`, `layout` (L3), `execution` (L4), plus `inspect`, `init`, and
-`full-run`. The surface is complete, but the stages are being migrated
-incrementally: a command that isn't built yet prints a clear notice and exits
-with a reserved code rather than failing cryptically. Two codes distinguish the
-states — **70** (exists in the source project but not yet ported) and **71**
-(planned but not yet implemented) — so scripts can tell them apart.
-Artifact-producing commands also accept `--dry-run`.
+`full-run`. The surface is complete; the stages are being filled in
+incrementally, and an un-built command prints a clear notice with a reserved
+exit code rather than failing cryptically.
 
-The package version is also importable directly:
-
-```bash
-.venv/bin/python -c "import fplan; print(fplan.__version__)"
-```
-
-## Configuration
-
-fplan reads `.fplan-config.yaml` from the current working directory. It mainly
-records where Factorio is installed (its data directory and executable), which
-the planning stages need. Generate it with:
-
-```bash
-.venv/bin/fplan init
-```
-
-`init` asks before scanning the known install locations for your OS, fills in
-what it finds, and otherwise writes a template for you to complete (see
-[`.fplan-config.example.yaml`](.fplan-config.example.yaml) for the format). It
-never overwrites an existing file — delete it to regenerate. Auto-detection is
-only verified on macOS today; on Windows/Linux it warns and you should check the
-paths it writes.
-
-Commands that require Factorio treat a missing or invalid config as a fatal
-error (message to stderr, non-zero exit); `init` and bare `fplan` only warn (to
-stdout) and continue. No stage requires it yet — the planning stages are stubs.
-
-CLI arguments will take precedence over config-file values once commands expose
-such options; there is no environment-variable support. `--config-file PATH`
-selects a file other than the default. `.fplan-config.yaml` is git-ignored; the
-committed `.example` file is the documentation.
+**See [docs/usage.md](docs/usage.md) for the full command reference** —
+invocation, configuration, exit codes, and per-command examples.
 
 ## Testing
 
@@ -138,6 +102,7 @@ without reading the docs; their generated contents are ignored.
 
 ## Documentation
 
+- [Usage reference](docs/usage.md) — the full CLI reference
 - [Repository structure & conventions](docs/structure.md)
 
 ## License

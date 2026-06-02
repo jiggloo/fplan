@@ -70,6 +70,19 @@ def factorio_data_dir_or_exit(config_file: Path | None) -> Path:
         raise typer.Exit(code=1) from exc
 
 
+def factorio_binary_or_exit(config_file: Path | None) -> Path:
+    """Resolve the Factorio executable for a command that *runs* it.
+
+    Fatal-to-stderr on any problem, mirroring :func:`factorio_data_dir_or_exit`.
+    First used by ``map from-save``.
+    """
+    try:
+        return cfg.require_binary(cfg.load_config(config_file))
+    except cfg.ConfigError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
 def _version_callback(value: bool) -> None:
     if value:
         typer.echo(f"fplan {__version__}")
