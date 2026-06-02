@@ -24,7 +24,6 @@ GROUPS = ["tech-order", "rates", "map", "layout", "inspect", "execution", "run"]
 LEAVES = [
     (["tech-order", "viz"], EXIT_NOT_IMPLEMENTED),
     (["rates", "post"], EXIT_NOT_MIGRATED),
-    (["rates", "viz"], EXIT_NOT_MIGRATED),
     (["map", "from-string"], EXIT_NOT_IMPLEMENTED),
     (["layout", "place"], EXIT_NOT_MIGRATED),
     (["layout", "post"], EXIT_NOT_IMPLEMENTED),

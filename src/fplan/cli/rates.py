@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import random
 import shutil
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -660,7 +661,138 @@ def post(ctx: typer.Context, dry_run: DryRun = False) -> None:
     not_migrated(ctx)
 
 
+FromOpt = Annotated[
+    Path | None,
+    typer.Option(
+        "--from",
+        help="Visualize this rates-shaped YAML instead of the run's rates.yaml "
+        "(e.g. a search candidate rates-search/seed-N.yaml).",
+    ),
+]
+NoHeatmapOpt = Annotated[
+    bool,
+    typer.Option(
+        "--no-heatmap", help="Skip the companion capacity-saturation heatmap."
+    ),
+]
+OpenVizOpt = Annotated[
+    bool,
+    typer.Option(
+        "--open", help="Open the timeline in the default browser after writing."
+    ),
+]
+
+
+def _open_in_browser(path: Path) -> None:
+    """Open ``path`` in the default browser, following ``fplan init``'s platform
+    convention: the OS-specific open is abstracted (``webbrowser`` dispatches to
+    macOS ``open`` / Linux ``xdg-open`` / Windows ``start``); an unrecognized
+    platform is skipped with a notice, a recognized-but-untested one is flagged
+    and still attempted, and any failure falls back to printing the path."""
+    import webbrowser
+
+    from fplan import factorio
+
+    platform = factorio.current_platform()
+    if platform is None:
+        typer.echo(
+            f"note: unrecognized platform ({sys.platform}); not opening a browser. "
+            f"Open it manually: {path}"
+        )
+        return
+    if factorio.is_untested(platform):
+        typer.echo(
+            f"note: browser-open is untested on {factorio.platform_label(platform)}; "
+            "attempting anyway — open the path manually if nothing happens."
+        )
+    try:
+        opened = webbrowser.open(path.resolve().as_uri())
+    except Exception:
+        opened = False
+    if not opened:
+        typer.echo(f"note: could not open a browser; open it manually: {path}")
+
+
 @group.command()
-def viz(ctx: typer.Context) -> None:
-    """Render the capacity-saturation heatmap."""
-    not_migrated(ctx)
+def viz(
+    ctx: typer.Context,
+    run: RunArg,
+    from_path: FromOpt = None,
+    no_heatmap: NoHeatmapOpt = False,
+    open_browser: OpenVizOpt = False,
+    dry_run: DryRun = False,
+) -> None:
+    """Render a run's rates.yaml as interactive HTML (timeline + heatmap).
+
+    Writes self-contained HTML under runs/<run>/viz/. The game model is loaded
+    best-effort (to enrich the legend with facility counts) — viz works without
+    a Factorio install, just without that breakdown.
+    """
+    from fplan import config as cfg
+    from fplan import run as run_mod
+    from fplan.cli import main as cli_main
+    from fplan.l2 import viz as l2_viz
+
+    state: cli_main.CLIState = ctx.obj
+
+    run_dir = run_mod.run_dir(run)
+    if not run_mod.manifest_path(run_dir).exists():
+        typer.echo(f"error: run {run!r} not found at {run_dir}", err=True)
+        raise typer.Exit(code=1)
+
+    src = from_path if from_path is not None else run_dir / RATES_NAME
+    if not src.exists():
+        hint = "" if from_path is not None else " (run `fplan rates solve` first)"
+        typer.echo(f"error: rates file not found: {src}{hint}", err=True)
+        raise typer.Exit(code=1)
+
+    viz_dir = run_dir / "viz"
+    stem = src.stem  # rates.yaml → "rates", seed-22.yaml → "seed-22"
+    timeline_path = viz_dir / f"{stem}-timeline.html"
+    heatmap_path = viz_dir / f"{stem}-heatmap.html"
+
+    if dry_run:
+        typer.echo(f"(dry run) would read {src} and write:")
+        typer.echo(f"  {timeline_path}")
+        if not no_heatmap:
+            typer.echo(f"  {heatmap_path}")
+        return
+
+    try:
+        l2 = yaml.safe_load(src.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if not isinstance(l2, dict):
+        typer.echo(
+            f"error: {src} is not a valid rates YAML (expected a mapping)", err=True
+        )
+        raise typer.Exit(code=1)
+
+    # Best-effort model load: enrich the legend with facility counts if a valid
+    # data_dir is configured; otherwise render from the YAML alone.
+    data_dir = None
+    try:
+        data_dir = cfg.load_config(state.config_file).data_dir
+    except cfg.ConfigError:
+        data_dir = None
+
+    try:
+        dataset = l2_viz.build_dataset(l2, data_dir=data_dir)
+        timeline = l2_viz.render_html(dataset)
+        viz_dir.mkdir(parents=True, exist_ok=True)
+        timeline_path.write_text(timeline)
+        outputs = [timeline_path]
+        if not no_heatmap:
+            heatmap_path.write_text(l2_viz.build_heatmap_html(l2))
+            outputs.append(heatmap_path)
+    except OSError as exc:
+        typer.echo(f"error: could not write viz: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if not dataset.get("model_loaded"):
+        typer.echo("  (model not loaded — legend omits the facility-count breakdown)")
+    for p in outputs:
+        typer.echo(f"✓ wrote {p}")
+    if open_browser:
+        _open_in_browser(timeline_path)
