@@ -152,9 +152,11 @@ fplan/
 The committed-vs-ephemeral split is the core convention — see
 [Repository structure & conventions](docs/structure.md) for the rule and the
 reasoning. In short: **authored/curated inputs are tracked; generated and
-regenerable artifacts are not.** The ephemeral directories are still visible in
-a fresh clone (each keeps a `.gitkeep`) so the intended layout is obvious
-without reading the docs; their generated contents are ignored.
+regenerable artifacts are not.** The fully-ephemeral directories (`maps/`,
+`runs/`) keep a tracked `.gitkeep` so they're visible in a fresh clone;
+`examples/runs/` is kept present by its committed example `manifest.yaml` (its
+generated stage artifacts stay ignored). Either way the intended layout is
+obvious without reading the docs.
 
 ## Documentation
 

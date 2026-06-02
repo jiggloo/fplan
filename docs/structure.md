@@ -65,8 +65,9 @@ untracked and `git status` stays clean after a run.
 `runs/`). It holds curated reference material to learn from, and is positioned
 so a later run can use it *in place* — reading the example inputs and writing
 its (ignored) stage artifacts under `examples/runs/<name>/`, alongside the
-committed manifest — without copying files and without owning Factorio. The mechanism for selecting where the tool reads and writes (a
-working-directory concept) is part of the CLI; the CLI skeleton now exists
+committed manifest — without copying files and without owning Factorio. The
+mechanism for selecting where the tool reads and writes (a working-directory
+concept) is part of the CLI; the CLI skeleton now exists
 (bare `fplan` reports the working directory it would operate from), but the
 working-directory / run-directory *resolution* is not wired up yet.
 

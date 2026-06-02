@@ -42,9 +42,12 @@ def is_current(ref: dict) -> bool | None:
     """Whether the referenced file still matches its recorded hash.
 
     ``True`` matches, ``False`` drifted. ``None`` means "can't tell" — the
-    file is missing or the reference carries no hash — so callers can render a
-    distinct state rather than conflating it with a match.
+    reference isn't a mapping, the file is missing, or there's no recorded
+    hash — so callers can render a distinct state rather than conflating it
+    with a match.
     """
+    if not isinstance(ref, dict):
+        return None
     path = ref.get("path")
     sha = ref.get("sha256")
     if not path or not sha:

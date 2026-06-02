@@ -36,6 +36,8 @@ def test_file_ref_and_is_current(tmp_path: Path) -> None:
     p.unlink()
     assert refs.is_current(ref) is None
     assert refs.is_current({"path": "x"}) is None
+    # A non-mapping ref (e.g. a hand-edited manifest) is "can't tell", not a crash.
+    assert refs.is_current("just-a-string") is None
 
 
 # --------------------------------------------------------------------------- #
@@ -88,6 +90,32 @@ def test_load_non_mapping_manifest_raises(tmp_path: Path) -> None:
     (directory / run_mod.MANIFEST_NAME).write_text("- not a mapping\n")
     with pytest.raises(ValueError):
         run_mod.load(directory)
+
+
+def test_from_dict_rejects_non_mapping_inputs() -> None:
+    # A manifest whose `inputs` is a list would crash show/clone downstream.
+    with pytest.raises(ValueError):
+        run_mod.Manifest.from_dict({"run": "r", "inputs": ["bad"]})
+
+
+@pytest.mark.parametrize("bad", ["", ".", "..", "a/b", "a\\b", "/abs", "../escape"])
+def test_run_dir_rejects_unsafe_names(bad) -> None:
+    with pytest.raises(ValueError):
+        run_mod.run_dir(bad)
+
+
+def test_run_dir_accepts_plain_name() -> None:
+    assert run_mod.run_dir("ok") == run_mod.RUNS_DIR / "ok"
+
+
+def test_cloned_stamps_current_version(tmp_path: Path) -> None:
+    from fplan import __version__
+
+    scn, order, mp = _inputs(tmp_path)
+    src = run_mod.Manifest.new(
+        "r1", scenario=scn, tech_order=order, map_path=mp, created="t0", version="0.0.1"
+    )
+    assert src.cloned("r2", created="t1").fplan_version == __version__
 
 
 def test_stage_artifacts(tmp_path: Path) -> None:
@@ -169,6 +197,36 @@ def test_create_save_failure_is_fatal(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(run_mod, "save", boom)
     r = _create("r1")
     assert r.exit_code == 1 and "could not create run" in (r.stdout + (r.stderr or ""))
+
+
+def test_create_rejects_unsafe_name(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _inputs(tmp_path)
+    r = _create("../../escaped")
+    assert r.exit_code == 2 and "invalid run name" in (r.stdout + (r.stderr or ""))
+    # Nothing was written outside runs/.
+    assert not (tmp_path.parent.parent / "escaped").exists()
+
+
+def test_show_malformed_inputs_is_clean_error(tmp_path, monkeypatch) -> None:
+    # `inputs` as a non-mapping must be a clean exit, not a raw traceback.
+    monkeypatch.chdir(tmp_path)
+    directory = run_mod.run_dir("r1")
+    directory.mkdir(parents=True)
+    (directory / run_mod.MANIFEST_NAME).write_text("run: r1\ninputs:\n- bad\n")
+    r = runner.invoke(app, ["run", "show", "r1"])
+    assert r.exit_code == 1
+    assert r.exception is None or isinstance(r.exception, SystemExit)
+
+
+def test_clone_malformed_inputs_is_clean_error(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    directory = run_mod.run_dir("r1")
+    directory.mkdir(parents=True)
+    (directory / run_mod.MANIFEST_NAME).write_text("run: r1\ninputs:\n- bad\n")
+    r = runner.invoke(app, ["run", "clone", "r1", "r2"])
+    assert r.exit_code == 1
+    assert r.exception is None or isinstance(r.exception, SystemExit)
 
 
 def test_clone_copies_inputs_drops_artifacts(tmp_path, monkeypatch) -> None:

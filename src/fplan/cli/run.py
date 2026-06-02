@@ -41,27 +41,37 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def _run_dir_or_exit(name: str) -> Path:
+    """Resolve a run directory, turning an unsafe run name into a clean usage
+    error (exit 2) instead of a path that escapes the runs/ root."""
+    try:
+        return run_mod.run_dir(name)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+
 @group.command()
 def create(
     ctx: typer.Context,
     name: NameArg,
     scenario: ScenarioOpt,
     tech_order: TechOrderOpt,
-    map: MapOpt,
+    map_path: MapOpt,
     dry_run: DryRun = False,
 ) -> None:
     """Create a run directory and manifest binding scenario + tech-order + map."""
     inputs: list[tuple[str, Path]] = [
         ("scenario", scenario),
         ("tech-order", tech_order),
-        ("map", map),
+        ("map", map_path),
     ]
+    directory = _run_dir_or_exit(name)
     for label, path in inputs:
         if not path.exists():
             typer.echo(f"error: {label} file not found: {path}", err=True)
             raise typer.Exit(code=1)
 
-    directory = run_mod.run_dir(name)
     if directory.exists():
         typer.echo(
             f"error: run {name!r} already exists at {directory}; remove it or use "
@@ -76,7 +86,11 @@ def create(
         return
 
     manifest = run_mod.Manifest.new(
-        name, scenario=scenario, tech_order=tech_order, map_path=map, created=_now()
+        name,
+        scenario=scenario,
+        tech_order=tech_order,
+        map_path=map_path,
+        created=_now(),
     )
     try:
         path = run_mod.save(directory, manifest)
@@ -94,11 +108,11 @@ def clone(
     dry_run: DryRun = False,
 ) -> None:
     """Create a new run from an existing run's manifest (inputs only, no artifacts)."""
-    src_dir = run_mod.run_dir(source)
+    src_dir = _run_dir_or_exit(source)
     if not run_mod.manifest_path(src_dir).exists():
         typer.echo(f"error: run {source!r} not found at {src_dir}", err=True)
         raise typer.Exit(code=1)
-    dst_dir = run_mod.run_dir(name)
+    dst_dir = _run_dir_or_exit(name)
     if dst_dir.exists():
         typer.echo(
             f"error: run {name!r} already exists at {dst_dir}; remove it first.",
@@ -129,7 +143,7 @@ def clone(
 @group.command()
 def show(ctx: typer.Context, name: NameArg) -> None:
     """Show a run's bindings, input freshness, and which stage artifacts exist."""
-    directory = run_mod.run_dir(name)
+    directory = _run_dir_or_exit(name)
     if not run_mod.manifest_path(directory).exists():
         typer.echo(f"error: run {name!r} not found at {directory}", err=True)
         raise typer.Exit(code=1)

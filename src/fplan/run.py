@@ -79,7 +79,9 @@ class Manifest:
         return Manifest(
             run=new_name,
             inputs=dict(self.inputs),
-            fplan_version=self.fplan_version,
+            # The clone is a run created *now* by *this* fplan, so it carries the
+            # current version, not the source run's (possibly older) one.
+            fplan_version=__version__,
             created=created,
         )
 
@@ -95,9 +97,14 @@ class Manifest:
 
     @classmethod
     def from_dict(cls, d: dict) -> Manifest:
+        inputs = d.get("inputs") or {}
+        if not isinstance(inputs, dict):
+            # A hand-edited/corrupt manifest with a non-mapping `inputs` would
+            # otherwise crash downstream (show/clone) with a raw traceback.
+            raise ValueError("manifest 'inputs' must be a mapping")
         return cls(
             run=str(d.get("run", "")),
-            inputs=d.get("inputs") or {},
+            inputs=inputs,
             fplan_version=str(d.get("fplan_version", "")),
             created=str(d.get("created", "")),
             extra={k: v for k, v in d.items() if k not in _KNOWN_KEYS},
@@ -105,6 +112,21 @@ class Manifest:
 
 
 def run_dir(name: str, *, base: Path = RUNS_DIR) -> Path:
+    """Path to a run's directory under ``base``.
+
+    The run name must be a single safe path segment: an absolute path or one
+    containing ``.``/``..``/separators would let ``base / name`` escape the
+    runs/ root (``Path('runs') / '/abs'`` collapses to ``/abs``), so a bad name
+    is rejected rather than silently writing outside the managed directory.
+    """
+    if (
+        not name
+        or name in (".", "..")
+        or "/" in name
+        or "\\" in name
+        or Path(name).is_absolute()
+    ):
+        raise ValueError(f"invalid run name {name!r}: must be a single path segment")
     return base / name
 
 
