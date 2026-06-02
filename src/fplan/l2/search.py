@@ -139,11 +139,18 @@ def run_search(
     """Yield a :class:`SeedResult` per seed as solves complete.
 
     ``jobs <= 1`` solves serially in-process, preserving the given seed order
-    and leaving output on the console. ``jobs > 1`` fans the seeds across that
-    many worker processes, redirects each seed's output to its own
-    ``seed-<N>.log`` (no interleaving), and yields in **completion** order (not
-    seed order). A worker that dies outright (e.g. a native SCIP crash) is
-    reported as an errored seed rather than aborting.
+    and leaving output on the console (SCIP itself stays quiet, as in a single
+    solve). ``jobs > 1`` fans the seeds across that many worker processes,
+    redirects each seed's output to its own ``seed-<N>.log`` (no interleaving),
+    and yields in **completion** order (not seed order). A hard worker crash
+    (``BrokenProcessPool`` from e.g. a native SCIP segfault) is contained — the
+    search finishes rather than aborting — but it marks *all* still-outstanding
+    seeds as errored, not just the one that crashed.
+
+    Note: the genuine multi-process path (real pickling across the process
+    boundary, completion-order yielding, cross-seed fd isolation) is exercised
+    only by the manual integration test; CI uses an in-process executor
+    stand-in plus a pickle-roundtrip guard.
     """
 
     def cand(sd: int) -> Path:

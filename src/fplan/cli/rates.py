@@ -105,8 +105,8 @@ QuietSolverOpt = Annotated[
     bool,
     typer.Option(
         "--quiet-solver",
-        help="Slim the per-seed logs (parallel search only): omit SCIP's live "
-        "progress table. By default each seed's log captures full progress.",
+        help="Silence SCIP in the per-seed logs (parallel search only); the logs "
+        "then stay near-empty. By default each seed's log captures full progress.",
     ),
 ]
 ForceOpt = Annotated[
@@ -140,11 +140,16 @@ def _seed_spec(spec: str) -> int | list[int]:
         for tok in body.split(","):
             tok = tok.strip()
             try:
-                seen[int(tok)] = None
+                val = int(tok)
             except ValueError:
                 raise ValueError(
                     f"bad seed {tok!r} in {spec!r}: seeds must be integers"
                 ) from None
+            if not 1 <= val <= SEED_MAX:
+                raise ValueError(
+                    f"seed {val} out of range in {spec!r}: must be 1..{SEED_MAX}"
+                )
+            seen[val] = None
         return list(seen)
     try:
         n = int(s)
@@ -154,6 +159,12 @@ def _seed_spec(spec: str) -> int | list[int]:
         ) from None
     if n < 1:
         raise ValueError(f"--seeds count must be ≥ 1, got {n}")
+    # Random seeds are drawn distinctly from [1, SEED_MAX]; a count beyond that
+    # population would otherwise blow up in random.sample with a raw traceback.
+    if n > SEED_MAX:
+        raise ValueError(
+            f"--seeds count {n} exceeds the {SEED_MAX} distinct seeds available"
+        )
     return n
 
 
@@ -210,14 +221,20 @@ def solve(
     if seeds is not None and out is not None:
         typer.echo("error: --out cannot be combined with --seeds.", err=True)
         raise typer.Exit(code=2)
+    if seeds is None and (jobs is not None or quiet_solver):
+        typer.echo(
+            "error: --jobs / --quiet-solver only apply to a --seeds search.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
     chosen_seeds: list[int] | None = None
     if seeds is not None:
         try:
             spec = _seed_spec(seeds)
+            chosen_seeds = _random_seeds(spec) if isinstance(spec, int) else spec
         except ValueError as exc:
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(code=2) from exc
-        chosen_seeds = _random_seeds(spec) if isinstance(spec, int) else spec
 
     run_dir = run_mod.run_dir(run)
     if not run_mod.manifest_path(run_dir).exists():
@@ -442,8 +459,8 @@ def _run_search(
     parallel = n_jobs > 1
     # Parallel seeds each get full SCIP progress in their own log (so they're
     # monitorable with tail -f) — interleaving the console is the whole problem.
-    # --quiet-solver silences SCIP, leaving the logs near-empty. Serial keeps its
-    # output on the console as before.
+    # --quiet-solver silences SCIP, leaving the logs near-empty. Serial runs SCIP
+    # quietly (verbose stays False), as a single solve does.
     solver_kwargs = {**solver_kwargs, "verbose": parallel and not quiet_solver}
 
     if parallel and quiet_solver:

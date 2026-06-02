@@ -253,7 +253,8 @@ command, stores each candidate, ranks them by `t_FINAL`, and promotes the best:
 
 - **`--seeds N`** (a bare integer) runs **N distinct random seeds**, each printed
   for reproducibility. **`--seeds '[a,b,c]'`** (a bracketed list) runs **exactly
-  those seeds** (quote it so the shell doesn't glob/split the brackets).
+  those seeds** (quote it so the shell doesn't glob/split the brackets; duplicates
+  are de-duplicated, order preserved). Seeds must be in `1..2147483647`.
 - Mutually exclusive with `--seed` and `--out`. The other per-solve options
   (`--mode`, the solver controls, `--l2-config`, the modeling A/B flags) apply
   uniformly to every seed.
@@ -278,8 +279,10 @@ command, stores each candidate, ranks them by `t_FINAL`, and promotes the best:
   tail -f runs/<run>/rates-search/seed-<N>.log
   ```
   This keeps the parent console readable instead of interleaving every worker's
-  output. `--quiet-solver` slims the logs (omits SCIP's progress table). Serial
-  / single-seed solves are unaffected — their output stays on the console.
+  output. `--quiet-solver` silences SCIP, leaving the per-seed logs near-empty
+  (use it when you only want the ranked result, not live monitoring). Serial and
+  single-seed solves run SCIP quietly as before — only fplan's own status lines
+  print to the console; SCIP's progress table is a parallel-search-only feature.
 - One seed failing or coming back infeasible does not abort the search — it is
   recorded in `summary.yaml` and the rest continue. **Best** = lowest `t_FINAL`
   among feasible seeds (infeasible seeds are never promotable).

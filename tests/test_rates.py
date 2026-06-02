@@ -281,7 +281,21 @@ def test_seed_spec_list_and_dedupe() -> None:
     assert rates_cli._seed_spec("[ 1, 2 , 2, 1 ]") == [1, 2]
 
 
-@pytest.mark.parametrize("bad", ["abc", "0", "-1", "[]", "[1,x]", "[1,2", "1.5"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "abc",
+        "0",
+        "-1",
+        "[]",
+        "[1,x]",
+        "[1,2",
+        "1.5",
+        "3000000000",  # count > SEED_MAX (would blow up random.sample)
+        "[0]",  # explicit seed below range
+        "[2147483648]",  # explicit seed above SEED_MAX
+    ],
+)
 def test_seed_spec_bad_syntax(bad: str) -> None:
     from fplan.cli import rates as rates_cli
 
@@ -307,6 +321,31 @@ def test_search_bad_seeds_syntax(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     r = runner.invoke(app, ["rates", "solve", "r", "--seeds", "nope"])
     assert r.exit_code == 2 and "bad --seeds" in (r.stdout + (r.stderr or ""))
+
+
+def test_search_oversized_count_is_clean_usage_error(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    # A count beyond the seed population must be a clean exit-2, never a raw
+    # traceback from random.sample (the path runs before run lookup).
+    r = runner.invoke(app, ["rates", "solve", "r", "--seeds", "3000000000"])
+    assert r.exit_code == 2 and "exceeds" in (r.stdout + (r.stderr or ""))
+    assert r.exception is None or isinstance(r.exception, SystemExit)
+
+
+def test_jobs_without_seeds_is_usage_error(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    r = runner.invoke(app, ["rates", "solve", "r", "--jobs", "4"])
+    assert r.exit_code == 2 and "only apply to a --seeds search" in (
+        r.stdout + (r.stderr or "")
+    )
+
+
+def test_quiet_solver_without_seeds_is_usage_error(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    r = runner.invoke(app, ["rates", "solve", "r", "--quiet-solver"])
+    assert r.exit_code == 2 and "only apply to a --seeds search" in (
+        r.stdout + (r.stderr or "")
+    )
 
 
 def test_search_dry_run(tmp_path, monkeypatch, use_fixture_model) -> None:

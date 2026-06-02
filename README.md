@@ -128,7 +128,7 @@ first with `fplan init` (see
   larger and may need several seeds to land an incumbent.)
 
   For the larger run, drive several seeds in one command (solved in parallel,
-  one process per seed) and promote the best:
+  up to one process per seed, capped at your CPU count) and promote the best:
 
   ```bash
   ../.venv/bin/fplan --config-file ../.fplan-config.yaml \
