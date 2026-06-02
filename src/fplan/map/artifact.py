@@ -18,15 +18,6 @@ class ArtifactError(Exception):
     """A map artifact could not be read or is malformed."""
 
 
-def default_artifact_path(save: Path) -> Path:
-    """Default output location for a save's artifact: ``maps/<stem>.yaml``.
-
-    ``maps/`` is the repo's regenerable map location (git-ignored); the stem of
-    the save name keeps the artifact traceable to its source.
-    """
-    return Path("maps") / f"{save.stem}.yaml"
-
-
 def write_yaml(data: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(data, sort_keys=False))

@@ -5,6 +5,14 @@ how to configure it, and per-command examples. The [README](../README.md) is the
 starting point; this document is where the detail lives and grows as commands
 are implemented.
 
+## Table of Contents
+
+- [Invoking the CLI](#invoking-the-cli)
+- [The command tree](#the-command-tree)
+- [Configuration](#configuration)
+- [Commands](#commands) (alphabetical by group)
+  - [`map`](#map)
+
 ## Invoking the CLI
 
 The CLI is fplan's primary interface. After installing into the virtualenv (see
@@ -31,18 +39,19 @@ The package version is also importable directly:
 
 ## The command tree
 
-The command tree mirrors the planning pipeline:
+The command groups (alphabetical for lookup; the `Level` column shows where each
+sits in the L1 → L4 planning pipeline):
 
-| Group | Level | Purpose |
+| Group / command | Level | Purpose |
 |---|---|---|
-| `tech-order` | L1 | Technology research ordering |
-| `rates` | L2 | Production-rate solving |
-| `map` | — | Map artifact generation and inspection |
-| `layout` | L3 | Spatial placement |
 | `execution` | L4 | Step generation (TAS-generator input) |
-| `inspect` | — | Inspect the game model (tech / item / recipe) |
-| `init` | — | Create the config file |
 | `full-run` | — | Run the whole L1 → L4 chain |
+| `init` | — | Create the config file |
+| `inspect` | — | Inspect the game model (tech / item / recipe) |
+| `layout` | L3 | Spatial placement |
+| `map` | — | Map artifact generation and inspection |
+| `rates` | L2 | Production-rate solving |
+| `tech-order` | L1 | Technology research ordering |
 
 The surface is complete, but the stages are being migrated incrementally. A
 command that isn't built yet prints a clear notice and exits with a reserved
@@ -92,21 +101,25 @@ There is no environment-variable support; CLI arguments take precedence over
 config-file values where commands expose such options. `.fplan-config.yaml` is
 git-ignored; the committed `.example` file is the documentation.
 
-## `map` — map artifacts
+## Commands
+
+Per-group command reference, in alphabetical order.
+
+### `map`
 
 A *map artifact* is a single self-describing YAML bundle (seed, map-gen
 settings, probe radius, resource patches, oil fields, water bodies, tree count)
 describing the world around spawn, so a map can be reproduced and inspected from
 the file alone.
 
-### `map from-save`
+#### `map from-save`
 
-Turn a Factorio save into a map artifact:
+Turn a Factorio save into a map artifact. The output path is given explicitly
+with `--out` (required — there is no implicit naming):
 
 ```bash
-.venv/bin/fplan map from-save ~/Downloads/MySave.zip      # -> maps/MySave.yaml
-.venv/bin/fplan map from-save MySave.zip --out world.yaml # custom output path
-.venv/bin/fplan map from-save MySave.zip --dry-run        # show plan, run nothing
+.venv/bin/fplan map from-save ~/Downloads/MySave.zip --out maps/world.yaml
+.venv/bin/fplan map from-save MySave.zip --out maps/world.yaml --dry-run
 ```
 
 It runs Factorio headless with a bundled extraction mod, so it needs the
@@ -115,16 +128,21 @@ Notes:
 
 - **The original save is never modified.** It's copied first, because headless
   Factorio autosaves on exit.
-- Artifacts default to the regenerable `maps/` directory; `--out` overrides.
+- **`--out` is required** and is written verbatim (no `maps/<name>` defaulting).
+  `maps/` is the conventional, git-ignored location for these artifacts.
+- **Existing output is not clobbered silently.** If the `--out` file already
+  exists you're asked to confirm the overwrite; in a non-interactive session the
+  command refuses (remove the file or choose another path). This check happens
+  before Factorio runs.
 - As with `init`, the headless interaction is only verified on macOS; on
   Windows/Linux it warns.
 
-### `map show`
+#### `map show`
 
 Print a text summary of an artifact:
 
 ```bash
-.venv/bin/fplan map show maps/MySave.yaml
+.venv/bin/fplan map show maps/world.yaml
 ```
 
 ```
@@ -135,7 +153,7 @@ seed=1063559207  radius=512
   4244 trees
 ```
 
-### `map from-string`
+#### `map from-string`
 
 Building an artifact from a Factorio map-exchange string is planned but not yet
 implemented — `fplan map from-string` currently exits with code `71`.

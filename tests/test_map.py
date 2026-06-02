@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 
 from fplan import factorio
 from fplan.cli import app
+from fplan.cli import main as cli_main
 from fplan.map import artifact, cluster, extract
 
 runner = CliRunner()
@@ -89,12 +90,6 @@ def test_postprocess_handles_missing_sections() -> None:
 # --------------------------------------------------------------------------- #
 # artifact.py (I/O + summary)
 # --------------------------------------------------------------------------- #
-
-
-def test_default_artifact_path() -> None:
-    assert artifact.default_artifact_path(Path("/x/Any_Zaspar.zip")) == Path(
-        "maps/Any_Zaspar.yaml"
-    )
 
 
 def test_write_then_load_round_trips(tmp_path: Path, raw_dump: dict) -> None:
@@ -220,9 +215,20 @@ def test_extract_orchestration(tmp_path: Path, monkeypatch, raw_dump: dict) -> N
 # --------------------------------------------------------------------------- #
 
 
+def test_from_save_requires_out(tmp_path: Path, monkeypatch) -> None:
+    # --out is mandatory; omitting it is a usage error (exit 2), not a run.
+    monkeypatch.chdir(tmp_path)
+    save = tmp_path / "save.zip"
+    save.write_text("x")
+    result = runner.invoke(app, ["map", "from-save", str(save)])
+    assert result.exit_code == 2
+
+
 def test_from_save_missing_save_is_fatal(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    result = runner.invoke(app, ["map", "from-save", str(tmp_path / "missing.zip")])
+    result = runner.invoke(
+        app, ["map", "from-save", str(tmp_path / "missing.zip"), "--out", "o.yaml"]
+    )
     assert result.exit_code == 1
 
 
@@ -230,20 +236,25 @@ def test_from_save_dry_run_writes_nothing(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     save = tmp_path / "save.zip"
     save.write_text("x")
-    result = runner.invoke(app, ["map", "from-save", str(save), "--dry-run"])
+    result = runner.invoke(
+        app, ["map", "from-save", str(save), "--out", "out.yaml", "--dry-run"]
+    )
     assert result.exit_code == 0
     assert "Would extract" in result.stdout
-    assert not (tmp_path / "maps").exists()
+    assert "out.yaml" in result.stdout
+    assert not (tmp_path / "out.yaml").exists()
 
 
-def test_from_save_dry_run_honors_out(tmp_path: Path, monkeypatch) -> None:
+def test_from_save_dry_run_reports_overwrite(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     save = tmp_path / "save.zip"
     save.write_text("x")
+    (tmp_path / "out.yaml").write_text("old")
     result = runner.invoke(
-        app, ["map", "from-save", str(save), "--out", "custom/m.yaml", "--dry-run"]
+        app, ["map", "from-save", str(save), "--out", "out.yaml", "--dry-run"]
     )
-    assert "custom/m.yaml" in result.stdout
+    assert "overwriting" in result.stdout
+    assert (tmp_path / "out.yaml").read_text() == "old"  # dry run touches nothing
 
 
 def test_from_save_warns_on_untested_platform(tmp_path: Path, monkeypatch) -> None:
@@ -251,7 +262,9 @@ def test_from_save_warns_on_untested_platform(tmp_path: Path, monkeypatch) -> No
     monkeypatch.setattr(factorio, "current_platform", lambda: "linux")
     save = tmp_path / "save.zip"
     save.write_text("x")
-    result = runner.invoke(app, ["map", "from-save", str(save), "--dry-run"])
+    result = runner.invoke(
+        app, ["map", "from-save", str(save), "--out", "o.yaml", "--dry-run"]
+    )
     assert "untested on Linux" in result.stdout
 
 
@@ -260,7 +273,7 @@ def test_from_save_no_binary_is_fatal(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     save = tmp_path / "save.zip"
     save.write_text("x")
-    result = runner.invoke(app, ["map", "from-save", str(save)])
+    result = runner.invoke(app, ["map", "from-save", str(save), "--out", "o.yaml"])
     assert result.exit_code == 1
 
 
@@ -285,10 +298,11 @@ def test_from_save_real_run_writes_artifact(
     save.write_text("x")
     monkeypatch.setattr(extract, "extract", lambda **kw: copy.deepcopy(raw_dump))
     result = runner.invoke(
-        app, ["--config-file", str(conf), "map", "from-save", str(save)]
+        app,
+        ["--config-file", str(conf), "map", "from-save", str(save), "--out", "w.yaml"],
     )
     assert result.exit_code == 0
-    assert (tmp_path / "maps" / "MySave.yaml").exists()
+    assert (tmp_path / "w.yaml").exists()
     assert f"seed={raw_dump['seed']}" in result.stdout
 
 
@@ -303,9 +317,60 @@ def test_from_save_extract_error_is_fatal(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(extract, "extract", boom)
     result = runner.invoke(
-        app, ["--config-file", str(conf), "map", "from-save", str(save)]
+        app,
+        ["--config-file", str(conf), "map", "from-save", str(save), "--out", "o.yaml"],
     )
     assert result.exit_code == 1
+
+
+def test_from_save_refuses_overwrite_noninteractive(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Existing --out + non-interactive (CliRunner) -> fatal, file untouched,
+    # before Factorio is ever consulted.
+    monkeypatch.chdir(tmp_path)
+    save = tmp_path / "save.zip"
+    save.write_text("x")
+    out = tmp_path / "out.yaml"
+    out.write_text("old")
+    result = runner.invoke(app, ["map", "from-save", str(save), "--out", str(out)])
+    assert result.exit_code == 1
+    assert out.read_text() == "old"
+
+
+def test_from_save_overwrite_declined(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_stdin_is_interactive", lambda: True)
+    save = tmp_path / "save.zip"
+    save.write_text("x")
+    out = tmp_path / "out.yaml"
+    out.write_text("old")
+    result = runner.invoke(
+        app, ["map", "from-save", str(save), "--out", str(out)], input="n\n"
+    )
+    assert result.exit_code == 0
+    assert "Aborted" in result.stdout
+    assert out.read_text() == "old"
+
+
+def test_from_save_overwrite_confirmed(
+    tmp_path: Path, monkeypatch, raw_dump: dict
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_stdin_is_interactive", lambda: True)
+    conf = _config_with_binary(tmp_path)
+    save = tmp_path / "save.zip"
+    save.write_text("x")
+    out = tmp_path / "out.yaml"
+    out.write_text("old")
+    monkeypatch.setattr(extract, "extract", lambda **kw: copy.deepcopy(raw_dump))
+    result = runner.invoke(
+        app,
+        ["--config-file", str(conf), "map", "from-save", str(save), "--out", str(out)],
+        input="y\n",
+    )
+    assert result.exit_code == 0
+    assert artifact.load_artifact(out)["seed"] == raw_dump["seed"]
 
 
 def test_show_summarizes_artifact(tmp_path: Path, raw_dump: dict) -> None:

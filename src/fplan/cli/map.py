@@ -24,8 +24,8 @@ group = typer.Typer(
 
 SaveArg = Annotated[Path, typer.Argument(help="Factorio save file (.zip) to probe.")]
 OutOpt = Annotated[
-    Path | None,
-    typer.Option("--out", help="Artifact output path (default: maps/<save>.yaml)."),
+    Path,
+    typer.Option("--out", help="Artifact output path (.yaml) to write. Required."),
 ]
 ArtifactArg = Annotated[Path, typer.Argument(help="Map artifact (.yaml) to summarize.")]
 
@@ -50,7 +50,7 @@ def from_string(ctx: typer.Context, dry_run: DryRun = False) -> None:
 def from_save(
     ctx: typer.Context,
     save: SaveArg,
-    out: OutOpt = None,
+    out: OutOpt,
     dry_run: DryRun = False,
 ) -> None:
     """Build a map artifact (resources, oil, water, trees) from a save file."""
@@ -61,12 +61,27 @@ def from_save(
     if not save.exists():
         typer.echo(f"error: save file not found: {save}", err=True)
         raise typer.Exit(code=1)
-    target = out or artifact.default_artifact_path(save)
 
     _warn_if_untested()
     if dry_run:
-        typer.echo(f"Would extract {save} → {target} (dry run; Factorio not run).")
+        clobber = " (overwriting the existing file)" if out.exists() else ""
+        typer.echo(
+            f"Would extract {save} → {out}{clobber} (dry run; Factorio not run)."
+        )
         return
+
+    # Guard before the multi-minute Factorio run, not after: don't clobber an
+    # existing artifact silently. Confirm if we can prompt; refuse otherwise.
+    if out.exists():
+        if not cli_main._stdin_is_interactive():
+            typer.echo(
+                f"error: {out} already exists; remove it or choose another --out.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        if not typer.confirm(f"{out} already exists. Overwrite?", default=False):
+            typer.echo("Aborted; nothing written.")
+            raise typer.Exit(code=0)
 
     binary = cli_main.factorio_binary_or_exit(state.config_file)
     typer.echo(f"Extracting map from {save.name} (running Factorio headless) ...")
@@ -77,9 +92,9 @@ def from_save(
         raise typer.Exit(code=1) from exc
 
     cluster.postprocess(data)
-    artifact.write_yaml(data, target)
+    artifact.write_yaml(data, out)
     typer.echo(artifact.summarize(data))
-    typer.echo(f"→ {target}")
+    typer.echo(f"→ {out}")
 
 
 @group.command()
