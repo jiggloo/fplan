@@ -295,13 +295,14 @@ def format_layers(
     goal: goals.GoalState,
     method: str,
 ) -> str:
-    """The human-readable layered view (the same shape the upstream CLI printed)."""
+    """The human-readable default (cost-bearing) layered view."""
     total = sum(len(layer) for layer in result.layers)
+    n_layers = len(result.layers)
     direction = _DIRECTION.get(method, method)
     label = goal.name or "(unnamed goal)"
     lines = [
-        f"Goal {label!r}: {total} techs across {len(result.layers)} "
-        f"layers — {direction}",
+        f"Goal {label!r}: {total} tech{'s' if total != 1 else ''} across "
+        f"{n_layers} layer{'s' if n_layers != 1 else ''} — {direction}",
         "",
     ]
     for i, layer in enumerate(result.layers):

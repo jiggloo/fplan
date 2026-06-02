@@ -122,7 +122,8 @@ Show a technology's detail, or list technologies for discovery:
 ```
 
 The detail view shows the science-pack cost (or research trigger), prerequisites,
-the recipes the tech unlocks, and which techs require it:
+the recipes the tech unlocks, and which techs require it (an essential tech is
+also flagged with an `*(essential)*` marker on the name line):
 
 ```
 steel-axe
@@ -222,6 +223,8 @@ Goal 'steelaxe': 3 techs across 2 layers — research order (layer 0 = earliest,
 
 ── Layer 1  (1 tech)
    steel-axe  [50 × (automation-science-packx1)]
+
+→ tech-orders/steelaxe.yaml
 ```
 
 - The scenario is a `GoalState` YAML — `techs_researched`, `items_produced`,
@@ -229,6 +232,9 @@ Goal 'steelaxe': 3 techs across 2 layers — research order (layer 0 = earliest,
   are ignored here). See [`examples/scenarios/`](../examples/scenarios/).
 - `--method` selects the ordering: `forward` (default; ASAP, goal last),
   `from-goal` (ALAP, goal first), or `balanced` (slack-window midpoint).
+  **`forward` and `balanced` produce executable, verifiable plans;** `from-goal`
+  is a backward-planning *view* (goal first) that `verify` will reject — build
+  with `forward` for a plan you intend to verify or feed downstream.
 - `--out` is required and is not clobbered silently — an existing file prompts
   to confirm (interactive) or refuses (non-interactive), protecting a
   hand-edited order. `--dry-run` prints the order and writes nothing.
@@ -247,3 +253,8 @@ prerequisites (extra techs and same-layer prereq pairs are non-fatal warnings):
 
 The goal is taken from the order's embedded `goal:` block by default, or from
 `--scenario PATH`. Exit `0` if valid, `1` if invalid.
+
+#### `tech-order viz`
+
+Rendering a tech order (layers / DAG) is planned but not yet implemented —
+`fplan tech-order viz` currently exits with code `71`.

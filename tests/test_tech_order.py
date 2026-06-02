@@ -267,6 +267,11 @@ def test_format_layers_and_payload() -> None:
     goal = goals.GoalState(name="demo", techs_researched=("d",))
     text = ordering.format_layers(res, techs, goal, "forward")
     assert "Goal 'demo'" in text and "Layer 0" in text
+    # Single-layer goal pluralizes correctly ("1 layer", not "1 layers").
+    one = ordering.forward_order({"x": _tech("x")}, {"x"}, goals.GoalState())
+    assert "across 1 layer " in ordering.format_layers(
+        one, {"x": _tech("x")}, goal, "forward"
+    )
     payload = ordering.build_payload(res, goal, "forward")
     assert payload["level"] == 1 and payload["method"] == "forward"
     assert payload["layers"] == [["a"], ["b", "c"], ["d"]]
@@ -448,6 +453,30 @@ def test_verify_bad_yaml(tmp_path, monkeypatch, use_fixture_model) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "bad.yaml").write_text("layers: [unbalanced\n")
     assert runner.invoke(app, ["tech-order", "verify", "bad.yaml"]).exit_code == 1
+
+
+def test_verify_malformed_embedded_goal_is_fatal(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    # A schema-invalid embedded goal must be a clean error, not a traceback.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "o.yaml").write_text(
+        "layers:\n- [a]\ngoal:\n  techs_researched: not-a-list\n"
+    )
+    r = runner.invoke(app, ["tech-order", "verify", "o.yaml"])
+    assert r.exit_code == 1
+    assert r.exception is None or isinstance(r.exception, SystemExit)
+
+
+def test_verify_malformed_scenario_is_fatal(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "o.yaml").write_text("layers:\n- [a]\n")
+    (tmp_path / "scn.yaml").write_text("techs_researched: {bad: mapping}\n")
+    r = runner.invoke(app, ["tech-order", "verify", "o.yaml", "--scenario", "scn.yaml"])
+    assert r.exit_code == 1
+    assert r.exception is None or isinstance(r.exception, SystemExit)
 
 
 def test_verify_scenario_not_found(tmp_path, monkeypatch, use_fixture_model) -> None:

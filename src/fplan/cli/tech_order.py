@@ -103,18 +103,26 @@ def verify(ctx: typer.Context, order: OrderArg, scenario: ScenarioOpt = None) ->
         raise typer.Exit(code=1)
     layers = [list(layer) for layer in doc["layers"]]
 
-    if scenario is not None:
-        if not scenario.exists():
-            typer.echo(f"error: scenario file not found: {scenario}", err=True)
+    # Resolve the goal; a malformed embedded goal / scenario must surface as a
+    # clean error, not a traceback (matching build's goals.load handling).
+    try:
+        if scenario is not None:
+            if not scenario.exists():
+                typer.echo(f"error: scenario file not found: {scenario}", err=True)
+                raise typer.Exit(code=1)
+            goal = goals.load(scenario)
+            goal_src = f"--scenario {scenario}"
+        elif doc.get("goal"):
+            goal = goals.from_dict(doc["goal"])
+            goal_src = f"embedded goal in {order}"
+        else:
+            typer.echo(
+                f"error: {order} has no embedded 'goal'; pass --scenario", err=True
+            )
             raise typer.Exit(code=1)
-        goal = goals.load(scenario)
-        goal_src = f"--scenario {scenario}"
-    elif doc.get("goal"):
-        goal = goals.from_dict(doc["goal"])
-        goal_src = f"embedded goal in {order}"
-    else:
-        typer.echo(f"error: {order} has no embedded 'goal'; pass --scenario", err=True)
-        raise typer.Exit(code=1)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
     model = cli_main.load_model_or_exit(state.config_file)
     res = ordering.verify_order(model.technologies, model, layers, goal)
