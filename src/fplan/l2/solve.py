@@ -12,8 +12,9 @@ energy balance, per-burner-building fuel allocation. Objective:
 Pseudo-recipes with multi-building capacity (the boiler-engine burn
 pair) contribute to multiple (b, i) sums via their
 `capacity_per_building` weights. The `item[b, tier] · duration[i]`
-product is the nonconvex bilinear term; SCIP handles nonconvex MINLP
-natively via spatial branch-and-bound.
+product is the nonconvex bilinear term; SCIP handles the nonconvex NLP
+natively via spatial branch-and-bound (all variables are continuous — no
+integer variables, so it is an NLP, not a MINLP).
 
 Energy: a per-step side constraint
     Σ_electric_consumers (x · recipe_time · power_mw / speed)
@@ -1954,7 +1955,7 @@ def _capacity_utilization(
     objective and late-hardening (docs/L2-to-L3-handoff.md Theme 2). This is
     information the solver already has; emitting it stops it being destroyed
     at the boundary. We read constraint *tightness* from the primal solution
-    rather than SCIP duals (a nonconvex MINLP doesn't give clean shadow
+    rather than SCIP duals (a nonconvex NLP doesn't give clean shadow
     prices). Split families (electric drills per ore, steel furnaces per
     output) report per-assignment rows labelled `building@target`, matching
     the mining_/smelting_assignment naming L3 already consumes.

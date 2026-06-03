@@ -199,10 +199,10 @@ def solve(
     force: ForceOpt = False,
     dry_run: DryRun = False,
 ) -> None:
-    """Solve a run's production-rate plan (MINLP) with SCIP, writing rates.yaml.
+    """Solve a run's production-rate plan with SCIP, writing rates.yaml.
 
     Reads the run manifest's scenario / tech-order / map (resolved relative to
-    the current directory), builds the L2 instance, solves the nonconvex MINLP
+    the current directory), builds the L2 instance, solves the nonconvex NLP
     with SCIP, and records the L2 settings + outcome back into the manifest.
 
     With --seeds it runs a multi-seed search instead: every seed is solved, each

@@ -1,6 +1,6 @@
 """Multi-seed search for L2 — solve a set of SCIP seeds, serial or parallel.
 
-Each L2 solve is a heavy, single-threaded nonconvex MINLP, so concurrency here
+Each L2 solve is a heavy, single-threaded nonconvex NLP, so concurrency here
 is **process-level** (one worker process per concurrent seed), not threaded:
 pyscipopt is not thread-safe and the solve is CPU-bound, so threads would just
 serialize on the GIL/native locks. The solver-neutral instance and the game

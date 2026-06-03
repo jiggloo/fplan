@@ -53,8 +53,9 @@ After [installing](#install), from the repository root:
 `viz` opens a zoomable timeline and a capacity-saturation heatmap (written under
 `runs/steelaxe/viz/`).
 
-Ready to plan a goal of your own? Follow
-[Plan your own factory](docs/usage.md#plan-your-own-factory).
+To understand the result — and how the solve produced it — see
+[L2 rates — the solve](docs/L2-rates-solve.md). Ready to plan a goal of your own?
+Follow [Plan your own factory](docs/usage.md#plan-your-own-factory).
 
 Orient yourself any time with:
 
@@ -173,6 +174,9 @@ obvious without reading the docs.
 - [Integration tests](docs/integration_tests.md) — manual checks that need a real
   Factorio install (model load, map extraction, L2 solve/viz/post)
 - [Repository structure & conventions](docs/structure.md)
+- [L2 rates — the solve](docs/L2-rates-solve.md) — how `rates solve` works and how
+  to read its output: the model, the `rates.yaml` fields, the solver choices, and
+  the visualizer reference
 - [Stage enrichment](docs/stage-enrichment.md) — why per-stage knowledge (e.g.
   L2 deployment) enriches downward and never lives in the base model layer
 - [L2 rate-flattening](docs/L2-rate-flattening.md) — the `rates post` design:
