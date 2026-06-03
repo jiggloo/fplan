@@ -14,7 +14,13 @@ from fplan.cli._log import echo_settings
 from fplan.cli._options import DryRun
 from fplan.cli._stub import not_implemented
 
-group = typer.Typer(help="L1 — technology research ordering.", no_args_is_help=True)
+group = typer.Typer(
+    help=(
+        "L1 — technology research ordering. Reads your Factorio installation's "
+        "Lua data files to build the game model (does not launch the game)."
+    ),
+    no_args_is_help=True,
+)
 
 ScenarioArg = Annotated[
     Path, typer.Argument(help="Scenario YAML describing the goal to plan for.")
