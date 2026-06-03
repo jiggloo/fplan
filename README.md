@@ -1,5 +1,8 @@
 # fplan
 
+[![CI](https://github.com/jiggloo/fplan/actions/workflows/ci.yml/badge.svg)](https://github.com/jiggloo/fplan/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/jiggloo/fplan/graph/badge.svg)](https://codecov.io/gh/jiggloo/fplan)
+
 Factorio production and placement planner.
 
 > **Status: early — and tested only on macOS so far.** The CLI surface is
