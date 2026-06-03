@@ -10,7 +10,12 @@ from fplan.cli._stub import not_migrated
 from fplan.model import Technology, format_research_trigger
 
 group = typer.Typer(
-    help="Browse the game model (techs, items, recipes).", no_args_is_help=True
+    help=(
+        "Browse the game model (techs, items, recipes). Reads your Factorio "
+        "installation's Lua data files to build the model (does not launch the "
+        "game)."
+    ),
+    no_args_is_help=True,
 )
 
 NameArg = Annotated[

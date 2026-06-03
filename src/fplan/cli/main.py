@@ -30,7 +30,13 @@ from fplan.cli import run as run_group
 from fplan.cli._options import DryRun
 
 app = typer.Typer(
-    help="fplan — Factorio production and placement planner.",
+    help=(
+        "fplan — Factorio production and placement planner.\n\n"
+        "Uses your Factorio install two ways: the planning commands "
+        "(tech-order, rates, inspect) read and evaluate Factorio's Lua data "
+        "files to build the game model, while `map from-save` launches Factorio "
+        "headless to extract a save's resources."
+    ),
     add_completion=True,
     # Keep the no-traceback / no-leak posture intentional and independent of
     # Typer's evolving defaults: never render local variables (file paths,

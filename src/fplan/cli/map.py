@@ -19,7 +19,12 @@ from fplan.cli._stub import not_implemented
 from fplan.map import artifact, cluster, extract
 
 group = typer.Typer(
-    help="Map artifact generation and inspection.", no_args_is_help=True
+    help=(
+        "Map artifact generation and inspection. Extracting from a save "
+        "(`from-save`) launches Factorio headless — it runs the game in the "
+        "background, which can take a few minutes."
+    ),
+    no_args_is_help=True,
 )
 
 SaveArg = Annotated[Path, typer.Argument(help="Factorio save file (.zip) to probe.")]
@@ -53,7 +58,11 @@ def from_save(
     out: OutOpt,
     dry_run: DryRun = False,
 ) -> None:
-    """Build a map artifact (resources, oil, water, trees) from a save file."""
+    """Build a map artifact (resources, oil, water, trees) from a save file.
+
+    Launches Factorio headless (runs the game in the background; can take a few
+    minutes).
+    """
     # Imported here to avoid an import cycle (main imports this module).
     from fplan.cli import main as cli_main
 

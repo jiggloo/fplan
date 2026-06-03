@@ -15,7 +15,13 @@ import yaml
 from fplan.cli._log import echo_settings
 from fplan.cli._options import DryRun
 
-group = typer.Typer(help="L2 — production rates.", no_args_is_help=True)
+group = typer.Typer(
+    help=(
+        "L2 — production rates. Reads your Factorio installation's Lua data "
+        "files to build the game model (does not launch the game)."
+    ),
+    no_args_is_help=True,
+)
 
 # Search candidates live in their own subdir of the run so a search never
 # collides with the promoted rates.yaml until the user explicitly promotes.

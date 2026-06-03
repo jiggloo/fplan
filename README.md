@@ -1,7 +1,7 @@
 # fplan
 
 [![CI](https://github.com/jiggloo/fplan/actions/workflows/ci.yml/badge.svg)](https://github.com/jiggloo/fplan/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/jiggloo/fplan/graph/badge.svg)](https://codecov.io/gh/jiggloo/fplan)
+[![codecov](https://codecov.io/gh/jiggloo/fplan/graph/badge.svg?token=U6IT8MYMQG)](https://codecov.io/gh/jiggloo/fplan)
 
 Factorio production and placement planner.
 
@@ -22,7 +22,12 @@ in the repository and come with a `git clone`. Start with this README, then see
 ### Prerequisites
 
 - **Python 3.11+**.
-- **A Factorio installation** — fplan reads its game data to compute plans. See
+- **A Factorio installation** — fplan uses your install two ways. The planning
+  commands (`tech-order`, `rates`, `inspect`) **read and evaluate Factorio's own
+  Lua prototype files** to build an accurate game model; they never launch the
+  game. The `map from-save` extractor **launches Factorio headless** — it runs
+  the game in the background against your save (which can take a few minutes) to
+  dump the resources around spawn. See
   [Configuration](docs/usage.md#configuration) to point fplan at it.
 
 Clone, then install into an isolated environment:
