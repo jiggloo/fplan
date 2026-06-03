@@ -285,6 +285,9 @@ L2 — solve a run's production-rate plan with SCIP. `rates solve` is **run-awar
 it reads a run's manifest, solves, writes `runs/<run>/rates.yaml`, and records the
 L2 settings + outcome back into the manifest. Needs the configured `data_dir`.
 
+For how the solve works and how to read its output, see
+[L2 rates — the solve](L2-rates-solve.md).
+
 #### `rates solve`
 
 ```bash
@@ -405,6 +408,9 @@ written under `runs/<run>/viz/`:
 .venv/bin/fplan rates viz steelaxe-exp            # timeline + heatmap
 .venv/bin/fplan rates viz steelaxe-exp --open     # ...and open the timeline
 ```
+
+For the charts, the step detail table, and every interaction, see the
+[visualizer reference](L2-rates-solve.md#6-the-visualizer-reference-rates-viz).
 
 Two views:
 - **`<stem>-timeline.html`** — three stacked panels (raw production rate, net

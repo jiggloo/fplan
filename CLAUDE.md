@@ -16,6 +16,10 @@ is already documented, link it here instead of restating it.
   and the single-source versioning scheme.
 - **[docs/integration_tests.md](docs/integration_tests.md)** — the manual checks
   that need a real Factorio install (can't run in CI).
+- **[docs/L2-rates-solve.md](docs/L2-rates-solve.md)** — the deepest L2 design
+  doc: how `rates solve` works and how to read its output (the model, the
+  `rates.yaml` fields, the solver-specific hacks, downstream-feedback
+  coefficients, extending the model, and the visualizer reference).
 - **[docs/stage-enrichment.md](docs/stage-enrichment.md)**,
   **[docs/L2-rate-flattening.md](docs/L2-rate-flattening.md)** — design rationale
   for the model layering and the `rates post` flattening.
@@ -82,11 +86,47 @@ review. They're not in the user docs because they're about authorship.
 
 ## Documentation philosophy (doc work is ongoing)
 
+Authorship rules for docs — most were learned writing
+[`docs/L2-rates-solve.md`](docs/L2-rates-solve.md), and the dedicated
+documentation-review agents enforce them. Improving the docs is how new users are
+helped, so this is high-value.
+
 - **README is the hub / starting point**; reference material that grows with the
   tool lives in `docs/`.
-- State each fact **once, at the right altitude**; prefer **outcomes over
-  internals** (what the user interacts with, not how it's implemented); **define
-  terminology before using it.**
+- **Write directly.** State what a thing *is* in one declarative sentence before
+  why it matters. Cut the three reflexes that bloat prose: a framing device
+  ("Imagine pointing at a save…"), define-by-negation ("not a blueprint, but…"),
+  and abstract-then-concrete restatement. To write directly, name the reader's
+  next action, use the project's canonical noun (e.g. "scenario goal," not "your
+  goal"), and state where each fact lives instead of hedging.
+- **Redundancy = distance.** Before writing a summary / intro / preview line,
+  check its nearest equivalent; if it's adjacent (e.g. one ToC-click from the
+  section it previews), cut it. State each fact **once, at the right altitude**,
+  define it at its natural home, and **link** from elsewhere rather than restate.
+- **Outcome-first, top-down, with stop-points.** Lead with the question or
+  outcome; add mechanism only after the reader has seen a result; give explicit
+  "you can stop here" exits for readers who only need the first layer. Section
+  **titles sit at the altitude of their content** — name what's in the section,
+  not a meta-question ("Inputs and output," not "What the solve answers"). Prefer
+  **outcomes over internals** (what the user interacts with, not how it's
+  implemented), and **define terminology before using it.**
+- **Don't over-claim; label uncertainty.** In a complex or heuristic system,
+  avoid reductive single-cause claims (no "*the* bottleneck" over thousands of
+  constraints); mark hacks as temporary / not-by-design; flag what's unverified or
+  undecided rather than presenting it as settled; don't assert behavior you
+  haven't run.
+- **Verify before asserting; anchor to durable landmarks.** Check claims and
+  constants against the code/wiki before writing them (this caught "MINLP" →
+  nonconvex NLP, and magic numbers like 100 rocket-parts / 25 000-fluid tank / 80
+  inventory slots). When pointing into code, prefer stable landmarks (section
+  banners, `name=` / identifier prefixes) over line numbers, and concentrate code
+  pointers in one reference section that concept sections link into (**concept →
+  stable reference → code**) so churn stays localized.
+- **Separate the kinds of "why."** When documenting a model, keep domain/scope
+  simplifications, solver/tractability hacks, and placeholders for future feedback
+  distinct — readers and editors need to know which is which.
+- **Cross-references are links.** Inline section/file references should be
+  clickable, to keep reading flow.
 
 ## Don't
 

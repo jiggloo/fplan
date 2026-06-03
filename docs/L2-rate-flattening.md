@@ -16,6 +16,9 @@ crucially, where it is *not*. The math lives in `fplan.l2.flatten`; the
 diff visualization is rendered by `fplan.l2.viz` and auto-detected by
 `fplan rates viz`.
 
+For the upstream solve this post-processes — the model, `rates.yaml`, and how to
+read it — see [L2 rates — the solve](L2-rates-solve.md).
+
 ## Provisional by design
 
 `rates post` writes `runs/<run>/rates-post.yaml` — the temporary **L3
