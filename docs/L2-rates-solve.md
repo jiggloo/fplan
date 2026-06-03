@@ -351,10 +351,12 @@ down.
   a max/min magnitude ratio within roughly **1e6 across the model** and **1e4
   within any single row or column**; `build_lp` prints the min/max coefficients
   and the worst row ratio to the console so you can tune it. The rescalings serve
-  this: energy in **MJ / MW** rather than joules/watts, and storage in
-  centi-units — counting a `storage-tank` in hundredths of a tank pulls the
-  item-banking row ratio from ~9600 to ~96 and lifts the global coefficient floor.
-  The model layer still reports raw joules/watts; the scaling is internal.
+  this: energy in **MJ / MW** rather than joules/watts, and bulky storage entities
+  in centi-units — a `storage-tank` counted in hundredths of a tank pulls the
+  fluid-buffer coefficient from 25 000 to 250, and chests counted in hundredths
+  pull the item-banking row ratio from ~9600 to ~96 (also lifting the global
+  coefficient floor). The model layer still reports raw joules/watts; the scaling
+  is internal.
 - **Finite bounds for the bilinear relaxation** *(numerical).* SCIP relaxes each
   `count · duration` with a McCormick envelope, which needs finite bounds on
   *both* factors or the relaxation is uselessly loose ("cannot guarantee finite
@@ -777,8 +779,9 @@ total. (It reads "facility data unavailable" when the game model wasn't loaded �
 
 ### 6.4 The capacity heatmap
 
-A second file (`rates-heatmap.html`) renders the per-building capacity
-`utilization` ([§3.2](#32-the-per-step-records)) as a grid — building × step,
+A second file (`<stem>-heatmap.html`, `rates-heatmap.html` by default) renders the
+per-building capacity `utilization` ([§3.2](#32-the-per-step-records)) as a grid —
+building × step,
 brighter where a building ran closer to saturated. **What to actually read from
 it is still open.** With thousands of coupled constraints a saturated cell isn't
 necessarily *the* bottleneck (§3 deliberately avoids that claim), so the heatmap
