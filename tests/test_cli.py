@@ -27,8 +27,6 @@ LEAVES = [
     (["layout", "place"], EXIT_NOT_MIGRATED),
     (["layout", "post"], EXIT_NOT_IMPLEMENTED),
     (["layout", "viz"], EXIT_NOT_MIGRATED),
-    (["inspect", "item"], EXIT_NOT_MIGRATED),
-    (["inspect", "recipe"], EXIT_NOT_MIGRATED),
     (["execution", "generate"], EXIT_NOT_IMPLEMENTED),
     (["execution", "viz"], EXIT_NOT_IMPLEMENTED),
 ]

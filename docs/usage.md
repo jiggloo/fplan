@@ -192,15 +192,20 @@ Per-group command reference, in alphabetical order.
 
 Browse the loaded game model. Needs the configured `data_dir`.
 
-#### `inspect tech`
-
-Show a technology's detail, or list technologies for discovery:
+All three subcommands — `tech`, `item`, `recipe` — share the same three modes:
 
 ```bash
-.venv/bin/fplan inspect tech steel-axe          # detail for one tech
-.venv/bin/fplan inspect tech --filter science   # list techs matching "science"
-.venv/bin/fplan inspect tech                     # list all tech names
+.venv/bin/fplan inspect tech steel-axe          # detail for one entry
+.venv/bin/fplan inspect tech --filter science   # detail for every match
+.venv/bin/fplan inspect tech                     # list all names
 ```
+
+A bare name shows that entry's detail; a bare command lists every name (a
+discovery index); `--filter <substring>` shows the **full detail** of every entry
+whose name contains the substring — so a search and an inspect are a single call,
+not a list followed by per-name lookups. An unknown name is fatal (exit 1).
+
+#### `inspect tech`
 
 The detail view shows the science-pack cost (or research trigger), prerequisites,
 the recipes the tech unlocks, and which techs require it (an essential tech is
@@ -214,7 +219,35 @@ steel-axe
   required by:   (nothing)
 ```
 
-`inspect item` and `inspect recipe` are not yet ported (exit 70).
+#### `inspect item`
+
+Shows stack size, fuel value (when the item is a fuel), and the recipes that
+produce and consume it, plus the techs that unlock it. A fluid is flagged with a
+`*(fluid)*` marker on the name line:
+
+```
+iron-plate
+  stack size:    100
+  produced by:   iron-plate
+  consumed by:   electronic-circuit, inserter, iron-gear-wheel
+  unlocked by:   (available at start)
+```
+
+#### `inspect recipe`
+
+Shows the category, crafting time, ingredients, outputs, the buildings that can
+run it, and the techs that unlock it. A non-crafting recipe (a synthetic mining
+or pumping recipe) is flagged with its kind on the name line:
+
+```
+mine/iron-ore  *(mining)*
+  category:      basic-solid
+  time:          1s
+  ingredients:   (none)
+  outputs:       iron-orex1
+  made in:       burner-mining-drill, electric-mining-drill
+  unlocked by:   (available at start)
+```
 
 ### `map`
 

@@ -1,4 +1,5 @@
-"""Tests for `inspect tech` (detail + list/filter), against the model fixture."""
+"""Tests for `inspect` (tech/item/recipe detail + list/filter), against the
+model fixture."""
 
 from __future__ import annotations
 
@@ -53,12 +54,18 @@ def test_inspect_tech_unknown_is_fatal(use_fixture_model) -> None:
     assert result.exit_code == 1
 
 
-def test_inspect_tech_filter_lists_matches(use_fixture_model) -> None:
+def test_inspect_tech_filter_shows_details(use_fixture_model) -> None:
+    # --filter shows full detail for each match, not just names, so a search and
+    # an inspect are one call.
     result = runner.invoke(app, ["inspect", "tech", "--filter", "science"])
     assert result.exit_code == 0
-    lines = result.stdout.split()
-    assert "logistic-science-pack" in lines
-    assert all("science" in name for name in lines)
+    out = result.stdout
+    assert "logistic-science-pack" in out
+    assert "prerequisites:" in out  # detail rows, not a bare name list
+    # Every name line names a matching tech (detail rows are indented, names are
+    # the only column-0 lines).
+    names = [ln for ln in out.splitlines() if ln and not ln.startswith(" ")]
+    assert names and all("science" in ln for ln in names)
 
 
 def test_inspect_tech_filter_no_match(use_fixture_model) -> None:
@@ -72,3 +79,66 @@ def test_inspect_tech_bare_lists_all(use_fixture_model) -> None:
     assert result.exit_code == 0
     assert "rocket-silo" in result.stdout.split()
     assert len(result.stdout.split()) == 38  # the fixture's full tech set
+
+
+def test_inspect_item_detail(use_fixture_model) -> None:
+    result = runner.invoke(app, ["inspect", "item", "iron-plate"])
+    assert result.exit_code == 0
+    out = result.stdout
+    assert "iron-plate" in out
+    assert "stack size:" in out
+    assert "produced by:" in out
+    assert "consumed by:" in out  # gears/circuits consume iron-plate
+    assert "unlocked by:" in out
+
+
+def test_inspect_item_unknown_is_fatal(use_fixture_model) -> None:
+    result = runner.invoke(app, ["inspect", "item", "no-such-item"])
+    assert result.exit_code == 1
+
+
+def test_inspect_item_bare_lists_all(use_fixture_model) -> None:
+    result = runner.invoke(app, ["inspect", "item"])
+    assert result.exit_code == 0
+    assert "iron-plate" in result.stdout.split()
+
+
+def test_inspect_item_filter_shows_details(use_fixture_model) -> None:
+    result = runner.invoke(app, ["inspect", "item", "--filter", "ore"])
+    assert result.exit_code == 0
+    out = result.stdout
+    assert "iron-ore" in out
+    assert "produced by:" in out  # detail rows, not a bare name list
+
+
+def test_inspect_recipe_detail(use_fixture_model) -> None:
+    result = runner.invoke(app, ["inspect", "recipe", "iron-plate"])
+    assert result.exit_code == 0
+    out = result.stdout
+    assert "iron-plate" in out
+    assert "ingredients:" in out
+    assert "outputs:" in out
+    assert "iron-ore" in out  # the ingredient
+    assert "made in:" in out
+    assert "unlocked by:" in out
+
+
+def test_inspect_recipe_kind_marker(use_fixture_model) -> None:
+    # A non-crafting recipe is flagged with its kind on the name line.
+    result = runner.invoke(app, ["inspect", "recipe", "mine/iron-ore"])
+    assert result.exit_code == 0
+    assert "*(mining)*" in result.stdout
+
+
+def test_inspect_recipe_unknown_is_fatal(use_fixture_model) -> None:
+    result = runner.invoke(app, ["inspect", "recipe", "no-such-recipe"])
+    assert result.exit_code == 1
+
+
+def test_inspect_recipe_filter_shows_details(use_fixture_model) -> None:
+    result = runner.invoke(app, ["inspect", "recipe", "--filter", "oil"])
+    assert result.exit_code == 0
+    out = result.stdout
+    assert "ingredients:" in out  # detail rows for each oil recipe
+    names = [ln for ln in out.splitlines() if ln and not ln.startswith(" ")]
+    assert names and all("oil" in ln for ln in names)
