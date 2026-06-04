@@ -110,8 +110,22 @@ local function cluster_water(tiles)
   return patches
 end
 
+-- The surface to probe. For `from-save` that's the loaded map (surfaces[1]).
+-- For `from-string` the orchestrator drops a `map_exchange_string.lua` data file
+-- into the mod; if present, parse it and generate a fresh surface from its
+-- map-gen settings, then probe that instead. Either way the dump shape below is
+-- identical (seed + map_gen_settings come from the surface).
+local function target_surface()
+  local ok, xs = pcall(require, "map_exchange_string")
+  if ok and xs then
+    local data = game.parse_map_exchange_string(xs)
+    return game.create_surface("fplan_probe", data.map_gen_settings)
+  end
+  return game.surfaces[1]
+end
+
 local function dump()
-  local s = game.surfaces[1]
+  local s = target_surface()
 
   -- Force the AOI to fully generate before we read it. Without this,
   -- find_entities_filtered only sees already-charted chunks.

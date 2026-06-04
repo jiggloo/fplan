@@ -14,9 +14,9 @@ from typing import Annotated
 import typer
 
 from fplan import factorio
+from fplan.cli._log import echo_settings
 from fplan.cli._options import DryRun
-from fplan.cli._stub import not_implemented
-from fplan.map import artifact, cluster, extract
+from fplan.map import artifact, cluster, exchange, extract
 
 group = typer.Typer(
     help=(
@@ -33,6 +33,14 @@ OutOpt = Annotated[
     typer.Option("--out", help="Artifact output path (.yaml) to write. Required."),
 ]
 ArtifactArg = Annotated[Path, typer.Argument(help="Map artifact (.yaml) to summarize.")]
+FromOpt = Annotated[
+    Path | None,
+    typer.Option(
+        "--from",
+        help="Read the map-exchange string from this file, or `-` for stdin. "
+        "Omit to paste it interactively.",
+    ),
+]
 
 
 def _warn_if_untested() -> None:
@@ -46,9 +54,69 @@ def _warn_if_untested() -> None:
 
 
 @group.command("from-string")
-def from_string(ctx: typer.Context, dry_run: DryRun = False) -> None:
-    """Build a map artifact from a Factorio map-exchange string. (not implemented)"""
-    not_implemented(ctx)
+def from_string(
+    ctx: typer.Context,
+    out: OutOpt,
+    from_path: FromOpt = None,
+    dry_run: DryRun = False,
+) -> None:
+    """Build a map artifact from a Factorio map-exchange string.
+
+    Reads the string from a file (--from PATH), stdin (--from -), or an
+    interactive paste (no --from). A map-exchange string holds only map-gen
+    settings, so this generates a world from them with Factorio headless (runs
+    the game in the background; can take a few minutes) and probes it — producing
+    the same artifact as from-save.
+    """
+    # Imported here to avoid an import cycle (main imports this module).
+    from fplan.cli import main as cli_main
+
+    state: cli_main.CLIState = ctx.obj
+
+    # Resolve + validate the string first: a bad paste must fail instantly, never
+    # after a multi-minute Factorio run. A bare invocation on a non-TTY (nothing
+    # to prompt) also surfaces here as a clean error, not a hang.
+    try:
+        text, source = exchange.resolve_source(
+            from_path, is_interactive=cli_main._stdin_is_interactive
+        )
+        parsed = exchange.parse_exchange_string(text)
+    except exchange.ExchangeError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    echo_settings(
+        [
+            ("source", source, from_path is None),
+            ("factorio-version", parsed.version_label, False),
+        ]
+    )
+
+    _warn_if_untested()
+    if dry_run:
+        clobber = " (overwriting the existing file)" if out.exists() else ""
+        typer.echo(
+            f"Would generate a map from the {source} map-exchange string "
+            f"(Factorio {parsed.version_label}) → {out}{clobber} "
+            "(dry run; Factorio not run)."
+        )
+        return
+
+    # Guard before resolving the binary and the multi-minute run, not after.
+    cli_main.confirm_overwrite_or_exit(out)
+
+    binary = cli_main.factorio_binary_or_exit(state.config_file)
+    typer.echo("Generating map from exchange string (running Factorio headless) ...")
+    try:
+        data = extract.extract_from_string(exchange_string=parsed.raw, binary=binary)
+    except extract.ExtractError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    cluster.postprocess(data)
+    artifact.write_yaml(data, out)
+    typer.echo(artifact.summarize(data))
+    typer.echo(f"→ {out}")
 
 
 @group.command("from-save")

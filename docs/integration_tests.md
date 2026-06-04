@@ -10,6 +10,7 @@ against captured fixtures. This file is the home for the checks that can't —
   - [Setup](#setup)
   - [Game model load](#game-model-load)
   - [Map extraction](#map-extraction)
+  - [Map from string](#map-from-string)
   - [L2 solve](#l2-solve)
   - [L2 viz](#l2-viz)
   - [L2 post](#l2-post)
@@ -55,6 +56,20 @@ source save is untouched):
 ```bash
 .venv/bin/fplan map from-save path/to/save.zip --out maps/save.yaml
 .venv/bin/fplan map show maps/save.yaml
+```
+
+### Map from string
+
+Generate an artifact from a map-exchange string (the `>>>…<<<` blob exported by
+Factorio's map-generation screen). This is the only check of the
+string→generate→probe path; it runs Factorio twice (create + probe). Confirm the
+artifact is sane and that its seed/resources match what Factorio shows for that
+string:
+
+```bash
+.venv/bin/fplan map from-string --from path/to/exchange.txt --out maps/exch.yaml
+pbpaste | .venv/bin/fplan map from-string --from - --out maps/exch.yaml  # or paste
+.venv/bin/fplan map show maps/exch.yaml
 ```
 
 ### L2 solve

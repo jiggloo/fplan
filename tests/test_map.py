@@ -8,8 +8,11 @@ save, and is excluded from coverage.
 
 from __future__ import annotations
 
+import base64
 import copy
 import json
+import struct
+import zlib
 from pathlib import Path
 
 import pytest
@@ -18,7 +21,7 @@ from typer.testing import CliRunner
 from fplan import factorio
 from fplan.cli import app
 from fplan.cli import main as cli_main
-from fplan.map import artifact, cluster, extract
+from fplan.map import artifact, cluster, exchange, extract
 
 runner = CliRunner()
 
@@ -259,6 +262,24 @@ def test_extract_orchestration(tmp_path: Path, monkeypatch, raw_dump: dict) -> N
     assert data["seed"] == raw_dump["seed"]
 
 
+def test_extract_from_string_orchestration(
+    tmp_path: Path, monkeypatch, raw_dump: dict
+) -> None:
+    # Same glue check for the from-string path: stub the subprocess driver.
+    script_out = tmp_path / "script-output"
+    script_out.mkdir()
+    monkeypatch.setattr(extract, "_resolve_script_output", lambda: script_out)
+
+    def fake_run(*, exchange_string, binary, script_output, timeout_s):
+        (script_output / extract.OUTPUT_NAME).write_text(json.dumps(raw_dump))
+
+    monkeypatch.setattr(extract, "_run_from_string", fake_run)
+    data = extract.extract_from_string(
+        exchange_string=">>>ABC<<<", binary=tmp_path / "factorio"
+    )
+    assert data["seed"] == raw_dump["seed"]
+
+
 # --------------------------------------------------------------------------- #
 # CLI: from-save / show
 # --------------------------------------------------------------------------- #
@@ -436,3 +457,309 @@ def test_show_bad_artifact_is_fatal(tmp_path: Path) -> None:
     p.write_text("- not\n- a mapping\n")
     result = runner.invoke(app, ["map", "show", str(p)])
     assert result.exit_code == 1
+
+
+# --------------------------------------------------------------------------- #
+# exchange.py (pure ingestion + validation)
+# --------------------------------------------------------------------------- #
+
+
+def _make_exchange_string(
+    version: tuple[int, int, int, int] = (1, 1, 92, 0), payload: bytes = b"\x00" * 16
+) -> str:
+    """Build a minimal-but-valid map-exchange string for tests."""
+    blob = struct.pack("<4H", *version) + payload
+    body = base64.b64encode(zlib.compress(blob)).decode()
+    return f">>>{body}<<<"
+
+
+def test_parse_exchange_string_round_trips() -> None:
+    parsed = exchange.parse_exchange_string(_make_exchange_string())
+    assert parsed.version == (1, 1, 92, 0)
+    assert parsed.version_label == "1.1.92"
+    assert parsed.raw.startswith(">>>") and parsed.raw.endswith("<<<")
+
+
+def test_parse_exchange_string_tolerates_whitespace_and_wrapping() -> None:
+    s = _make_exchange_string()
+    body = s[3:-3]
+    wrapped = ">>>\n" + body[:10] + "\n" + body[10:] + "\n<<<"
+    parsed = exchange.parse_exchange_string("  \n" + wrapped + "  ")
+    assert parsed.version_label == "1.1.92"
+    # The normalized body has no interior whitespace.
+    assert " " not in parsed.raw and "\n" not in parsed.raw
+
+
+@pytest.mark.parametrize(
+    "text, needle",
+    [
+        ("", "empty"),
+        ("   ", "empty"),
+        ("no markers here", "markers"),
+        (">>><<<", "markers"),
+        (">>>    <<<", "between the markers"),
+        (">>>!!!not base64!!!<<<", "base64"),
+        (">>>" + base64.b64encode(b"not zlib data").decode() + "<<<", "decompress"),
+        (
+            ">>>" + base64.b64encode(zlib.compress(b"\x01\x02")).decode() + "<<<",
+            "version header",
+        ),
+    ],
+)
+def test_parse_exchange_string_errors(text: str, needle: str) -> None:
+    with pytest.raises(exchange.ExchangeError, match=needle):
+        exchange.parse_exchange_string(text)
+
+
+def test_resolve_source_stdin() -> None:
+    text, source = exchange.resolve_source(
+        Path("-"), is_interactive=lambda: False, read_stdin=lambda: "PASTED"
+    )
+    assert (text, source) == ("PASTED", "stdin")
+
+
+def test_resolve_source_file(tmp_path: Path) -> None:
+    f = tmp_path / "exch.txt"
+    f.write_text("FROM-FILE")
+    text, source = exchange.resolve_source(f, is_interactive=lambda: False)
+    assert (text, source) == ("FROM-FILE", "file")
+
+
+def test_resolve_source_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(exchange.ExchangeError, match="file not found"):
+        exchange.resolve_source(tmp_path / "nope.txt", is_interactive=lambda: False)
+
+
+def test_resolve_source_unreadable_file(tmp_path: Path) -> None:
+    # A directory exists() but read_text() raises OSError -> clean ExchangeError.
+    with pytest.raises(exchange.ExchangeError, match="could not read"):
+        exchange.resolve_source(tmp_path, is_interactive=lambda: False)
+
+
+def test_resolve_source_interactive_prompts() -> None:
+    seen = []
+
+    def prompt(msg: str) -> str:
+        seen.append(msg)
+        return "TYPED"
+
+    text, source = exchange.resolve_source(
+        None, is_interactive=lambda: True, prompt=prompt
+    )
+    assert (text, source) == ("TYPED", "interactive")
+    assert seen == ["Paste the map-exchange string: "]
+
+
+def test_resolve_source_non_tty_without_from_is_error() -> None:
+    with pytest.raises(exchange.ExchangeError, match="not a TTY"):
+        exchange.resolve_source(None, is_interactive=lambda: False)
+
+
+def test_materialize_mod_embeds_exchange_string(tmp_path: Path) -> None:
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    extract._materialize_mod(mods, exchange_string=">>>ABC<<<")
+    embedded = mods / "l3-map-extract_0.1.0" / "map_exchange_string.lua"
+    assert embedded.exists()
+    assert embedded.read_text() == "return [==[\n>>>ABC<<<\n]==]\n"
+
+
+def test_materialize_mod_omits_exchange_string_by_default(tmp_path: Path) -> None:
+    # from-save path: the embedded data file must be absent (behavior unchanged).
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    extract._materialize_mod(mods)
+    assert not (mods / "l3-map-extract_0.1.0" / "map_exchange_string.lua").exists()
+
+
+# --------------------------------------------------------------------------- #
+# CLI: from-string
+# --------------------------------------------------------------------------- #
+
+_VALID_STRING = _make_exchange_string()
+
+
+def _string_file(tmp_path: Path) -> Path:
+    f = tmp_path / "exch.txt"
+    f.write_text(_VALID_STRING)
+    return f
+
+
+def test_from_string_requires_out(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["map", "from-string", "--from", str(_string_file(tmp_path))]
+    )
+    assert result.exit_code == 2  # --out is mandatory
+
+
+def test_from_string_dry_run_writes_nothing(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "map",
+            "from-string",
+            "--from",
+            str(_string_file(tmp_path)),
+            "--out",
+            "out.yaml",
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "Would generate" in result.stdout
+    assert "source=file" in result.stdout
+    assert "1.1.92" in result.stdout
+    assert not (tmp_path / "out.yaml").exists()
+
+
+def test_from_string_stdin_source(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app,
+        ["map", "from-string", "--from", "-", "--out", "o.yaml", "--dry-run"],
+        input=_VALID_STRING,
+    )
+    assert result.exit_code == 0
+    assert "source=stdin" in result.stdout
+
+
+def test_from_string_interactive_source(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_stdin_is_interactive", lambda: True)
+    result = runner.invoke(
+        app,
+        ["map", "from-string", "--out", "o.yaml", "--dry-run"],
+        input=_VALID_STRING + "\n",
+    )
+    assert result.exit_code == 0
+    assert "source=interactive" in result.stdout
+
+
+def test_from_string_malformed_is_fatal(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    def boom(**kw):
+        raise AssertionError("extract must not run on a malformed string")
+
+    monkeypatch.setattr(extract, "extract_from_string", boom)
+    result = runner.invoke(
+        app,
+        ["map", "from-string", "--from", "-", "--out", "o.yaml"],
+        input="not a map-exchange string",
+    )
+    assert result.exit_code == 1
+    assert not (tmp_path / "o.yaml").exists()
+
+
+def test_from_string_non_tty_without_from_is_fatal(tmp_path: Path, monkeypatch) -> None:
+    # CliRunner's stdin is non-interactive; a bare invocation can't prompt.
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["map", "from-string", "--out", "o.yaml"])
+    assert result.exit_code == 1
+
+
+def test_from_string_real_run_writes_artifact(
+    tmp_path: Path, monkeypatch, raw_dump: dict
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    conf = _config_with_binary(tmp_path)
+    monkeypatch.setattr(
+        extract, "extract_from_string", lambda **kw: copy.deepcopy(raw_dump)
+    )
+    result = runner.invoke(
+        app,
+        [
+            "--config-file",
+            str(conf),
+            "map",
+            "from-string",
+            "--from",
+            str(_string_file(tmp_path)),
+            "--out",
+            "w.yaml",
+        ],
+    )
+    assert result.exit_code == 0
+    assert (tmp_path / "w.yaml").exists()
+    assert f"seed={raw_dump['seed']}" in result.stdout
+
+
+def test_from_string_extract_error_is_fatal(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    conf = _config_with_binary(tmp_path)
+
+    def boom(**kw):
+        raise extract.ExtractError("no dump within 180s")
+
+    monkeypatch.setattr(extract, "extract_from_string", boom)
+    result = runner.invoke(
+        app,
+        [
+            "--config-file",
+            str(conf),
+            "map",
+            "from-string",
+            "--from",
+            str(_string_file(tmp_path)),
+            "--out",
+            "o.yaml",
+        ],
+    )
+    assert result.exit_code == 1
+
+
+def test_from_string_refuses_overwrite_noninteractive(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    def boom(**kw):
+        raise AssertionError("must not run Factorio when refusing to overwrite")
+
+    monkeypatch.setattr(extract, "extract_from_string", boom)
+    out = tmp_path / "out.yaml"
+    out.write_text("old")
+    result = runner.invoke(
+        app,
+        [
+            "map",
+            "from-string",
+            "--from",
+            str(_string_file(tmp_path)),
+            "--out",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 1
+    assert out.read_text() == "old"
+
+
+def test_from_string_overwrite_confirmed(
+    tmp_path: Path, monkeypatch, raw_dump: dict
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_stdin_is_interactive", lambda: True)
+    conf = _config_with_binary(tmp_path)
+    out = tmp_path / "out.yaml"
+    out.write_text("old")
+    monkeypatch.setattr(
+        extract, "extract_from_string", lambda **kw: copy.deepcopy(raw_dump)
+    )
+    result = runner.invoke(
+        app,
+        [
+            "--config-file",
+            str(conf),
+            "map",
+            "from-string",
+            "--from",
+            str(_string_file(tmp_path)),
+            "--out",
+            str(out),
+        ],
+        input="y\n",
+    )
+    assert result.exit_code == 0
+    assert artifact.load_artifact(out)["seed"] == raw_dump["seed"]

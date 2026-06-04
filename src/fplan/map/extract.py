@@ -83,12 +83,19 @@ def _resolve_script_output() -> Path:
     return script_output
 
 
-def _materialize_mod(mods_dir: Path) -> None:
+def _materialize_mod(mods_dir: Path, *, exchange_string: str | None = None) -> None:
     """Write the bundled mod into ``mods_dir`` with an enabling mod-list.json.
 
     Copied out of the package (rather than pointed at in place) so it works from
     an installed wheel and so Factorio's writes never touch read-only package
     files.
+
+    When ``exchange_string`` is given (the ``from-string`` path), it is also
+    written as a ``map_exchange_string.lua`` data file the mod ``require``s and
+    parses to generate the probed surface. It is embedded as a long-bracket Lua
+    *string literal* — never executed as code, and base64 + the ``>>>``/``<<<``
+    markers can't contain the ``]==]`` close sequence. When ``None`` (the
+    ``from-save`` path) the file is absent and behavior is unchanged.
     """
     src = importlib.resources.files("fplan") / "resources" / MOD_RESOURCE
     info = json.loads((src / "info.json").read_text())
@@ -96,6 +103,10 @@ def _materialize_mod(mods_dir: Path) -> None:
     dest.mkdir(parents=True)
     for fname in ("control.lua", "info.json"):
         (dest / fname).write_text((src / fname).read_text())
+    if exchange_string is not None:
+        (dest / "map_exchange_string.lua").write_text(
+            f"return [==[\n{exchange_string}\n]==]\n"
+        )
     (mods_dir / "mod-list.json").write_text(
         json.dumps(
             {
@@ -144,6 +155,29 @@ def extract(*, save: Path, binary: Path, timeout_s: float = 180.0) -> dict:
     return _read_result(script_output)
 
 
+def extract_from_string(
+    *, exchange_string: str, binary: Path, timeout_s: float = 180.0
+) -> dict:
+    """Generate a world from a map-exchange string and return the raw probe dump.
+
+    A map-exchange string carries only map-gen settings, so there is no save to
+    probe: Factorio first creates a throwaway default map, then the probe mod
+    parses the embedded string, generates a surface from its settings, and dumps
+    that. ``exchange_string`` is the validated, normalized string (see
+    :func:`fplan.map.exchange.parse_exchange_string`); ``binary`` is the
+    already-validated Factorio executable. Raises :class:`ExtractError` on any
+    failure. The user's files are never touched (the probe save is a temp file).
+    """
+    script_output = _resolve_script_output()
+    _run_from_string(
+        exchange_string=exchange_string,
+        binary=binary,
+        script_output=script_output,
+        timeout_s=timeout_s,
+    )
+    return _read_result(script_output)
+
+
 def _run(  # pragma: no cover - drives a real Factorio subprocess
     *, save: Path, binary: Path, script_output: Path, timeout_s: float
 ) -> None:
@@ -158,6 +192,77 @@ def _run(  # pragma: no cover - drives a real Factorio subprocess
         mods_dir = tmp / "mods"
         mods_dir.mkdir()
         _materialize_mod(mods_dir)
+
+        settings_path = tmp / "server-settings.json"
+        settings_path.write_text(json.dumps(SERVER_SETTINGS))
+
+        proc = subprocess.Popen(
+            [
+                str(binary),
+                "--start-server",
+                str(probe),
+                "--server-settings",
+                str(settings_path),
+                "--mod-directory",
+                str(mods_dir),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        done = script_output / DONE_NAME
+        try:
+            deadline = time.time() + timeout_s
+            while time.time() < deadline:
+                if done.exists():
+                    break
+                if proc.poll() is not None:
+                    raise ExtractError(
+                        f"Factorio exited (code {proc.returncode}) before producing "
+                        "output"
+                    )
+                time.sleep(0.5)
+            else:
+                raise ExtractError(f"no dump within {timeout_s:.0f}s")
+        finally:
+            if proc.poll() is None:
+                proc.send_signal(signal.SIGTERM)
+                try:
+                    proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+
+
+def _run_from_string(  # pragma: no cover - drives a real Factorio subprocess
+    *, exchange_string: str, binary: Path, script_output: Path, timeout_s: float
+) -> None:
+    import tempfile
+
+    _clear_previous_output(script_output)
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        probe = tmp / "probe.zip"
+
+        # No save exists for a string, so create a throwaway default map first
+        # (a plain `--create`, no mod — keep generation clean). The probe mod
+        # then regenerates the real surface from the parsed exchange string.
+        try:
+            create = subprocess.run(
+                [str(binary), "--create", str(probe)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout_s,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ExtractError("Factorio timed out creating a base save") from exc
+        if create.returncode != 0 or not probe.exists():
+            raise ExtractError(
+                f"Factorio could not create a base save (code {create.returncode})"
+            )
+
+        mods_dir = tmp / "mods"
+        mods_dir.mkdir()
+        _materialize_mod(mods_dir, exchange_string=exchange_string)
 
         settings_path = tmp / "server-settings.json"
         settings_path.write_text(json.dumps(SERVER_SETTINGS))

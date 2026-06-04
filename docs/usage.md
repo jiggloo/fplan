@@ -309,8 +309,34 @@ yield. All distances are tiles from spawn.
 
 #### `map from-string`
 
-Building an artifact from a Factorio map-exchange string is planned but not yet
-implemented — `fplan map from-string` currently exits with code `71`.
+Turn a Factorio **map-exchange string** (the `>>>…<<<` blob the map-generation
+screen exports) into a map artifact. The string holds only the map-gen settings
+and seed — not a generated world — so this generates a world from those settings
+with headless Factorio and probes it, producing the **same artifact as
+`from-save`**. It therefore also needs the configured Factorio **executable**.
+
+The string comes from one of three sources; `--out` is required:
+
+```bash
+.venv/bin/fplan map from-string --from exch.txt --out maps/world.yaml   # a file
+pbpaste | .venv/bin/fplan map from-string --from - --out maps/world.yaml  # stdin
+.venv/bin/fplan map from-string --out maps/world.yaml                   # paste when prompted
+```
+
+`--from <path>` reads a file, `--from -` reads stdin, and omitting `--from` drops
+into an interactive paste prompt (when stdin is a TTY; otherwise the command
+exits with guidance to use `--from`). A `settings:` line reports the resolved
+source and the Factorio version decoded from the string's header. Notes:
+
+- The string is **validated before Factorio runs** (envelope, base64, zlib,
+  version header), so a bad paste fails immediately rather than after a
+  multi-minute generation.
+- **Existing output is not clobbered silently** — same overwrite guard as
+  `from-save`, checked before Factorio runs.
+- The string carries the Factorio version it was exported from; a string from a
+  major version your install can't parse will surface as a clean error.
+- As with `from-save`, the headless interaction is only verified on macOS; on
+  Windows/Linux it warns.
 
 ### `rates`
 
