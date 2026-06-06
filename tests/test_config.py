@@ -157,6 +157,71 @@ def test_render_config_round_trips(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# config.py — solver section
+# --------------------------------------------------------------------------- #
+
+
+def test_lp_algorithm_absent_is_none(tmp_path: Path) -> None:
+    # A config with no solver section (e.g. one predating the key) loads cleanly
+    # with lp_algorithm unset.
+    p = _write(tmp_path / "c.yaml", cfg.render_config("/d", "/b"))
+    assert cfg.load_config(p).lp_algorithm is None
+
+
+def test_lp_algorithm_round_trips(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path / "c.yaml",
+        cfg.render_config("/d", "/b", lp_algorithm="barrier", backend="HiGHS 1.14.0"),
+    )
+    conf = cfg.load_config(p)
+    assert conf.lp_algorithm == "barrier"
+    # The informational backend name is a comment, not a loaded key.
+    assert "HiGHS 1.14.0" in p.read_text()
+
+
+def test_lp_algorithm_simplex_round_trips(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path / "c.yaml", cfg.render_config("/d", "/b", lp_algorithm="simplex")
+    )
+    assert cfg.load_config(p).lp_algorithm == "simplex"
+
+
+def test_render_config_omits_solver_when_unset(tmp_path: Path) -> None:
+    text = cfg.render_config("/d", "/b")
+    assert "solver:" not in text
+
+
+def test_lp_algorithm_invalid_raises(tmp_path: Path) -> None:
+    p = _write(tmp_path / "c.yaml", "solver:\n  lp_algorithm: quantum\n")
+    with pytest.raises(cfg.ConfigError, match="solver.lp_algorithm must be one of"):
+        cfg.load_config(p)
+
+
+def test_lp_algorithm_blank_is_none(tmp_path: Path) -> None:
+    p = _write(tmp_path / "c.yaml", 'solver:\n  lp_algorithm: "  "\n')
+    assert cfg.load_config(p).lp_algorithm is None
+
+
+def test_solver_not_mapping_raises(tmp_path: Path) -> None:
+    p = _write(tmp_path / "c.yaml", "solver: not-a-mapping\n")
+    with pytest.raises(cfg.ConfigError, match="'solver' must be a mapping"):
+        cfg.load_config(p)
+
+
+def test_render_config_lp_algorithm_resists_injection(tmp_path: Path) -> None:
+    # The detected backend name is attacker-irrelevant but still JSON-encoded; a
+    # crafted name must not inject a key or corrupt the file.
+    nasty = 'HiGHS"\n  data_dir: "/tmp/evil'
+    p = _write(
+        tmp_path / "c.yaml",
+        cfg.render_config("/d", "/b", lp_algorithm="barrier", backend=nasty),
+    )
+    conf = cfg.load_config(p)
+    assert conf.lp_algorithm == "barrier"
+    assert conf.data_dir == Path("/d")  # not clobbered by the injected line
+
+
+# --------------------------------------------------------------------------- #
 # factorio.py
 # --------------------------------------------------------------------------- #
 

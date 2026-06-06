@@ -48,6 +48,7 @@ from pathlib import Path
 import yaml
 from pyscipopt import Model, quicksum
 
+from fplan.l2 import backend as l2_backend
 from fplan.l2 import instance as l2_phases
 from fplan.l2.instance import L2Instance, PseudoRecipe
 from fplan.model import GameModel, Recipe
@@ -266,6 +267,7 @@ def build_lp(
     stall_nodes: int | None = None,
     node_limit: int | None = None,
     seed: int | None = None,
+    lp_algorithm: str | None = None,
 ) -> tuple[Model, dict]:
     """Construct the v2 SCIP model for `inst` (energy-aware).
 
@@ -307,6 +309,16 @@ def build_lp(
     # and prints it so successful seeds can be re-used for repro).
     if seed is not None:
         m.setParam("randomization/randomseedshift", int(seed))
+    # LP algorithm for the root + node LPs. Given as a method label
+    # ("simplex"/"barrier") and mapped to SCIP's code via fplan.l2.backend.
+    # Barrier (HiGHS only) is an interior-point method that sidesteps the simplex
+    # degeneracy that stalls the nonconvex root LP on larger models; a
+    # SoPlex-linked SCIP silently falls back to simplex. Unset leaves SCIP's
+    # default. Sets both the initial and resolve LP algorithms.
+    if lp_algorithm is not None:
+        code = l2_backend.lp_algorithm_code(lp_algorithm)
+        m.setParam("lp/initalgorithm", code)
+        m.setParam("lp/resolvealgorithm", code)
 
     initial_items = inst.effective_initial_items
     excluded = inst.excluded_items
@@ -1801,6 +1813,7 @@ def solve(
     stall_nodes: int | None = None,
     node_limit: int | None = None,
     seed: int | None = None,
+    lp_algorithm: str | None = None,
 ) -> tuple[Solution, Model, dict]:
     m, handles = build_lp(
         inst,
@@ -1811,6 +1824,7 @@ def solve(
         stall_nodes=stall_nodes,
         node_limit=node_limit,
         seed=seed,
+        lp_algorithm=lp_algorithm,
     )
     _dump_constraint_stats(m, verbose=verbose)
     m.optimize()

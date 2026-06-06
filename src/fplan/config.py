@@ -18,6 +18,8 @@ from pathlib import Path
 
 import yaml
 
+from fplan.l2.backend import VALID_LP_ALGORITHMS
+
 DEFAULT_CONFIG_NAME = ".fplan-config.yaml"
 
 
@@ -32,6 +34,10 @@ class FplanConfig:
     data_dir: Path | None
     binary: Path | None
     source: Path | None
+    # Preferred LP method for `rates solve` ("barrier" | "simplex"), recorded by
+    # `fplan init` from the detected SCIP backend. None when the config predates
+    # this key or omits it; the solver then uses SCIP's default. CLI overrides win.
+    lp_algorithm: str | None = None
 
     @property
     def present(self) -> bool:
@@ -80,11 +86,30 @@ def load_config(config_file: Path | None = None) -> FplanConfig:
     factorio = raw.get("factorio") or {}
     if not isinstance(factorio, dict):
         raise ConfigError(f"{path}: 'factorio' must be a mapping")
+    solver = raw.get("solver") or {}
+    if not isinstance(solver, dict):
+        raise ConfigError(f"{path}: 'solver' must be a mapping")
     return FplanConfig(
         data_dir=_as_path(factorio.get("data_dir"), "data_dir"),
         binary=_as_path(factorio.get("binary"), "binary"),
         source=path,
+        lp_algorithm=_as_lp_algorithm(solver.get("lp_algorithm")),
     )
+
+
+def _as_lp_algorithm(value: object) -> str | None:
+    """Validate the ``solver.lp_algorithm`` field: a known label or unset."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    label = value.strip()
+    if label not in VALID_LP_ALGORITHMS:
+        choices = ", ".join(VALID_LP_ALGORITHMS)
+        raise ConfigError(
+            f"solver.lp_algorithm must be one of {{{choices}}}, got {label!r}"
+        )
+    return label
 
 
 def require_data_dir(config: FplanConfig) -> Path:
@@ -128,14 +153,22 @@ def require_binary(config: FplanConfig) -> Path:
     return config.binary.resolve()
 
 
-def render_config(data_dir: str | None, binary: str | None) -> str:
+def render_config(
+    data_dir: str | None,
+    binary: str | None,
+    *,
+    lp_algorithm: str | None = None,
+    backend: str | None = None,
+) -> str:
     """Render the config file text (with comments) that ``fplan init`` writes.
 
     Path values are emitted via ``json.dumps`` — a JSON string is a valid YAML
     double-quoted scalar — so quotes/newlines in a path can't corrupt the file
-    or inject extra keys.
+    or inject extra keys. ``lp_algorithm`` / ``backend`` come from SCIP backend
+    detection (see :mod:`fplan.l2.backend`); when ``lp_algorithm`` is None the
+    solver section is omitted entirely (e.g. a dry template with no SCIP probe).
     """
-    return (
+    text = (
         "# .fplan-config.yaml — fplan configuration.\n"
         "# CLI arguments will override these values where commands support it.\n"
         "# There is no environment-variable support. Delete this file and re-run\n"
@@ -148,3 +181,21 @@ def render_config(data_dir: str | None, binary: str | None) -> str:
         "  # (map from-save, ...).\n"
         f"  binary: {json.dumps(binary or '')}\n"
     )
+    if lp_algorithm is not None:
+        # `backend` is a self-reported solver name shown as a comment. Flatten any
+        # whitespace (newlines included) so it can't break out of the comment and
+        # inject a key — defense-in-depth even though it originates from SCIP.
+        detected = (
+            f"  # detected LP solver: {' '.join(backend.split())}\n" if backend else ""
+        )
+        text += (
+            "solver:\n"
+            "  # LP method for the SCIP solve (`rates solve`), auto-detected at\n"
+            "  # `fplan init` from the active SCIP's linked LP solver. HiGHS offers\n"
+            "  # a barrier (interior-point) method that handles larger models\n"
+            "  # better; other solvers (e.g. SoPlex) provide simplex only. Edit to\n"
+            "  # override, or pass `--lp-algorithm` to `rates solve`.\n"
+            f"{detected}"
+            f"  lp_algorithm: {json.dumps(lp_algorithm)}  # barrier | simplex\n"
+        )
+    return text

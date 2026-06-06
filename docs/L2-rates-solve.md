@@ -397,7 +397,10 @@ down.
   (`lp/conditionlimit`) flags a numerically unhealthy LP; a single randomization
   seed (`randomization/randomseedshift`) varies SCIP's heuristics and branching —
   what multi-seed search exploits ([§3.3](#33-why-results-vary)) — and optional
-  time / gap / node limits bound the search.
+  time / gap / node limits bound the search. The **LP algorithm** (`lp/initalgorithm`
+  / `lp/resolvealgorithm`) is set from the configured/`--lp-algorithm` preference:
+  barrier (interior-point) when SCIP is linked against HiGHS, else simplex — see
+  [usage.md → HiGHS + SCIP setup](usage.md#highs--scip-setup).
 
 These hacks are concentrated, not scattered: `solve.py` is the only module that
 imports SCIP ([§5.1](#51-how-the-solver-code-is-organized)), so the rest of L2

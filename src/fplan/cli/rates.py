@@ -94,6 +94,15 @@ StallNodesOpt = Annotated[
 NodeLimitOpt = Annotated[
     int | None, typer.Option("--node-limit", help="Hard cap on total B&B nodes.")
 ]
+LpAlgorithmOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--lp-algorithm",
+        help="LP method: barrier | simplex. Overrides the config's detected "
+        "preference (barrier needs a HiGHS-linked SCIP). Omit to use the config, "
+        "or SCIP's default if unset.",
+    ),
+]
 MaxAreaOpt = Annotated[
     float | None,
     typer.Option(
@@ -196,6 +205,7 @@ def solve(
     gap_limit: GapLimitOpt = None,
     stall_nodes: StallNodesOpt = None,
     node_limit: NodeLimitOpt = None,
+    lp_algorithm: LpAlgorithmOpt = None,
     max_area_fraction: MaxAreaOpt = None,
     no_deployment: NoDeploymentOpt = False,
     no_player_time: NoPlayerTimeOpt = False,
@@ -216,9 +226,11 @@ def solve(
     promoted rates.yaml), the seeds are ranked by t_FINAL, and the best is
     promoted to rates.yaml after a prompt (--force to skip).
     """
+    from fplan import config as app_config
     from fplan import refs
     from fplan import run as run_mod
     from fplan.cli import main as cli_main
+    from fplan.l2 import backend as l2_backend
     from fplan.l2 import config as l2_config_mod
     from fplan.l2 import instance as l2_instance
 
@@ -235,6 +247,13 @@ def solve(
     if seeds is None and (jobs is not None or quiet_solver):
         typer.echo(
             "error: --jobs / --quiet-solver only apply to a --seeds search.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if lp_algorithm is not None and lp_algorithm not in l2_backend.VALID_LP_ALGORITHMS:
+        choices = ", ".join(l2_backend.VALID_LP_ALGORITHMS)
+        typer.echo(
+            f"error: unknown --lp-algorithm {lp_algorithm!r}; choose from {choices}.",
             err=True,
         )
         raise typer.Exit(code=2)
@@ -321,11 +340,24 @@ def solve(
         return
 
     config_ref = refs.file_ref(l2_config) if l2_config is not None else "default"
+    # LP method: an explicit --lp-algorithm wins; otherwise the config's recorded
+    # preference; otherwise None (SCIP's own default). The model load above already
+    # parsed and validated this config (a bad solver.lp_algorithm would have exited
+    # there), so this re-read normally succeeds; the guard is belt-and-suspenders
+    # for the off-nominal case, falling back to SCIP's default rather than aborting.
+    config_lp = None
+    try:
+        config_lp = app_config.load_config(state.config_file).lp_algorithm
+    except app_config.ConfigError:
+        config_lp = None
+    lp_from_cli = lp_algorithm is not None
+    effective_lp = lp_algorithm if lp_from_cli else config_lp
     solver_kwargs = {
         "time_limit_s": time_limit_s,
         "gap_limit": gap_limit,
         "stall_nodes": stall_nodes,
         "node_limit": node_limit,
+        "lp_algorithm": effective_lp,
     }
 
     # Surface the effective settings (so omitting an optional flag is transparent).
@@ -347,6 +379,11 @@ def solve(
             "config",
             "default" if config_ref == "default" else str(l2_config),
             config_ref == "default",
+        ),
+        (
+            "lp-algorithm",
+            effective_lp if effective_lp is not None else "scip-default",
+            not lp_from_cli,
         ),
     ]
     # Advanced knobs: list only when set (their default is "unset").

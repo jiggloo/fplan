@@ -226,6 +226,82 @@ def test_solve_settings_reflect_overrides(
     assert "(default)" not in seg
 
 
+def _capturing_solve(captured: dict):
+    """Solve stub that records the kwargs it was called with (for lp_algorithm)."""
+
+    def _solve(inst, model, **kw):
+        captured.update(kw)
+        sol = types.SimpleNamespace(
+            objective=245.0, status="optimal", solve_time_s=1.0, seed=None
+        )
+        return sol, None, None
+
+    return _solve
+
+
+def test_solve_lp_algorithm_defaults_to_scip_default(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    captured: dict = {}
+    _patch_solve(monkeypatch, _capturing_solve(captured))
+    r = runner.invoke(app, ["rates", "solve", "r", "--seed", "1", "--force"])
+    assert r.exit_code == 0
+    assert "lp-algorithm=scip-default (default)" in r.stdout
+    assert captured["lp_algorithm"] is None
+
+
+def test_solve_lp_algorithm_from_config(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    from fplan import config as cfg
+
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    (tmp_path / cfg.DEFAULT_CONFIG_NAME).write_text(
+        cfg.render_config(None, None, lp_algorithm="barrier", backend="HiGHS 1.14.0")
+    )
+    captured: dict = {}
+    _patch_solve(monkeypatch, _capturing_solve(captured))
+    r = runner.invoke(app, ["rates", "solve", "r", "--seed", "1", "--force"])
+    assert r.exit_code == 0
+    # Not from the CLI, so it's marked (default).
+    assert "lp-algorithm=barrier (default)" in r.stdout
+    assert captured["lp_algorithm"] == "barrier"
+
+
+def test_solve_lp_algorithm_cli_overrides_config(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    from fplan import config as cfg
+
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    (tmp_path / cfg.DEFAULT_CONFIG_NAME).write_text(
+        cfg.render_config(None, None, lp_algorithm="barrier")
+    )
+    captured: dict = {}
+    _patch_solve(monkeypatch, _capturing_solve(captured))
+    r = runner.invoke(
+        app,
+        ["rates", "solve", "r", "--seed", "1", "--lp-algorithm", "simplex", "--force"],
+    )
+    assert r.exit_code == 0
+    assert "lp-algorithm=simplex" in r.stdout
+    seg = r.stdout.split("lp-algorithm=simplex", 1)[1].split("·", 1)[0]
+    assert "(default)" not in seg  # an explicit override is not marked default
+    assert captured["lp_algorithm"] == "simplex"
+
+
+def test_solve_lp_algorithm_invalid_is_usage_error(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    r = runner.invoke(app, ["rates", "solve", "r", "--lp-algorithm", "quantum"])
+    assert r.exit_code == 2
+    assert "unknown --lp-algorithm" in (r.stdout + str(r.stderr))
+
+
 def test_solve_records_config_ref(tmp_path, monkeypatch, use_fixture_model) -> None:
     monkeypatch.chdir(tmp_path)
     _make_run(tmp_path)
