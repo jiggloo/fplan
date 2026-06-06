@@ -155,6 +155,8 @@ def _report_config(config_file: Path | None) -> None:
         else:
             status = "ok" if value.exists() else "MISSING"
             typer.echo(f"  factorio {label}: {value} [{status}]")
+    if conf.lp_algorithm is not None:
+        typer.echo(f"  solver lp_algorithm: {conf.lp_algorithm}")
 
 
 @app.callback(invoke_without_command=True)
@@ -334,12 +336,17 @@ def init(
     elif dry_run:
         typer.echo(f"Would create {target} (dry run; nothing written).")
     else:
+        from fplan.l2 import backend as l2_backend
+
         install = _detect_factorio_interactively()
+        backend = l2_backend.detect_backend()
         try:
             target.write_text(
                 cfg.render_config(
                     str(install.data_dir) if install else None,
                     str(install.binary) if install else None,
+                    lp_algorithm=backend.lp_algorithm,
+                    backend=backend.lp_solver,
                 )
             )
         except OSError as exc:
@@ -353,6 +360,16 @@ def init(
             typer.echo(
                 f"Created {target} with candidate Factorio paths — verify them; the "
                 "data directory was not found on disk."
+            )
+        if backend.available:
+            typer.echo(
+                f"  SCIP LP backend: {backend.lp_solver} → "
+                f"lp_algorithm: {backend.lp_algorithm}"
+            )
+        else:
+            typer.echo(
+                "  SCIP LP backend: not detected (pyscipopt unavailable) → "
+                f"lp_algorithm: {backend.lp_algorithm} (default)"
             )
 
     if copy_examples:

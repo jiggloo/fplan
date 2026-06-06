@@ -96,6 +96,15 @@ never overwrites an existing file — delete it to regenerate. Auto-detection is
 only verified on macOS today; on Windows/Linux it warns and you should check the
 paths it writes.
 
+`init` also records a **solver preference** under `solver.lp_algorithm`. SCIP
+links exactly one LP solver at build time, and `init` detects which one the
+active install provides: **HiGHS** offers a barrier (interior-point) method that
+handles the larger `rates solve` models better, so it's preferred when available;
+other solvers (e.g. SoPlex) provide simplex only. `rates solve` reads this
+preference; [`--lp-algorithm`](#rates-solve) overrides it. To switch backends,
+install fplan into an environment whose SCIP provides the one you want and re-run
+`init`. If SCIP isn't importable, `init` records the safe simplex default.
+
 Add `--copy-examples` to also copy the bundled example **scenarios**,
 **tech-orders**, **maps**, and **run manifests** into the current directory:
 
@@ -378,6 +387,9 @@ For how the solve works and how to read its output, see
 - Solver controls: `--time-limit-s`, `--gap-limit`, `--stall-nodes`,
   `--node-limit`. Modeling A/B: `--max-area-fraction`, `--no-deployment`,
   `--no-player-time`.
+- `--lp-algorithm barrier|simplex` picks the LP method, overriding the config's
+  detected [`solver.lp_algorithm`](#configuration). Barrier needs a HiGHS-linked
+  SCIP; omit it to use the config (or SCIP's default if unset).
 - `--dry-run` builds the instance and prints a summary without solving. An
   existing `rates.yaml` is not clobbered silently (`--force` to overwrite).
 - Exit `0` if a feasible incumbent was found, non-zero otherwise.

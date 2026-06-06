@@ -12,6 +12,7 @@ from fplan import config as cfg
 from fplan import factorio
 from fplan.cli import app
 from fplan.cli import main as cli_main
+from fplan.l2 import backend as l2_backend
 
 runner = CliRunner()
 
@@ -142,6 +143,44 @@ def test_init_not_found_manual_path_unverified(
     assert "verify them" in result.stdout
     conf = cfg.load_config()
     assert conf.data_dir is not None  # candidate written even though it doesn't exist
+
+
+def _force_backend(monkeypatch, lp_solver, lp_algorithm, available):
+    monkeypatch.setattr(
+        l2_backend,
+        "detect_backend",
+        lambda: l2_backend.Backend(lp_solver, lp_algorithm, available),
+    )
+
+
+def test_init_writes_detected_highs_backend(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_stdin_is_interactive", lambda: False)
+    _force_backend(monkeypatch, "HiGHS 1.14.0", "barrier", True)
+    result = runner.invoke(app, ["init"])
+    assert result.exit_code == 0
+    assert "SCIP LP backend: HiGHS 1.14.0" in result.stdout
+    assert cfg.load_config().lp_algorithm == "barrier"
+
+
+def test_init_writes_simplex_for_soplex(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_stdin_is_interactive", lambda: False)
+    _force_backend(monkeypatch, "SoPlex 8.0.2", "simplex", True)
+    runner.invoke(app, ["init"])
+    assert cfg.load_config().lp_algorithm == "simplex"
+
+
+def test_init_backend_undetectable_writes_simplex_default(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_stdin_is_interactive", lambda: False)
+    _force_backend(monkeypatch, None, "simplex", False)
+    result = runner.invoke(app, ["init"])
+    assert result.exit_code == 0
+    assert "not detected (pyscipopt unavailable)" in result.stdout
+    assert cfg.load_config().lp_algorithm == "simplex"
 
 
 def test_init_untested_platform_warns(tmp_path, monkeypatch, interactive) -> None:
