@@ -397,6 +397,97 @@ def test_timeline_no_script_breakout() -> None:
     assert "<\\/script>" in html  # script-safe JSON in the <script> block
 
 
+HANDCRAFT = {
+    "scenario": "s",
+    "mode": "m",
+    "l1_method": "f",
+    "initial_time_s": 0.0,
+    "steps": [
+        {
+            "label": "s0",
+            "duration_s": 10.0,
+            "items": [],
+            "activity": [
+                {
+                    "building": "character",
+                    "recipe": "iron-gear-wheel",
+                    "cycles": 4.0,
+                },
+                {  # a built machine is NOT hand-crafting
+                    "building": "assembling-machine-1",
+                    "recipe": "copper-cable",
+                    "cycles": 2.0,
+                },
+            ],
+        }
+    ],
+}
+
+
+def test_build_dataset_surfaces_handcraft() -> None:
+    ds = viz.build_dataset(HANDCRAFT)
+    hc = ds["steps"][0]["handcraft"]
+    # Only the `building: character` activity is hand-crafting.
+    assert [h["recipe"] for h in hc] == ["iron-gear-wheel"]
+    assert hc[0]["count"] == 4.0
+
+
+def test_handcraft_drops_zero_count_dust() -> None:
+    # A hand-craft whose cycle count would render as "0.00" (< 0.005) is dropped
+    # rather than listed as zero in the panel.
+    data = {
+        "scenario": "s",
+        "mode": "m",
+        "l1_method": "f",
+        "initial_time_s": 0.0,
+        "steps": [
+            {
+                "label": "s0",
+                "duration_s": 10.0,
+                "items": [],
+                "activity": [
+                    {
+                        "building": "character",
+                        "recipe": "iron-gear-wheel",
+                        "cycles": 3.0,
+                    },
+                    {
+                        "building": "character",
+                        "recipe": "copper-cable",
+                        "cycles": 0.0004,
+                    },
+                ],
+            }
+        ],
+    }
+    hc = viz.build_dataset(data)["steps"][0]["handcraft"]
+    assert [h["recipe"] for h in hc] == ["iron-gear-wheel"]  # dust dropped
+
+
+def test_handcraft_panel_no_script_breakout() -> None:
+    # A malicious recipe name in a character activity must not break out of the
+    # rendered hand-crafting panel (esc() in JS + </-escaped JSON).
+    payload = dict(HANDCRAFT)
+    payload["steps"] = [
+        {
+            "label": "</script><img src=x onerror=alert(9)>",
+            "duration_s": 10.0,
+            "items": [],
+            "activity": [
+                {
+                    "building": "character",
+                    "recipe": "</script><svg onload=alert(8)>",
+                    "cycles": 1.0,
+                }
+            ],
+        }
+    ]
+    html = viz.render_html(viz.build_dataset(payload))
+    assert "</script><img" not in html
+    assert "</script><svg" not in html
+    assert "<\\/script>" in html  # the payload survives only as script-safe JSON
+
+
 def test_heatmap_escapes_building_label_seed() -> None:
     hm = viz.build_heatmap_html(INJECT)
     assert "<script>alert(4)" not in hm  # building name escaped

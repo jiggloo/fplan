@@ -18,16 +18,16 @@ integer variables, so it is an NLP, not a MINLP).
 
 Energy: a per-step side constraint
     Σ_electric_consumers (x · recipe_time · power_mw / speed)
-      ≤  character_credit_i  +  Σ_burns (x · electric_output_mj_per_cycle)
+      ≤  Σ_burns (x · electric_output_mj_per_cycle)
 gates electric production. The LP works in MJ and MW internally
 (coefficients stay near unity, avoiding SCIP numerical troubles); the
 data model still exposes raw J/W and conversion happens at LP-
-construction points. The character credit (≤ the player's 2 AM1s
-worth of work per step) is bounded by both AM1 usage and 2-AM1
-capacity × duration. Burner buildings (stone-furnace, burner-mining-
-drill, steel-furnace) have per-(building, step) fuel-burn variables
-that deduct from the chosen fuel item and supply that building's
-energy demand. Wood is excluded as fuel everywhere.
+construction points. The player hand-craft facility draws no grid power,
+so it never appears in the demand sum (see PLAYER_CRAFT_SPEED). Burner
+buildings (stone-furnace, burner-mining-drill, steel-furnace) have
+per-(building, step) fuel-burn variables that deduct from the chosen fuel
+item and supply that building's energy demand. Wood is excluded as fuel
+everywhere.
 
 Solver isolation: this is the only module that imports pyscipopt.
 `L2Instance` and :mod:`fplan.l2.instance` stay solver-neutral.
@@ -65,6 +65,9 @@ class Solution:
     # (e.g., burn = boiler+steam-engine), so the building dimension is
     # dropped here — the LP carries one cycle variable per (pseudo, step).
     x_pseudo: dict[tuple[str, int], float]
+    # Player hand-crafting activity: (recipe, step) -> cycles. The character
+    # is the implicit fixed-count facility, so there is no building dimension.
+    x_hand: dict[tuple[str, int], float]
     item: dict[tuple[str, int], float]  # (item, tier) -> count
     duration: dict[int, float]  # step -> seconds
     # Per-ore electric-drill assignment: (ore, tier) -> drill count on that ore.
@@ -83,9 +86,8 @@ class Solution:
     # Per-step electric energy bookkeeping (joules).
     # Per-step electric energy bookkeeping in MJ (matches the LP's
     # internal rescaling; multiply by 1e6 if you need joules).
-    electric_demand: dict[int, float]  # MJ — grid demand before character credit
+    electric_demand: dict[int, float]  # MJ — grid demand
     electric_supply: dict[int, float]  # MJ — from burn pseudo-recipes
-    character_credit: dict[int, float]  # MJ — AM1 work attributed to the player
     n_vars: int
     n_constrs: int
     # Solver diagnostics — useful when status != "optimal" or for
@@ -127,6 +129,25 @@ _J_PER_MJ = 1.0e6
 # (see the constraint block in build_lp). It is valid ONLY because demand is
 # ≤ 1 — it serializes the recipe, so applying it to a multi-unit recipe would
 # wrongly forbid legitimate parallel construction.
+
+# --- Player hand-crafting facility -----------------------------------------
+# The character is one fixed-count serial crafter, not a built machine. Its
+# capacity term is `PLAYER_CRAFT_SPEED · duration[i]` — a CONSTANT count times
+# the duration variable, so it is LINEAR (no count×duration bilinear term, the
+# thing that made a "player-as-facility" expensive in the old analysis). It
+# draws no electricity, and hand-crafts proceed in the BACKGROUND while the
+# character walks / places / fells, so hand-craft time is NOT part of the
+# serial `player_time` budget — it's a separate per-step bound.
+#
+# This replaces the old 2×AM1 stand-in (folded into effective_initial_items),
+# which (a) rode inside item[assembling-machine-1]'s bilinear capacity term
+# and (b) needed the char_credit electric carve-out. Both are now gone.
+PLAYER_CRAFT_SPEED = 1.0  # character crafting_speed: 1.0 recipe-sec/sec
+# Recipe categories the character can hand-craft. From the `character`
+# prototype's crafting_categories: exactly {"crafting"} — narrower than an AM1,
+# which also carries basic-crafting / advanced-crafting. Recipes outside this
+# set need a built machine, exactly as in game.
+HAND_CRAFT_CATEGORIES = frozenset({"crafting"})
 
 # Realism regularizer (NOT a hard physical law). Factorio research is
 # *continuous* — many labs sum fractional progress — so unlike the indivisible
@@ -278,8 +299,8 @@ def build_lp(
         handles["item"]:       {(item, tier) -> Var}
         handles["duration"]:   {step -> Var}
         handles["fuel_burn"]:  {(fuel, burner-building, step) -> Var}
-        handles["char_credit"]: {step -> Var}
-        handles["elec_demand_lin"]: {step -> linear expr (joules pre-credit)}
+        handles["x_hand"]:     {(recipe, step) -> Var}  (player hand-craft)
+        handles["elec_demand_lin"]: {step -> linear expr (joules consumed)}
         handles["elec_supply_lin"]: {step -> linear expr (joules supplied by burns)}
         handles["tracked_items"]: frozenset[str]
         handles["n_tiers"]: int
@@ -395,6 +416,26 @@ def build_lp(
                 continue
             x_real[(r_name, b_name, i)] = m.addVar(
                 name=_safe(f"x_{r_name}_{b_name}_{i}"),
+                lb=0.0,
+                vtype="C",
+            )
+
+    # Player hand-crafting: one var per (recipe, step) for recipes the
+    # character can hand-craft. No building dimension — the single character
+    # is the implicit, fixed-count facility, available from t₀ (recipes are
+    # still strict tech-gated via available_recipes). Pruned like x_real:
+    # forbidden recipes and all-pruned-output recipes get no var.
+    x_hand: dict[tuple[str, int], object] = {}
+    for i, step in enumerate(inst.steps):
+        for r in step.available_recipes(model):
+            if r.category not in HAND_CRAFT_CATEGORIES:
+                continue
+            if r.name in step.forbidden_real_recipes:
+                continue
+            if r.outputs and all(s.name in pruned for s in r.outputs):
+                continue
+            x_hand[(r.name, i)] = m.addVar(
+                name=_safe(f"hand_{r.name}_{i}"),
                 lb=0.0,
                 vtype="C",
             )
@@ -568,17 +609,6 @@ def build_lp(
                     vtype="C",
                 )
 
-    # Per-step character electric credit: AM1 work attributed to the
-    # player rather than the grid. Bounded by both actual AM1 demand
-    # and 2-AM1 capacity × duration (bilinear). The LP maximizes it
-    # naturally — it appears subtractively in the electric demand,
-    # shrinking required boiler activity and hence duration.
-    am1 = model.buildings.get(inst.cfg.character_building)
-    am1_power_mw = (am1.base_power_w / _J_PER_MJ) if am1 else 0.0
-    char_credit: dict[int, object] = {
-        i: m.addVar(name=f"char_credit_{i}", lb=0.0, vtype="C") for i in range(n_steps)
-    }
-
     # --- flow constraints ---
 
     # Initial conditions: item[n, 0] == initial[n].
@@ -599,6 +629,10 @@ def build_lp(
                 flow_terms[(item_name, i)].append(c * var)
     for (p_name, i), var in x_pseudo.items():
         for item_name, c in net_coefs.get(p_name, ()):
+            if item_name in tracked:
+                flow_terms[(item_name, i)].append(c * var)
+    for (r_name, i), var in x_hand.items():
+        for item_name, c in net_coefs.get(r_name, ()):
             if item_name in tracked:
                 flow_terms[(item_name, i)].append(c * var)
     for (fuel, _b, i), var in fuel_burn.items():
@@ -737,6 +771,27 @@ def build_lp(
         rhs = effective_count * speed * duration_vars[i]
         m.addCons(lhs <= rhs, name=_safe(f"cap_{b_name}_{i}"))
 
+    # --- player hand-crafting capacity (one fixed-count serial actor) ---
+    #
+    # Σ_r recipe_time[r] · x_hand[r,i]  ≤  PLAYER_CRAFT_SPEED · duration[i]
+    #
+    # LINEAR: PLAYER_CRAFT_SPEED is a constant (count = 1 character), so the
+    # RHS is constant×duration, not the count×duration product that makes the
+    # built-machine capacity constraints bilinear. Hand-crafts run in the
+    # background (parallel to the serial player_time budget), so the full
+    # duration is available for crafting.
+    for i in range(n_steps):
+        hand_terms = [
+            recipe_time.get(r_name, 0.0) * var
+            for (r_name, ii), var in x_hand.items()
+            if ii == i
+        ]
+        if hand_terms:
+            m.addCons(
+                quicksum(hand_terms) <= PLAYER_CRAFT_SPEED * duration_vars[i],
+                name=_safe(f"hand_cap_{i}"),
+            )
+
     # --- single-machine constraint for indivisible singleton crafts ---
     #
     # The pooled capacity constraint bounds output from above by capacity but
@@ -775,6 +830,14 @@ def build_lp(
                 for building in (model.buildings.get(b_name),)
                 if building is not None and building.base_speed
             ]
+            # The character is also a valid single machine for this craft when
+            # it can hand-craft the recipe. At PLAYER_CRAFT_SPEED (1.0) it
+            # builds the silo in t seconds — faster than an AM2 (0.75 → t/0.75)
+            # but slower than an AM3 (1.25). With this term the LP picks the
+            # fastest available builder; without it the player option was
+            # invisible and the silo was pinned to whatever assembler existed.
+            if (r_name, i) in x_hand:
+                terms.append((t / PLAYER_CRAFT_SPEED) * x_hand[(r_name, i)])
             if terms:
                 m.addCons(
                     quicksum(terms) <= duration_vars[i],
@@ -1075,6 +1138,12 @@ def build_lp(
             amt = _ingredient_amount(p_name, "wood", model, pseudo_by_name)
             if amt > 0:
                 wood_terms.append(amt * var)
+        # Hand-crafted wood consumers too (small-electric-pole, wooden-chest
+        # are 'crafting'-category and hand-craftable).
+        for (r_name, _i), var in x_hand.items():
+            amt = _ingredient_amount(r_name, "wood", model, pseudo_by_name)
+            if amt > 0:
+                wood_terms.append(amt * var)
         if wood_terms:
             m.addCons(
                 quicksum(wood_terms) <= float(inst.wood_budget),
@@ -1122,6 +1191,11 @@ def build_lp(
                 wood_per_recipe[p_name] = _ingredient_amount(
                     p_name, "wood", model, pseudo_by_name
                 )
+        for r_name, _i in x_hand:
+            if r_name not in wood_per_recipe:
+                wood_per_recipe[r_name] = _ingredient_amount(
+                    r_name, "wood", model, pseudo_by_name
+                )
 
         # steel-axe doubles the felling rate once researched; the research
         # step itself still uses the slow axe (completes at its end).
@@ -1155,6 +1229,11 @@ def build_lp(
             for (p_name, ii), var in x_pseudo.items():
                 if ii == i and wood_per_recipe.get(p_name, 0.0) > 0:
                     terms.append(wood_per_recipe[p_name] * wood_to_time * var)
+            # Felling the wood a hand-crafted pole/chest needs is still a
+            # serial action even though the crafting itself is background.
+            for (r_name, ii), var in x_hand.items():
+                if ii == i and wood_per_recipe.get(r_name, 0.0) > 0:
+                    terms.append(wood_per_recipe[r_name] * wood_to_time * var)
             if terms:
                 m.addCons(
                     quicksum(terms) <= duration_vars[i], name=_safe(f"player_time_{i}")
@@ -1363,12 +1442,12 @@ def build_lp(
             )
 
     # Per-step electric energy balance:
-    #   Σ electric-consumer demand  ≤  character_credit[i]  +  Σ burn supply
-    # Plus character_credit bounds:
-    #   char_credit[i] ≤ Σ x[r,AM1,i] · recipe_time · AM1_power / AM1_speed
-    #                          (can't claim more than AM1 actually did)
-    #   char_credit[i] ≤ CHARACTER_COUNT · AM1_power · duration[i]
-    #                          (can't exceed 2-AM1 wall-time capacity)
+    #   Σ electric-consumer demand  ≤  Σ burn supply
+    # The player draws no grid power — hand-crafting (x_hand) is a separate,
+    # power-free facility, so it never appears in the demand sum. Built AM1s,
+    # being real electric machines, do draw and contribute here normally.
+    # (The old char_credit carve-out — crediting up to 2 AM1s' draw to "the
+    # player" — is gone with the 2×AM1 stand-in it existed to offset.)
     # Burns and burner buildings contribute nothing here (they're not
     # electric); their boilers/steam-engines have base_power_w that's
     # heat-output / 0 respectively, not grid draw.
@@ -1380,7 +1459,6 @@ def build_lp(
     # MJ/MW internally to keep coefficients near unity.
     for i in range(n_steps):
         demand_terms = []
-        am1_demand_terms = []
         # Real-recipe electric demand.
         for (r_name, b_name, i2), var in x_real.items():
             if i2 != i:
@@ -1396,8 +1474,6 @@ def build_lp(
             b_power_mw = b.base_power_w / _J_PER_MJ
             term = t * b_power_mw / b.base_speed * var
             demand_terms.append(term)
-            if b_name == inst.cfg.character_building:
-                am1_demand_terms.append(term)
         # Pseudo-recipe electric demand (lab is electric).
         for (p_name, i2), var in x_pseudo.items():
             if i2 != i:
@@ -1425,23 +1501,8 @@ def build_lp(
         elec_demand_lin[i] = quicksum(demand_terms)
         elec_supply_lin[i] = quicksum(supply_terms)
 
-        # Character credit bounds (in MJ).
-        if am1_demand_terms:
-            m.addCons(
-                char_credit[i] <= quicksum(am1_demand_terms),
-                name=f"char_credit_demand_cap_{i}",
-            )
-        else:
-            m.addCons(char_credit[i] <= 0.0, name=f"char_credit_demand_cap_{i}")
-        # Bilinear cap: CHARACTER_COUNT × AM1_power_mw × duration[i].
         m.addCons(
-            char_credit[i]
-            <= (inst.cfg.character_count * am1_power_mw * duration_vars[i]),
-            name=f"char_credit_cap_{i}",
-        )
-
-        m.addCons(
-            elec_demand_lin[i] <= char_credit[i] + elec_supply_lin[i],
+            elec_demand_lin[i] <= elec_supply_lin[i],
             name=f"electric_balance_{i}",
         )
 
@@ -1451,12 +1512,12 @@ def build_lp(
     handles = {
         "x_real": x_real,
         "x_pseudo": x_pseudo,
+        "x_hand": x_hand,
         "item": item_vars,
         "duration": duration_vars,
         "drill_assign": drill_assign,
         "furnace_assign": furnace_assign,
         "fuel_burn": fuel_burn,
-        "char_credit": char_credit,
         "elec_demand_lin": elec_demand_lin,
         "elec_supply_lin": elec_supply_lin,
         "tracked_items": tracked,
@@ -1620,6 +1681,7 @@ def _empty_solution(status: str, n_vars: int, n_constrs: int) -> Solution:
         objective=None,
         x_real={},
         x_pseudo={},
+        x_hand={},
         item={},
         duration={},
         drill_assign={},
@@ -1628,7 +1690,6 @@ def _empty_solution(status: str, n_vars: int, n_constrs: int) -> Solution:
         fuel_burn={},
         electric_demand={},
         electric_supply={},
-        character_credit={},
         n_vars=n_vars,
         n_constrs=n_constrs,
     )
@@ -1863,6 +1924,9 @@ def solve(
     x_pseudo_sol = {
         k: m.getVal(v) for k, v in handles["x_pseudo"].items() if m.getVal(v) > tol
     }
+    x_hand_sol = {
+        k: m.getVal(v) for k, v in handles["x_hand"].items() if m.getVal(v) > tol
+    }
     item_sol = {
         k: m.getVal(v) for k, v in handles["item"].items() if abs(m.getVal(v)) > tol
     }
@@ -1880,7 +1944,6 @@ def solve(
     fuel_burn_sol = {
         k: m.getVal(v) for k, v in handles["fuel_burn"].items() if m.getVal(v) > tol
     }
-    char_credit_sol = {k: m.getVal(v) for k, v in handles["char_credit"].items()}
 
     # Recompute per-step electric demand/supply post-solve from the
     # extracted x values (more portable than evaluating SCIP linear-expr
@@ -1889,8 +1952,7 @@ def solve(
     recipe_time = {r.name: r.time_seconds for r in model.recipes.values()}
     for p in pseudo_by_name.values():
         recipe_time[p.name] = p.time_seconds
-    # Energy units: MJ (matches the LP rescaling). char_credit_sol is
-    # also in MJ since the variables themselves are scaled.
+    # Energy units: MJ (matches the LP rescaling).
     elec_demand_sol: dict[int, float] = {i: 0.0 for i in range(len(inst.steps))}
     elec_supply_sol: dict[int, float] = {i: 0.0 for i in range(len(inst.steps))}
     for (r_name, b_name, i), val in x_real_sol.items():
@@ -1930,6 +1992,7 @@ def solve(
             objective=m.getObjVal(),
             x_real=x_real_sol,
             x_pseudo=x_pseudo_sol,
+            x_hand=x_hand_sol,
             item=item_sol,
             duration=duration_sol,
             drill_assign=drill_assign_sol,
@@ -1938,7 +2001,6 @@ def solve(
             fuel_burn=fuel_burn_sol,
             electric_demand=elec_demand_sol,
             electric_supply=elec_supply_sol,
-            character_credit=char_credit_sol,
             n_vars=n_vars,
             n_constrs=n_constrs,
             n_nodes=diag.get("n_nodes", 0) or 0,
@@ -2142,7 +2204,11 @@ def _per_step_records(
         )
         for chest in STORAGE_CHESTS:
             pt_walk_place[chest] = (chest_walk, chest_place)
-        for r_name in {k[0] for k in sol.x_real} | {k[0] for k in sol.x_pseudo}:
+        for r_name in (
+            {k[0] for k in sol.x_real}
+            | {k[0] for k in sol.x_pseudo}
+            | {k[0] for k in sol.x_hand}
+        ):
             wood_per_recipe[r_name] = _ingredient_amount(
                 r_name, "wood", model, pseudo_by_name
             )
@@ -2191,6 +2257,18 @@ def _per_step_records(
                     "recipe_sec_used": float(v * p.time_seconds),
                 }
             )
+        # Player hand-crafting (the fixed-count character facility).
+        for (r_name, ii), v in sol.x_hand.items():
+            if ii != i or v < tol:
+                continue
+            activity.append(
+                {
+                    "recipe": r_name,
+                    "building": "character",
+                    "cycles": float(v),
+                    "recipe_sec_used": float(v * recipe_time.get(r_name, 0.0)),
+                }
+            )
         activity.sort(key=lambda a: -a["cycles"])
 
         # --- fuel burn (non-boiler burners) ---
@@ -2213,14 +2291,11 @@ def _per_step_records(
         # in-game power UI also displays MW, so direct comparison.
         e_demand = float(sol.electric_demand.get(i, 0.0))
         e_supply = float(sol.electric_supply.get(i, 0.0))
-        e_credit = float(sol.character_credit.get(i, 0.0))
         energy = {
             "electric_demand_mj": e_demand,
             "electric_supply_mj": e_supply,
-            "character_credit_mj": e_credit,
             "electric_demand_mw": (e_demand / rate_d) if rate_d > 0 else None,
             "electric_supply_mw": (e_supply / rate_d) if rate_d > 0 else None,
-            "character_credit_mw": (e_credit / rate_d) if rate_d > 0 else None,
         }
 
         # --- player-time breakdown (seconds), mirroring the constraint ---
@@ -2251,6 +2326,9 @@ def _per_step_records(
             for (p_name, ii), v in sol.x_pseudo.items():
                 if ii == i and wood_per_recipe.get(p_name, 0.0) > 0:
                     wood_cutting += wood_per_recipe[p_name] * wood_to_time * v
+            for (r_name, ii), v in sol.x_hand.items():
+                if ii == i and wood_per_recipe.get(r_name, 0.0) > 0:
+                    wood_cutting += wood_per_recipe[r_name] * wood_to_time * v
             total_pt = movement + placement + wood_cutting
             player_time = {
                 "movement_s": movement,
@@ -2566,6 +2644,8 @@ def _print_solution(inst: L2Instance, sol: Solution, model: GameModel) -> None:
         by_step.setdefault(i, []).append((r, b, v))
     for (p, i), v in sol.x_pseudo.items():
         by_step.setdefault(i, []).append((p, "*pseudo", v))
+    for (r, i), v in sol.x_hand.items():
+        by_step.setdefault(i, []).append((r, "character", v))
     for i in sorted(by_step):
         if i < len(inst.steps):
             step_label = inst.steps[i].research_tech or "(FINAL)"
@@ -2589,12 +2669,11 @@ def _print_solution(inst: L2Instance, sol: Solution, model: GameModel) -> None:
                 print(f"     {v:12.4f} {fuel:18s} → {b}")
 
     print("\nPer-step energy balance (MJ):")
-    print(f"   {'step':>5} {'demand':>14} {'char_credit':>14} {'burn_supply':>14}")
+    print(f"   {'step':>5} {'demand':>14} {'burn_supply':>14}")
     for i in sorted(sol.duration):
         print(
             f"   {i:>5d} "
             f"{sol.electric_demand.get(i, 0.0):14.4f} "
-            f"{sol.character_credit.get(i, 0.0):14.4f} "
             f"{sol.electric_supply.get(i, 0.0):14.4f}"
         )
 

@@ -7,7 +7,7 @@
 #
 # Out of scope here (kept in code): game-physics facts (boiler/rocket constants),
 # the constraint formulation, and the SCIP random seed (a per-invocation flag).
-version: "1.0.0"
+version: "1.1.0"
 
 # Per-building deployment: the persistent infrastructure (placed alongside the
 # building, NOT consumed per cycle) and the total tile footprint of one deployed
@@ -58,12 +58,6 @@ caps:
   chest_inserter_per: 1.0     # +1 inserter infra per storage chest
   chest_tile_footprint: 1.0   # 1×1 chest selection box, for placement player-time
   max_area_fraction: 0.75     # max fraction of map area filled by buildings
-
-# The hand-crafting character stand-in, folded into effective initial items in
-# every mode (bypasses automation gating; energy-credited, not grid-powered).
-character:
-  building: assembling-machine-1
-  count: 2.0
 
 # Planning-mode end-of-step capacity weights + bootstrap seeding. The mode LOGIC
 # is in code; these are the tunable weights it interpolates with.
