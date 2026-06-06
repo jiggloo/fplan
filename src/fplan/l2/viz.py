@@ -310,7 +310,9 @@ def build_dataset(l2: dict, *, data_dir: Path | None = None) -> dict:
 
         # Hand-crafting breakdown: the recipes the character made this step
         # (the x_hand activity, `building: character`), alphabetical, with
-        # cycle counts. Powers the top-bar "Hand-crafting" panel.
+        # cycle counts. Powers the top-bar "Hand-crafting" panel. Counts that
+        # would render as "0.00" (< 0.005, the panel's 2-decimal precision) are
+        # dropped as dust rather than listed as zero.
         handcraft = sorted(
             (
                 {
@@ -319,6 +321,7 @@ def build_dataset(l2: dict, *, data_dir: Path | None = None) -> dict:
                 }
                 for a in (s.get("activity") or [])
                 if a.get("building") == "character"
+                and float(a.get("cycles") or 0.0) >= 0.005
             ),
             key=lambda h: h["recipe"] or "",
         )
