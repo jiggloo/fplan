@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import tempfile
 from dataclasses import dataclass
 
@@ -58,7 +59,12 @@ class Backend:
 
     @property
     def is_highs(self) -> bool:
-        return self.lp_solver is not None and "highs" in self.lp_solver.lower()
+        return _is_highs_name(self.lp_solver)
+
+
+def _is_highs_name(name: str | None) -> bool:
+    """Whether an LP-solver banner name denotes HiGHS (the only barrier backend)."""
+    return name is not None and "highs" in name.lower()
 
 
 def lp_algorithm_code(label: str) -> str:
@@ -90,11 +96,17 @@ def _scip_version_banner() -> str | None:
         return None
     try:
         with tempfile.TemporaryFile(mode="w+") as tf:
+            # Flush before/after the dup2 (as fplan.l2.search._redirect_fds does):
+            # C stdio is block-buffered to a regular file, so flushing keeps the
+            # banner from straddling the redirect and keeps fplan's own pending
+            # stdout from spilling into the temp file.
+            sys.stdout.flush()
             saved = os.dup(1)
             try:
                 os.dup2(tf.fileno(), 1)
                 model.printVersion()
             finally:
+                sys.stdout.flush()
                 os.dup2(saved, 1)
                 os.close(saved)
             tf.seek(0)
@@ -117,5 +129,5 @@ def detect_backend() -> Backend:
             lp_solver=None, lp_algorithm=DEFAULT_LP_ALGORITHM, available=False
         )
     name = match.group(1).strip()
-    algorithm = "barrier" if "highs" in name.lower() else "simplex"
+    algorithm = "barrier" if _is_highs_name(name) else "simplex"
     return Backend(lp_solver=name, lp_algorithm=algorithm, available=True)

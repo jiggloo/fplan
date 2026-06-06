@@ -101,9 +101,12 @@ paths it writes.
 `init` also records a **solver preference** under `solver.lp_algorithm`. SCIP
 links exactly one LP solver at build time, and `init` detects which one the
 active install provides: **HiGHS** offers a barrier (interior-point) method that
-handles the larger `rates solve` models better, so it's preferred when available;
-other solvers (e.g. SoPlex) provide simplex only. `rates solve` reads this
-preference; [`--lp-algorithm`](#rates-solve) overrides it. To switch backends,
+can run faster on the larger `rates solve` models — it sidesteps the simplex
+degeneracy that stalls the nonconvex root LP — so `init` prefers it when
+available (SCIP marks the HiGHS LP interface experimental; see
+[HiGHS + SCIP setup](#highs--scip-setup)). Other solvers (e.g. SoPlex) provide
+simplex only. `rates solve` reads this preference;
+[`--lp-algorithm`](#rates-solve) overrides it. To switch backends,
 install fplan into an environment whose SCIP provides the one you want and re-run
 `init`. If SCIP isn't importable, `init` records the safe simplex default. The
 prebuilt `pyscipopt` wheel ships SoPlex; getting the HiGHS barrier means building
@@ -708,8 +711,8 @@ Rendering a tech order (layers / DAG) is planned but not yet implemented —
 
 ### HiGHS + SCIP setup
 
-`rates solve` runs faster on the larger models when SCIP uses **HiGHS**'s barrier
-(interior-point) method (see [Configuration](#configuration)). The prebuilt
+`rates solve` can run faster on the larger models when SCIP uses **HiGHS**'s
+barrier (interior-point) method (see [Configuration](#configuration)). The prebuilt
 `pyscipopt` wheel links **SoPlex**, which has simplex only — so the HiGHS barrier
 requires building SCIP against HiGHS and `pyscipopt` against that SCIP. The chain
 is **HiGHS → SCIP (linked to HiGHS) → pyscipopt (linked to that SCIP)**, three

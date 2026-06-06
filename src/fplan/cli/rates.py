@@ -340,9 +340,11 @@ def solve(
         return
 
     config_ref = refs.file_ref(l2_config) if l2_config is not None else "default"
-    # LP method: an explicit --lp-algorithm wins; otherwise the config's detected
-    # preference; otherwise None (SCIP's own default). A broken config here is
-    # non-fatal — the solve proceeds on SCIP's default rather than aborting.
+    # LP method: an explicit --lp-algorithm wins; otherwise the config's recorded
+    # preference; otherwise None (SCIP's own default). The model load above already
+    # parsed and validated this config (a bad solver.lp_algorithm would have exited
+    # there), so this re-read normally succeeds; the guard is belt-and-suspenders
+    # for the off-nominal case, falling back to SCIP's default rather than aborting.
     config_lp = None
     try:
         config_lp = app_config.load_config(state.config_file).lp_algorithm

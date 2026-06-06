@@ -12,6 +12,7 @@ solver:
   # LP method for the SCIP solve (`rates solve`). `fplan init` auto-detects this
   # from the active SCIP's linked LP solver: HiGHS offers a barrier
   # (interior-point) method that handles larger models better; other solvers
-  # (e.g. SoPlex) provide simplex only. Omit the section to use SCIP's default;
-  # `--lp-algorithm` on `rates solve` overrides it.
+  # (e.g. SoPlex) provide simplex only. Omit the section entirely to leave SCIP's
+  # own LP default (fplan sets none); `--lp-algorithm` on `rates solve` overrides
+  # whatever is recorded here.
   lp_algorithm: barrier  # barrier | simplex
