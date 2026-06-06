@@ -17,6 +17,8 @@ are implemented.
   - [`rates`](#rates)
   - [`run`](#run)
   - [`tech-order`](#tech-order)
+- [Extras](#extras)
+  - [HiGHS + SCIP setup](#highs--scip-setup)
 
 ## Invoking the CLI
 
@@ -103,7 +105,9 @@ handles the larger `rates solve` models better, so it's preferred when available
 other solvers (e.g. SoPlex) provide simplex only. `rates solve` reads this
 preference; [`--lp-algorithm`](#rates-solve) overrides it. To switch backends,
 install fplan into an environment whose SCIP provides the one you want and re-run
-`init`. If SCIP isn't importable, `init` records the safe simplex default.
+`init`. If SCIP isn't importable, `init` records the safe simplex default. The
+prebuilt `pyscipopt` wheel ships SoPlex; getting the HiGHS barrier means building
+SCIP against HiGHS — see [HiGHS + SCIP setup](#highs--scip-setup).
 
 Add `--copy-examples` to also copy the bundled example **scenarios**,
 **tech-orders**, **maps**, and **run manifests** into the current directory:
@@ -699,3 +703,37 @@ or from `--scenario PATH`. Exit `0` if valid, `1` if invalid.
 
 Rendering a tech order (layers / DAG) is planned but not yet implemented —
 `fplan tech-order viz` currently exits with code `71`.
+
+## Extras
+
+### HiGHS + SCIP setup
+
+`rates solve` runs faster on the larger models when SCIP uses **HiGHS**'s barrier
+(interior-point) method (see [Configuration](#configuration)). The prebuilt
+`pyscipopt` wheel links **SoPlex**, which has simplex only — so the HiGHS barrier
+requires building SCIP against HiGHS and `pyscipopt` against that SCIP. The chain
+is **HiGHS → SCIP (linked to HiGHS) → pyscipopt (linked to that SCIP)**, three
+installs in order:
+
+1. **Install the HiGHS C++ library.** This is a separate project and the
+   prerequisite for everything below. Easiest is a package manager
+   (macOS: `brew install highs`); otherwise use a
+   [precompiled release](https://github.com/ERGO-Code/HiGHS/releases) or build
+   from source — see [Install HiGHS](https://ergo-code.github.io/HiGHS/stable/installation/).
+   Note: the PyPI `highspy` package is a Python *wrapper*, **not** this library,
+   and won't work as the SCIP backend.
+2. **Build SCIP with HiGHS as its LP solver.** SCIP picks its LP solver at
+   CMake-configure time: `cmake .. -DLPS=highs -DHIGHS_DIR=<highs-install>/lib/cmake/highs`,
+   then build and install. `HIGHS_DIR` must point at the *installed* HiGHS, not a
+   build directory. See [SCIP — building with CMake](https://www.scipopt.org/doc/html/md_INSTALL.php).
+   SCIP marks the HiGHS LP interface **experimental**, so treat it as such.
+3. **Build `pyscipopt` against that SCIP.** Point `SCIPOPTDIR` at the SCIP install
+   and force a source build so the SoPlex wheel isn't used:
+   `SCIPOPTDIR=<scip-install> pip install --no-binary pyscipopt pyscipopt`. The
+   SCIP must be CMake-built (not the legacy Makefile layout). See
+   [PySCIPOpt — building from source](https://pyscipopt.readthedocs.io/en/latest/build.html).
+
+Then `fplan init` (re-run it) detects the active backend and records
+`solver.lp_algorithm: barrier`; it prints `SCIP LP backend: HiGHS …` when the
+link worked. The steps are verified on macOS today; the authoritative docs above
+cover the per-OS specifics for Linux and Windows.
