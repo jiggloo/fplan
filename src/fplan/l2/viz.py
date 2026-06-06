@@ -272,10 +272,10 @@ def build_dataset(l2: dict, *, data_dir: Path | None = None) -> dict:
                 )
 
         # Power: synthetic item. Supply (production), demand (consumption).
+        # (character_credit was removed when the player became a power-free
+        # hand-craft facility; older YAMLs simply lack the key → 0.0.)
         e = s.get("energy", {}) or {}
-        supply = float(e.get("electric_supply_mw") or 0.0) + float(
-            e.get("character_credit_mw") or 0.0
-        )
+        supply = float(e.get("electric_supply_mw") or 0.0)
         demand = float(e.get("electric_demand_mw") or 0.0)
         rates[POWER_ITEM] = {
             "prod": supply,
@@ -308,6 +308,21 @@ def build_dataset(l2: dict, *, data_dir: Path | None = None) -> dict:
                 }
                 total_flow[name] += abs(float(secs))
 
+        # Hand-crafting breakdown: the recipes the character made this step
+        # (the x_hand activity, `building: character`), alphabetical, with
+        # cycle counts. Powers the top-bar "Hand-crafting" panel.
+        handcraft = sorted(
+            (
+                {
+                    "recipe": a.get("recipe"),
+                    "count": float(a.get("cycles") or 0.0),
+                }
+                for a in (s.get("activity") or [])
+                if a.get("building") == "character"
+            ),
+            key=lambda h: h["recipe"] or "",
+        )
+
         step_records.append(
             {
                 "i": i,
@@ -317,6 +332,7 @@ def build_dataset(l2: dict, *, data_dir: Path | None = None) -> dict:
                 "t1": end_t,
                 "rates": rates,
                 "prod_detail": dict(prod_detail),
+                "handcraft": handcraft,
             }
         )
 
@@ -429,6 +445,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #cell-popup table.cp-table td:first-child, #cell-popup table.cp-table th:first-child,
   #cell-popup table.cp-table td:nth-child(2), #cell-popup table.cp-table th:nth-child(2) { text-align: left; }
   #cell-popup tr.cp-total td { font-weight: 600; border-top: 1px solid #d1d5db; }
+  .hdr-btn { font-size: 11px; padding: 2px 9px; cursor: pointer; background: #374151; color: #e5e7eb; border: 1px solid #4b5563; border-radius: 4px; }
+  .hdr-btn:hover { background: #4b5563; color: #fff; }
+  .hdr-btn.active { background: #2563eb; border-color: #2563eb; color: #fff; }
+  #handcraft-panel { position: absolute; top: 38px; right: 10px; bottom: 10px; width: 300px; z-index: 30; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 6px 24px rgba(0,0,0,0.22); display: flex; flex-direction: column; overflow: hidden; }
+  #handcraft-panel .hp-head { display: flex; align-items: center; gap: 6px; padding: 6px 9px; background: #1f2937; color: #fff; font-weight: 600; font-size: 12px; flex: 0 0 auto; }
+  #handcraft-panel .hp-title { flex: 1; }
+  #handcraft-panel .hp-x { cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; color: #cbd5e1; }
+  #handcraft-panel .hp-x:hover { color: #fff; }
+  #handcraft-panel .hp-body { overflow-y: auto; padding: 4px 0; font-size: 11px; font-variant-numeric: tabular-nums; }
+  #handcraft-panel .hp-step { padding: 4px 9px 2px; font-weight: 600; color: #374151; background: #f3f4f6; border-top: 1px solid #e5e7eb; display: flex; gap: 6px; }
+  #handcraft-panel .hp-step .t { color: #6b7280; font-weight: 400; }
+  #handcraft-panel .hp-recipe { padding: 1px 9px 1px 18px; display: flex; justify-content: space-between; gap: 8px; }
+  #handcraft-panel .hp-recipe .n { color: #6b7280; }
+  #handcraft-panel .hp-none { padding: 1px 9px 1px 18px; color: #9ca3af; font-style: italic; }
 
   #legend { width: 240px; flex: 0 0 240px; border-left: 1px solid #e5e7eb; overflow-y: auto; padding: 6px 4px; }
   #legend .ctrl-row { padding: 4px 6px; display: flex; gap: 6px; font-size: 11px; }
@@ -461,6 +491,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <h1>__HEADING__</h1>
   <div class="meta">__META__</div>
   <div style="flex: 1"></div>
+  <button id="handcraft-btn" class="hdr-btn" title="Per-step hand-crafting (character)">Hand-crafting</button>
   <div class="meta" id="zoom-info"></div>
 </header>
 <div id="main">
@@ -488,6 +519,13 @@ __CHART_PANES__
 </div>
 <div id="tooltip"></div>
 <div id="cell-popup"></div>
+<div id="handcraft-panel" style="display:none">
+  <div class="hp-head">
+    <span class="hp-title">Hand-crafting by step (character)</span>
+    <span class="hp-x" id="handcraft-x" title="close">×</span>
+  </div>
+  <div class="hp-body" id="handcraft-body"></div>
+</div>
 <script>
 const DATA = __DATA_JSON__;
 // HTML-escape DATA-derived strings before any innerHTML interpolation. Item /
@@ -986,6 +1024,35 @@ function renderDetails() {
   t.appendChild(body);
 }
 
+// --- top-bar hand-crafting panel: nested step → recipe list ---
+function renderHandcraft() {
+  const body = document.getElementById("handcraft-body");
+  let html = "";
+  for (const step of DATA.steps) {
+    const hc = step.handcraft || [];
+    html += `<div class="hp-step"><span class="t">${fmtTime(step.t0)}</span>`
+      + `<span>${esc(step.label)}</span></div>`;
+    if (hc.length === 0) {
+      html += `<div class="hp-none">— none —</div>`;
+      continue;
+    }
+    for (const h of hc) {
+      html += `<div class="hp-recipe"><span>${esc(h.recipe)}</span>`
+        + `<span class="n">${fmt(h.count)}</span></div>`;
+    }
+  }
+  body.innerHTML = html;
+}
+
+function toggleHandcraft(force) {
+  const panel = document.getElementById("handcraft-panel");
+  const btn = document.getElementById("handcraft-btn");
+  const show = (force !== undefined) ? force : (panel.style.display === "none");
+  if (show) renderHandcraft();
+  panel.style.display = show ? "flex" : "none";
+  btn.classList.toggle("active", show);
+}
+
 // --- inline cell popup: production-facility breakdown for one item ---
 function closeCellPopup() {
   document.getElementById("cell-popup").style.display = "none";
@@ -1167,6 +1234,11 @@ window.addEventListener("DOMContentLoaded", () => {
     closeCellPopup();
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeCellPopup(); });
+
+  // Hand-crafting panel toggle (top bar).
+  document.getElementById("handcraft-btn").addEventListener("click", () => toggleHandcraft());
+  document.getElementById("handcraft-x").addEventListener("click", () => toggleHandcraft(false));
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") toggleHandcraft(false); });
 
   document.getElementById("legend-all").addEventListener("click", () => setAllVisibility(() => true));
   document.getElementById("legend-none").addEventListener("click", () => setAllVisibility(() => false));

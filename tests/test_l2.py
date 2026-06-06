@@ -36,7 +36,6 @@ def test_config_defaults_load() -> None:
     c = l2config.load_config()
     assert c.version == l2config.VERSION
     assert c.walking_speed_tps == 8.9 and c.burner_drill_cap == 50.0
-    assert c.character_building == "assembling-machine-1"
     assert "pistol" in c.pruned_items and "wood" in c.fuel_excluded
     assert c.deployment_for("pumpjack").tile_footprint == 20.0
     # Unregistered building → empty pattern (no spatial cap).
@@ -205,9 +204,12 @@ def test_build_instance_basic(model: GameModel, tmp_path: Path) -> None:
     l1 = _l1(tmp_path, [["automation"], ["steel-processing"]])
     s = _scenario(tmp_path, initial_state={"items": {"iron-plate": 10}})
     inst = instance.build_instance(s, l1, model)
-    # 2 tech steps + FINAL; character stand-in folded in; coal burn present.
+    # 2 tech steps + FINAL. The hand-crafting character is no longer folded
+    # into effective_initial_items as 2×AM1 — it's a fixed-count LP facility —
+    # so only the scenario's own inventory appears here.
     assert len(inst.steps) == 3
-    assert inst.effective_initial_items["assembling-machine-1"] >= 2.0
+    assert "assembling-machine-1" not in inst.effective_initial_items
+    assert inst.effective_initial_items["iron-plate"] == 10.0
     assert inst.cfg.version == l2config.VERSION
     assert "automation" in {st.research_tech for st in inst.steps}
     assert inst.all_items(model)  # non-empty
@@ -252,6 +254,10 @@ def test_build_instance_checkpoint_carves_step(
     s = scn.from_dict(
         {
             "name": "t",
+            # Seed an assembler so iron-gear-wheel has a real building to run in
+            # (the character is no longer folded in as a stand-in AM1, and the
+            # checkpoint carve keys off real recipe-building pairs).
+            "initial_state": {"items": {"assembling-machine-1": 1}},
             "checkpoints": [
                 {
                     "name": "cp",
@@ -269,6 +275,30 @@ def test_build_instance_checkpoint_carves_step(
     assert any("iron-gear-wheel" in st.forbidden_real_recipes for st in inst.steps)
     assert len(inst.checkpoints) == 1
     assert inst.checkpoints[0].items_floor["iron-gear-wheel"] == 3.0
+
+
+def test_build_lp_hand_craft_facility(model: GameModel, tmp_path: Path) -> None:
+    # Building the LP is hermetic (no slow optimize): assert the player
+    # hand-craft facility is wired up and the old char_credit machinery is gone.
+    from fplan.l2 import solve as l2_solve
+
+    s = _scenario(tmp_path, initial_state={"items": {"iron-plate": 10}})
+    inst = instance.build_instance(s, _l1(tmp_path, [["automation"]]), model)
+    m, handles = l2_solve.build_lp(inst, model)
+
+    # x_hand vars exist for crafting-category recipes, not for ones that need a
+    # built machine (smelting goes in a furnace, never hand-crafted).
+    hand_recipes = {r for (r, _i) in handles["x_hand"]}
+    assert "iron-gear-wheel" in hand_recipes  # crafting → hand-craftable
+    assert "iron-plate" not in hand_recipes  # smelting → needs a furnace
+
+    # The char_credit electric carve-out is gone (handle + constraints).
+    assert "char_credit" not in handles
+    cons_names = {c.name for c in m.getConss()}
+    assert not any("char_credit" in n for n in cons_names)
+
+    # A linear per-step hand-craft capacity constraint is emitted.
+    assert any(n.startswith("hand_cap_") for n in cons_names)
 
 
 def test_build_instance_checkpoint_dropped(model: GameModel, tmp_path: Path) -> None:

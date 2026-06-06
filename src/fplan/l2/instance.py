@@ -33,9 +33,9 @@ from fplan.l2.pseudo_recipes import (
 from fplan.model import Building, Facility, GameModel, Recipe, load_model
 
 # Planning-mode identifiers. The mode NAMES are structural; the per-mode
-# end-of-step capacity WEIGHTS and bootstrap SEEDING — along with the character
-# stand-in, the policy sets, the caps, and the player-physics constants that
-# used to live here — are now tunable values in the L2 config
+# end-of-step capacity WEIGHTS and bootstrap SEEDING — along with the policy
+# sets, the caps, and the player-physics constants that used to live here — are
+# now tunable values in the L2 config
 # (fplan.l2.config / resources/l2-defaults.yaml). See L2Instance.cfg,
 # L2Instance.capacity_end_weight(), and L2Instance.deployed_facility().
 MODE_LOWER_BOUND = "lower-bound"
@@ -56,9 +56,8 @@ class L2Step:
     research: PseudoRecipe | None  # None for FINAL or trigger-based
     # Buildings whose crafting recipe is unlocked by techs at start of
     # step, OR present in initial_state.items. Initial-state buildings
-    # bypass tech-gating — e.g., the 2 AM1s standing in for the
-    # hand-crafting character work from step 0 even before `automation`
-    # is researched.
+    # bypass tech-gating — e.g., a scenario that seeds an assembling-
+    # machine-1 can run it from step 0 even before `automation`.
     available_buildings_at_start: frozenset[str] = frozenset()
     # Real recipes forbidden from running in this step, even if their
     # tech and host building are available. Populated by `before_recipe`
@@ -142,10 +141,10 @@ class L2Instance:
     # as the same constraint shape as `final_floors` but at the
     # checkpoint's resolved boundary instead of the final boundary.
     checkpoints: tuple[ResolvedCheckpoint, ...]
-    # Effective t₀ item counts: scenario.initial.items + the character
-    # stand-in (`CHARACTER_BUILDING: CHARACTER_COUNT`, summed if the
-    # scenario also lists the same building). This is what the LP uses
-    # as initial conditions, not scenario.initial.items directly.
+    # Effective t₀ item counts: scenario.initial.items plus any
+    # mode-specific bootstrap seed. The hand-crafting character is NOT here —
+    # it's a fixed-count LP facility (see fplan.l2.solve). This is what the LP
+    # uses as initial conditions, not scenario.initial.items directly.
     effective_initial_items: dict[str, float]
     # Buildings that could ever exist under this scenario: present in
     # effective_initial_items OR producible by some recipe whose
@@ -211,7 +210,7 @@ class L2Instance:
     warnings: tuple[str, ...]
     # The resolved L2 tuning config (packaged defaults + any user override).
     # The solver reads its knobs from here; build_instance also uses it to
-    # resolve the character stand-in, mode seeding, caps, and policy sets.
+    # resolve mode seeding, caps, and policy sets.
     cfg: L2Config
 
     def capacity_end_weight(self, building_name: str = "") -> float:
@@ -288,10 +287,9 @@ def _compute_reachable_buildings(
 ) -> frozenset[str]:
     """Buildings whose crafting recipe is start-enabled OR unlocked by
     some tech in the scenario's full closure, plus anything already
-    in the effective initial items (which includes the character
-    stand-in). Buildings outside this set can never physically exist,
-    so (recipe, building) pairs involving them are pure variable-count
-    overhead.
+    in the effective initial items. Buildings outside this set can never
+    physically exist, so (recipe, building) pairs involving them are pure
+    variable-count overhead.
     """
     all_techs: set[str] = set(initial_techs)
     for L in l1_layers:
@@ -615,15 +613,12 @@ def build_instance(
 
     initial_techs = frozenset(scenario_obj.initial.techs_researched)
 
-    # Fold the hand-crafting character into the effective initial
-    # items. Adds to any user-supplied count (the user might also list
-    # AM1s for some other reason; we sum rather than overwrite).
+    # Effective initial items = the scenario's initial inventory. The
+    # hand-crafting character is no longer folded in here as 2×AM1 — it's a
+    # fixed-count LP facility (see PLAYER_CRAFT_SPEED in fplan.l2.solve).
     effective_initial_items: dict[str, float] = {
         n: float(c) for n, c in scenario_obj.initial.items
     }
-    effective_initial_items[cfg.character_building] = (
-        effective_initial_items.get(cfg.character_building, 0.0) + cfg.character_count
-    )
     # Mode-specific seeding. Lower-bound seeds "always needed"
     # infrastructure so strict timing has something to use in step 0.
     # Experimental + trapezoidal seed just the raw-extraction loophole
@@ -820,17 +815,12 @@ def _print_summary(inst: L2Instance, model: GameModel) -> None:
     print(f"Mode:          {inst.mode}")
     print("Initial items (effective; includes synthetic adjustments):")
     user_items = dict(s.initial.items)
-    char_b = inst.cfg.character_building
     for name, val in sorted(inst.effective_initial_items.items()):
         markers = []
-        if name == char_b and val > user_items.get(name, 0.0):
-            markers.append("*character")
         if (
             inst.mode == MODE_LOWER_BOUND
             and name in inst.cfg.lower_bound_seed
-            and val
-            > user_items.get(name, 0.0)
-            + (inst.cfg.character_count if name == char_b else 0.0)
+            and val > user_items.get(name, 0.0)
         ):
             markers.append("*lower-bound seed")
         marker = ("  " + " ".join(markers)) if markers else ""

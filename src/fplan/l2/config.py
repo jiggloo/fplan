@@ -2,8 +2,8 @@
 
 L2 carries a body of *tuning* values that aren't derivable from Factorio's
 prototype data: per-building deployment packings, player-physics constants,
-spatial caps, the character stand-in, planning-mode weights and bootstrap
-seeding, and the modeling-scope policy sets. They were module-level literals;
+spatial caps, planning-mode weights and bootstrap seeding, and the
+modeling-scope policy sets. They were module-level literals;
 this module externalizes them into a YAML config so a power user can tune them
 without editing code.
 
@@ -29,7 +29,7 @@ import yaml
 
 # Bump on any schema change (new key, renamed key, semantic change). A user
 # config declaring an older `version` loads but warns.
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 _DEFAULTS_RESOURCE = "l2-defaults.yaml"
 
@@ -59,9 +59,6 @@ class L2Config:
     chest_inserter_per: float
     chest_tile_footprint: float
     max_area_fraction: float
-    # Character stand-in.
-    character_building: str
-    character_count: float
     # Planning-mode end-of-step weights + bootstrap seeding.
     experimental_raw_weight: float
     experimental_default_weight: float
@@ -119,7 +116,6 @@ def _from_dict(d: dict) -> L2Config:
         }
         physics = d["physics"]
         caps = d["caps"]
-        character = d["character"]
         modes = d["modes"]
         policy = d["policy"]
         return L2Config(
@@ -135,8 +131,6 @@ def _from_dict(d: dict) -> L2Config:
             chest_inserter_per=float(caps["chest_inserter_per"]),
             chest_tile_footprint=float(caps["chest_tile_footprint"]),
             max_area_fraction=float(caps["max_area_fraction"]),
-            character_building=str(character["building"]),
-            character_count=float(character["count"]),
             experimental_raw_weight=float(modes["experimental_raw_weight"]),
             experimental_default_weight=float(modes["experimental_default_weight"]),
             trapezoidal_weight=float(modes["trapezoidal_weight"]),

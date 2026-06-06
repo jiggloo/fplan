@@ -160,7 +160,8 @@ The body of `rates.yaml` is one record per step. Each carries:
   ores and furnaces across products (a machine can't switch mid-run, so each
   gets a dedicated count).
 - **`energy` / `player_time`** — the step's electric demand vs. supply, and the
-  single character's walking/placing/tree-felling time.
+  single character's walking/placing/tree-felling time. (Hand-crafts are listed
+  in `activity` with `building: character`.)
 - **`capacity`** — per building, how much of its available machine-time the step
   used: `recipe_seconds_used` against `capacity_seconds`, their ratio as
   `utilization`, and a `saturated` flag when utilization is at the ceiling
@@ -174,8 +175,8 @@ The solve returns *one* good schedule, not *the* schedule. For a hard scenario
 like `default-victory` it stops at the time limit (`status: timelimit`) with a
 large gap, so the plan it returns is one feasible point among many — and it
 shifts when you change the seed, the mode, or any of the many config knobs the
-model exposes (capacity weighting, building caps, deployment, the character
-stand-in, and more). The solver's search is randomized across seeds, so `fplan
+model exposes (capacity weighting, building caps, deployment, and more). The
+solver's search is randomized across seeds, so `fplan
 rates solve` runs several and keeps the best; the `seed` field records which one
 produced a given plan.
 
@@ -254,7 +255,7 @@ and the handles you reference when you add a constraint
 | `drill_assign[ore, tier]` | ore, tier | Electric mining drills committed to that ore. |
 | `furnace_assign[out, tier]` | smelted item, tier | Steel furnaces committed to that product. |
 | `fuel_burn[fuel, b, step]` | fuel, burner, step | Units of `fuel` burned by burner building `b` in the step. |
-| `char_credit[step]` | step | Electric work the player character supplies that step. |
+| `x_hand[recipe, step]` | recipe, step | Player hand-crafts of a `crafting`-category recipe that step. The character is a fixed-count, power-free facility. |
 
 All are continuous and ≥ 0. Building counts additionally carry a map-derived
 upper bound the solver needs to stay tractable
@@ -292,10 +293,16 @@ run records about 4,400). What matters for reading and extending is the
 - **Space** — with a map loaded, drills, pumpjacks, offshore pumps, and total
   building footprint are capped by the map's tiles, oil spots, water perimeter,
   and area; wood draw is capped by its trees.
-- **Energy** — each step's electric demand must be met by character work plus
-  boiler burns, and each burner must be fed enough fuel to run its recipes.
+- **Energy** — each step's electric demand must be met by boiler burns, and each
+  burner must be fed enough fuel to run its recipes. (The player hand-craft
+  facility draws no grid power, so it never appears in the demand.)
+- **Player hand-crafting** — the character can hand-craft `crafting`-category
+  recipes up to a fixed crafting speed × the step's duration (a separate, linear
+  per-step capacity; it draws no power).
 - **Player-time** — one character acts serially, so the time to walk to and place
   the step's new buildings (and fell trees) must fit inside the step's duration.
+  Hand-crafting itself runs in the background, so it's not in this budget — but
+  felling the wood a hand-crafted item consumes still is.
 - **Storage** — fluids and banked solids are capped by the pipes, tanks, and
   chests built to hold them.
 
@@ -372,16 +379,13 @@ down.
     the steel furnace is split per output; stone furnaces stay pooled (and
     capped). Each extra smelting building would multiply the per-output bilinear
     terms.
-  - *The player is a fixed prop, not a facility.* The character is modeled as
-    2× assembling-machine-1 (the "stand-in"), not a real variable production
-    facility — a proper player-as-facility would add a whole new family of
-    bilinear terms.
   - *Modules aren't modeled.* Module and beacon *effects* are a TODO
     (productivity stays 1.0). The rocket phase fakes it: `default-victory`'s
     checkpoint forces the silo's beacons and modules to be *built* — paying their
     construction cost — without applying their speed/productivity effect. General
     module use is omitted entirely, because a moduled machine is effectively a new
-    production facility: the same bilinear blow-up as modeling player crafting.
+    *variable-count* production facility, which would add a whole family of
+    `count · duration` bilinear terms.
   - *Dead variables are pruned.* Unreachable choices (a fuel you can't make,
     terminal items nothing consumes) are dropped rather than left at zero — fewer
     variables and a narrower coefficient range.
@@ -596,9 +600,9 @@ Where each variable from [§4.2](#42-the-decision-variables) is created in
 | --- | --- | --- |
 | `item[n, tier]` | `decision variables` | `item_` |
 | `x_real` / `x_pseudo` | `decision variables` | `x_` |
+| `x_hand[recipe, step]` | `Player hand-crafting` | `hand_` |
 | `duration[step]` | `decision variables` | `duration_` |
 | `fuel_burn` | `fuel allocation …` | `burn_` |
-| `char_credit` | `fuel allocation …` | `char_credit_` |
 | `drill_assign` | `electric-mining-drill: per-ore …` | `drill_` |
 | `furnace_assign` | `steel-furnace: per-output …` | `furnace_` |
 
@@ -642,9 +646,11 @@ Factorio's mechanics, and the `name=` prefix to grep for it in `build_lp`:
   only down to one cycle's length; a launch needs a full 100-part rocket first.
 - **Single-machine craft** (`singlecraft_`) — Some singleton builds run as one
   indivisible cycle on one machine, not parallelized across fractional machines.
-  *In game:* the lone rocket-silo is assembled over one full craft — you can't
-  halve the time with "twice the machines." (Written as a *linear* constraint to dodge
-  a bilinear term — [§4.5](#45-solver-specific-choices-and-tractability-hacks-scip).)
+  The character is one candidate builder here (at `PLAYER_CRAFT_SPEED`), so the
+  LP picks the fastest available — hand vs. whichever assembler exists. *In game:*
+  the lone rocket-silo is assembled over one full craft — you can't halve the time
+  with "twice the machines." (Written as a *linear* constraint to dodge a bilinear
+  term — [§4.5](#45-solver-specific-choices-and-tractability-hacks-scip).)
 - **Transition caps** (`burner_cap_`, `stone_furnace_cap_`) — Caps on burner
   mining drills and stone furnaces that stand in for a mechanic L2 doesn't model:
   **hand-feeding**. Early on the player carries items from producer to consumer by
@@ -675,11 +681,19 @@ Factorio's mechanics, and the `name=` prefix to grep for it in `build_lp`:
   step's duration. *In game:* you can't place 200 machines instantly — the
   walking and placing time is real, and if it overflows the step, the step
   lengthens.
-- **Energy** (`fuel_energy_`, `electric_balance_`, `char_credit_*`) — Machines
-  need power: burners (stone/steel furnace, burner drill) eat chemical fuel, and
-  electric machines draw from generation (boilers + steam engines, plus the
-  character's small contribution). *In game:* 50 electric drills run only if
-  enough coal-fed boilers and steam engines cover their combined draw.
+- **Player hand-crafting** (`hand_cap_`) — The character hand-crafts
+  `crafting`-category recipes up to `PLAYER_CRAFT_SPEED · duration`; one
+  fixed-count actor, so this is linear (no `count · duration` term). It also
+  enters the `singlecraft_` constraint as a candidate builder. Hand-crafts draw
+  no power and run in the background (not in `player_time_`); only felling the
+  wood they consume is charged to player-time. *In game:* you can hand-build the
+  bootstrap (and the silo) yourself, in parallel with walking and placing.
+- **Energy** (`fuel_energy_`, `electric_balance_`) — Machines need power: burners
+  (stone/steel furnace, burner drill) eat chemical fuel, and electric machines
+  draw from generation (boilers + steam engines). The balance is simply
+  demand ≤ supply — the player hand-craft facility draws nothing. *In game:* 50
+  electric drills run only if enough coal-fed boilers and steam engines cover
+  their combined draw.
 
 ### 5.6 Assumptions a new constraint must respect
 
@@ -796,7 +810,7 @@ reliably supports.
 ## Pointers
 
 - **Pseudo-recipes** (research / launch / burn): `src/fplan/l2/pseudo_recipes.py`.
-- **Config knobs** (modes, deployment, caps, character): see
+- **Config knobs** (modes, deployment, caps): see
   [usage.md](usage.md) and `src/fplan/l2/config.py`.
 - **The post stage** (flattening, the L2→L3 hand-off): currently
   [L2 rate-flattening](L2-rate-flattening.md).
