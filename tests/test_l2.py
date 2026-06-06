@@ -262,7 +262,10 @@ def test_build_instance_checkpoint_carves_step(
         }
     )
     inst = instance.build_instance(s, _l1(tmp_path, [["automation"]]), model)
-    assert "carve/iron-gear-wheel" in [st.label for st in inst.steps]
+    # The carved step is the recipe's home AND the genuine last step (label=None
+    # → FINAL); the step before it carries the before_recipe/<r> boundary label.
+    assert "before_recipe/iron-gear-wheel" in [st.label for st in inst.steps]
+    assert inst.steps[-1].label is None  # the carved home shows as FINAL
     assert any("iron-gear-wheel" in st.forbidden_real_recipes for st in inst.steps)
     assert len(inst.checkpoints) == 1
     assert inst.checkpoints[0].items_floor["iron-gear-wheel"] == 3.0

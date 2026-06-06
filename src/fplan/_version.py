@@ -7,4 +7,4 @@ consumer (the installed distribution metadata, release tooling, docs) must
 derive from it.
 """
 
-__version__ = "0.0.17"
+__version__ = "0.0.18"
