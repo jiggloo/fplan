@@ -67,9 +67,10 @@ class L2Step:
     # carves out. Empty (default) means "no recipe-level restriction."
     forbidden_real_recipes: frozenset[str] = frozenset()
     # Human-readable label for the step. If None, the YAML emitter
-    # falls back to `research_tech or "FINAL"`. Carved steps from
-    # `before_recipe` checkpoints set this explicitly so they don't
-    # collide with FINAL in the viz / output.
+    # falls back to `research_tech or "FINAL"`. A `before_recipe`
+    # checkpoint sets the label on the step *preceding* the recipe's
+    # home (`before_recipe/<r>`); the recipe's home is the genuine last
+    # step and keeps label=None so it shows as FINAL.
     label: str | None = None
 
     def available_recipes(self, model: GameModel) -> list[Recipe]:
@@ -404,10 +405,16 @@ def _resolve_checkpoints(
                 available_buildings_at_start=old.available_buildings_at_start,
                 forbidden_real_recipes=old.forbidden_real_recipes | {recipe_name},
             )
-        # Append a new step at the end. Tech / building availability
-        # mirror the prior last step. The recipe is NOT in its
-        # forbidden set, so it gets a dedicated home here.
+        # The carved step is the recipe's dedicated home AND the genuine last
+        # step of the plan (rocket-part production + launch happen here), so it
+        # keeps the FINAL label (label=None → the emitter shows "FINAL"). The
+        # step immediately before it is the `before_recipe/<r>` boundary — the
+        # point at which the checkpoint's requirements (e.g. silo present) must
+        # hold, entering the recipe's step. (Previously the carved step was
+        # mislabeled `carve/<r>` and the predecessor kept "FINAL", which made the
+        # displayed FINAL not the actual last step.)
         prior_last = steps[-1]
+        steps[-1] = replace(prior_last, label=f"before_recipe/{recipe_name}")
         new_step = L2Step(
             index=len(steps),
             research_tech=None,
@@ -416,10 +423,10 @@ def _resolve_checkpoints(
             research=None,
             available_buildings_at_start=prior_last.available_buildings_at_start,
             forbidden_real_recipes=frozenset(),
-            label=f"carve/{recipe_name}",
+            label=None,
         )
         steps.append(new_step)
-        boundary = new_step.index  # start of the new step
+        boundary = new_step.index  # start of the new (FINAL) step
 
         items_floor: dict[str, float] = {}
         for name, count in cp.requires.items:
