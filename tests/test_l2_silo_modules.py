@@ -36,7 +36,7 @@ def model() -> GameModel:
     return load_model(raw=build_game_data(json.loads(MODEL_FIXTURE.read_text())))
 
 
-def _scenario(**items: int) -> scn.Scenario:
+def _scenario(**items: float) -> scn.Scenario:
     return scn.from_dict({"name": "t", "items_produced": items, "rocket_launches": 1})
 
 
