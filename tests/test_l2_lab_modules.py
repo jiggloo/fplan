@@ -258,6 +258,48 @@ def test_prod_pool_draws_science_per_cycle(model: GameModel, tmp_path: Path) -> 
     assert checked >= 1, "no science-pack flow balance referenced the research"
 
 
+def test_emission_reports_productive_lab_science_consumption(
+    model: GameModel, tmp_path: Path
+) -> None:
+    # The per-step output must report science consumed by research run on
+    # productive labs (res_prod) — otherwise the plan shows research happening
+    # with zero science draw (the symptom that surfaced the free-research bug).
+    inst = l2_instance.build_instance(
+        _scenario(), _l1(tmp_path, _POST_MODULE_LAYERS), model
+    )
+    step = next(st.index for st in inst.steps if st.research_tech == "automation-2")
+    n_steps = len(inst.steps)
+    # A solution that researches automation-2 entirely on productive labs.
+    sol = l2_solve.Solution(
+        status="optimal",
+        objective=1.0,
+        x_real={},
+        x_pseudo={},
+        x_hand={},
+        item={},
+        duration={i: 300.0 for i in range(n_steps)},
+        drill_assign={},
+        furnace_assign={},
+        excluded_consumed={},
+        fuel_burn={},
+        electric_demand={},
+        electric_supply={},
+        n_vars=0,
+        n_constrs=0,
+        res_prod={("research/automation-2", step): 100.0},
+    )
+    recs = l2_solve._per_step_records(inst, sol, model)
+    rec = next(r for r in recs if r["index"] == step)
+    consumed = {
+        it["name"]: it["consumed"]
+        for it in rec["items"]
+        if "science-pack" in it["name"]
+    }
+    # automation-2 consumes 1 of each pack per cycle → 100 cycles draw 100 each.
+    assert consumed.get("automation-science-pack") == pytest.approx(100.0)
+    assert consumed.get("logistic-science-pack") == pytest.approx(100.0)
+
+
 # --------------------------------------------------------------------------- #
 # CLI: the ⚙ lab-modules note is printed when the variant is configured
 # --------------------------------------------------------------------------- #

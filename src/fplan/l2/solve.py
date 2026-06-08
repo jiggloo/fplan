@@ -2434,6 +2434,23 @@ def _per_step_records(
                     "recipe_sec_used": float(v * p.time_seconds),
                 }
             )
+        # Productive-lab research (the lab prod-module variant): same recipe as the
+        # bare research row, run on module-filled labs. Emitted as its own row so
+        # the per-item flow accounting (grouped by recipe) counts its science draw
+        # — otherwise productive-lab research would report zero consumption.
+        for (p_name, ii), v in sol.res_prod.items():
+            if ii != i or v < tol:
+                continue
+            p = pseudo_by_name[p_name]
+            labs = "+".join(b for b, _ in p.capacity_per_building)
+            activity.append(
+                {
+                    "recipe": p_name,
+                    "building": f"{labs} (productive)",
+                    "cycles": float(v),
+                    "recipe_sec_used": float(v * p.time_seconds),
+                }
+            )
         # Player hand-crafting (the fixed-count character facility).
         for (r_name, ii), v in sol.x_hand.items():
             if ii != i or v < tol:
