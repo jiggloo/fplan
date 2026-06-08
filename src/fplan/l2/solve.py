@@ -685,6 +685,15 @@ def build_lp(
         for item_name, c in net_coefs.get(p_name, ()):
             if item_name in tracked:
                 flow_terms[(item_name, i)].append(c * var)
+    # Productive-lab research draws science packs at the SAME per-cycle rate as a
+    # bare cycle (prod modules add research output, not cheaper inputs). Without
+    # this term res_prod would deliver research while consuming nothing, letting
+    # the LP research for free — the science savings must come only from needing
+    # fewer real cycles (the delivery equality), never from un-drawn packs.
+    for (p_name, i), var in res_prod.items():
+        for item_name, c in net_coefs.get(p_name, ()):
+            if item_name in tracked:
+                flow_terms[(item_name, i)].append(c * var)
     for (r_name, i), var in x_hand.items():
         for item_name, c in net_coefs.get(r_name, ()):
             if item_name in tracked:

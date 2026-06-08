@@ -222,6 +222,42 @@ def test_build_lp_no_prod_pool_before_module_unlock(
     assert handles["res_prod"] == {}
 
 
+def test_prod_pool_draws_science_per_cycle(model: GameModel, tmp_path: Path) -> None:
+    # A productive-lab cycle must consume science packs at the SAME per-cycle rate
+    # as a bare cycle (prod modules add output, not cheaper inputs). If res_prod
+    # were omitted from the flow balance the LP could deliver research for free.
+    # Assert that in every science-pack flow balance at the step, the res_prod var
+    # carries the same coefficient as the bare research var (x_pseudo) — i.e. both
+    # draw the pack identically. (getValsLinear reports the normalized LHS
+    # coefficient, positive for a consumed item, so we compare, not sign-check.)
+    inst = l2_instance.build_instance(
+        _scenario(), _l1(tmp_path, _POST_MODULE_LAYERS), model
+    )
+    m, handles = l2_solve.build_lp(inst, model)
+    step = next(st.index for st in inst.steps if st.research_tech == "automation-2")
+    res_name = handles["res_prod"][("research/automation-2", step)].name
+    bare_name = handles["x_pseudo"][("research/automation-2", step)].name
+
+    checked = 0
+    for cons in m.getConss():
+        if cons.getConshdlrName() != "linear" or not cons.name.startswith("flow_"):
+            continue
+        if cons.name.rsplit("_", 1)[-1] != str(step):
+            continue
+        coefs = {
+            getattr(var, "name", str(var)): coef
+            for var, coef in m.getValsLinear(cons).items()
+        }
+        if bare_name not in coefs:  # not a pack this research consumes
+            continue
+        # Same nonzero draw as the bare cycle — never free.
+        assert coefs.get(res_name) == pytest.approx(coefs[bare_name])
+        assert coefs[bare_name] != 0.0
+        checked += 1
+    # automation-2 consumes 2 science packs → both balances checked.
+    assert checked >= 1, "no science-pack flow balance referenced the research"
+
+
 # --------------------------------------------------------------------------- #
 # CLI: the ⚙ lab-modules note is printed when the variant is configured
 # --------------------------------------------------------------------------- #
