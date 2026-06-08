@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections import defaultdict
 from html import escape
@@ -37,8 +38,25 @@ from pathlib import Path
 
 # Template placeholders, substituted in one non-rescanning pass (see render_html).
 _PLACEHOLDER_RE = re.compile(
-    r"__(?:HEADING|CHART_PANES|CHARTS_JSON|TITLE|META|DATA_JSON)__"
+    r"__(?:HEADING|CHART_PANES|CHARTS_JSON|TITLE|META|DATA_JSON|JS_HELPERS)__"
 )
+
+# JS helpers shared verbatim by every L2 view (timeline + supply curve), injected
+# via the __JS_HELPERS__ placeholder. Keeping them in one place means escaping
+# and axis-tick formatting stay identical across views — change here, both move.
+_JS_SHARED_HELPERS = r"""// HTML-escape DATA-derived strings before any innerHTML interpolation — names
+// come from the rates YAML / map artifact, untrusted in the DOM.
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]); }
+// Compact axis-tick label: drop the seconds on minute-aligned ticks ("2m" not
+// "2m0.0s") and the minutes below 1 min ("30s"), so whole-minute ticks don't
+// overlap. Shared so every time axis reads the same.
+function fmtAxisTime(t) {
+  const m = Math.floor(t / 60);
+  const s = Math.round((t - m * 60) * 10) / 10;
+  if (s === 0) return `${m}m`;
+  if (m === 0) return `${s}s`;
+  return `${m}m${s}s`;
+}"""
 
 # -- Item categorization -------------------------------------------------
 
@@ -531,10 +549,7 @@ __CHART_PANES__
 </div>
 <script>
 const DATA = __DATA_JSON__;
-// HTML-escape DATA-derived strings before any innerHTML interpolation. Item /
-// step / recipe / building names come from the rates YAML, which --from makes
-// externally supplied, so they are untrusted in the DOM.
-function esc(s) { return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]); }
+__JS_HELPERS__
 const MARGIN = { top: 6, right: 10, bottom: 22, left: 60 };
 
 // Per-chart spec: which value to plot, what label. Injected by render_html
@@ -587,17 +602,6 @@ function fmtTime(t) {
   const m = Math.floor(t / 60);
   const s = t - m * 60;
   return `${m}m${s.toFixed(1)}s`;
-}
-
-// Compact axis-tick label: drop the seconds part on minute-aligned ticks
-// ("2m" not "2m0.0s") and the minutes part below 1 min ("30s"), so
-// whole-minute increments don't overlap.
-function fmtAxisTime(t) {
-  const m = Math.floor(t / 60);
-  const s = Math.round((t - m * 60) * 10) / 10;
-  if (s === 0) return `${m}m`;
-  if (m === 0) return `${s}s`;
-  return `${m}m${s}s`;
 }
 
 // --- legend tree ---
@@ -1378,6 +1382,7 @@ def render_html(
         "__TITLE__": escape(title),
         "__META__": escape(meta),
         "__DATA_JSON__": _script_safe(data_json),
+        "__JS_HELPERS__": _JS_SHARED_HELPERS,
     }
     # Single non-rescanning pass: a replacement's output is never scanned for
     # another placeholder, so untrusted title/meta text can't reintroduce a
@@ -1694,3 +1699,670 @@ def build_heatmap_html(l2: dict) -> str:
         "sortSel.addEventListener('change',applySort);"
         "</script></body></html>"
     )
+
+
+# -- Ore-patch supply-curve view -----------------------------------------
+#
+# An interactive map of ore/oil patches (clickable to select which to commit
+# miners to) against the solve's per-resource miner demand over time. Closes
+# the patch-selection loop: choose patches by eye, "Export YAML", and feed that
+# back into the next `rates solve` (`rates add-selection` / --patch-selection).
+#
+# This view is a PURE consumer of the solve output + the bound map artifact —
+# NO game-model load. Patch capacity (tiles → drills) divides by the deployed
+# footprint the solve recorded in its `spatial:` block, and the utilized-drill
+# line reads `recipe_seconds_used / (base_speed · duration)` from the emitted
+# `capacity` rows (weight-correct under trapezoidal — it does NOT divide by
+# count_end). So the lines here match the caps the LP actually enforced, with
+# no recomputation and no drift.
+
+# Natural per-ore palette for the map (iron bluish, copper orange, coal dark …).
+# This is deliberately NOT the timeline's per-item `color_for_item` hash: a
+# geographic ore map reads far better with intuitive ore hues than with hashed
+# ones, and these are the shared palette any future L3 map-style view should
+# reuse for cross-view consistency.
+_SC_RESOURCE_COLORS = {
+    "iron-ore": "#b8d4e8",
+    "copper-ore": "#e89868",
+    "coal": "#555555",
+    "stone": "#c4b48c",
+    "uranium-ore": "#7fd874",
+    "crude-oil": "#2a2a2a",
+}
+_SC_DRILL = "electric-mining-drill"
+_SC_PLACEHOLDER_RE = re.compile(r"__(?:SC_(?:TITLE|VIEWBOX|DATA)|JS_HELPERS)__")
+
+
+def build_supply_curve_dataset(l2: dict, map_probe: dict) -> dict | None:
+    """Dataset for the ore-patch supply-curve view, or None if the map carries
+    no patches to select.
+
+    ``l2`` is a solved rates.yaml (demand + the ``spatial:`` block); ``map_probe``
+    is the bound map artifact (patch / oil / water geometry). No model load.
+    """
+    patches_in = map_probe.get("patches") or []
+    oil_clusters = map_probe.get("oil_clusters") or []
+    if not patches_in and not oil_clusters:
+        return None
+
+    spatial = l2.get("spatial") or {}
+    drill_info = (spatial.get("miners") or {}).get(_SC_DRILL) or {}
+    fp = float(drill_info.get("footprint") or 0.0)
+    drill_speed = float(drill_info.get("base_speed") or 0.0)
+
+    t0_off = float(l2.get("initial_time_s", 0.0) or 0.0)
+    steps = l2.get("steps") or []
+    bounds: list[tuple[float, float, float]] = []
+    t = t0_off
+    for s in steps:
+        dur = float(s.get("duration_s") or 0.0)
+        bounds.append((t, t + dur, dur))
+        t += dur
+
+    # Resources to list: those actually mined, plus every patch resource (so an
+    # unmined resource still shows its patches for selection).
+    ores: set[str] = set()
+    for s in steps:
+        for e in s.get("mining_assignment") or []:
+            if e.get("ore"):
+                ores.add(str(e["ore"]))
+    for p in patches_in:
+        if p.get("resource"):
+            ores.add(str(p["resource"]))
+
+    series: dict[str, dict] = {}
+    for ore in ores:
+        st: list[dict] = []
+        peak = 0.0
+        for k, s in enumerate(steps):
+            _t0, _t1, dur = bounds[k]
+            built = sum(
+                float(e.get("count_end") or 0.0)
+                for e in (s.get("mining_assignment") or [])
+                if e.get("ore") == ore
+            )
+            # Utilized drills (weight-correct): recipe-seconds / (speed·dur).
+            rsec = sum(
+                float(c.get("recipe_seconds_used") or 0.0)
+                for c in (s.get("capacity") or [])
+                if c.get("building") == f"{_SC_DRILL}@{ore}"
+            )
+            util = rsec / (drill_speed * dur) if drill_speed > 0 and dur > 0 else 0.0
+            # Burner drill-equivalents on this ore (bootstrap context series).
+            burner = sum(
+                float(b.get("drills_equiv") or 0.0)
+                for b in (s.get("burner_mining") or [])
+                if b.get("ore") == ore
+            )
+            st.append(
+                {
+                    "t0": round(_t0, 2),
+                    "t1": round(_t1, 2),
+                    "built": round(built, 2),
+                    "utilized": round(util, 2),
+                    "burner": round(burner, 2),
+                }
+            )
+            peak = max(peak, built)
+        series[ore] = {"peak_demand_drills": round(peak, 2), "steps": st}
+
+    # crude-oil is pumped: built = pumpjack count; capacity per cluster = spots.
+    oil_steps: list[dict] = []
+    oil_peak = 0.0
+    for k, s in enumerate(steps):
+        _t0, _t1, _dur = bounds[k]
+        built = next(
+            (
+                float(it.get("count_end") or 0.0)
+                for it in (s.get("items") or [])
+                if it.get("name") == "pumpjack"
+            ),
+            0.0,
+        )
+        util = next(
+            (
+                float(c.get("utilization") or 0.0)
+                for c in (s.get("capacity") or [])
+                if c.get("building") == "pumpjack"
+            ),
+            1.0,
+        )
+        oil_steps.append(
+            {
+                "t0": round(_t0, 2),
+                "t1": round(_t1, 2),
+                "built": round(built, 2),
+                "utilized": round(built * util, 2),
+                "burner": 0.0,
+            }
+        )
+        oil_peak = max(oil_peak, built)
+    series["crude-oil"] = {
+        "peak_demand_drills": round(oil_peak, 2),
+        "steps": oil_steps,
+        "unit": "pumpjacks",
+    }
+
+    # Patches (drilled ore) + oil clusters (pumped), with capacity in their unit.
+    patches: list[dict] = []
+    for i, p in enumerate(patches_in):
+        tc = float(p.get("tile_count") or 0.0)
+        bbox = max(
+            (float(p.get("max_x", 0)) - float(p.get("min_x", 0)))
+            * (float(p.get("max_y", 0)) - float(p.get("min_y", 0))),
+            1.0,
+        )
+        res = str(p.get("resource", "?"))
+        patches.append(
+            {
+                "id": i,
+                "resource": res,
+                "cx": float(p.get("centroid_x", 0)),
+                "cy": float(p.get("centroid_y", 0)),
+                "r": math.sqrt(tc / math.pi) if tc > 0 else 2.0,
+                "distance": round(float(p.get("distance", 0)), 1),
+                "tile_count": int(tc),
+                "density": round(tc / bbox, 3),
+                "capacity": round(tc / fp, 1) if fp > 0 else None,
+                "unit": "drills",
+                "is_oil": False,
+                "color": _SC_RESOURCE_COLORS.get(res, "#888"),
+            }
+        )
+    base = len(patches)
+    for j, o in enumerate(oil_clusters):
+        sc = int(o.get("spot_count", 0) or 0)
+        patches.append(
+            {
+                "id": base + j,
+                "resource": "crude-oil",
+                "cx": float(o.get("centroid_x", 0)),
+                "cy": float(o.get("centroid_y", 0)),
+                "r": 4.0 + 2.0 * math.sqrt(max(sc, 1)),
+                "distance": round(float(o.get("distance", 0)), 1),
+                "tile_count": sc,
+                "density": None,
+                "capacity": float(sc),
+                "unit": "pumpjacks",
+                "is_oil": True,
+                "spot_count": sc,
+                "color": _SC_RESOURCE_COLORS["crude-oil"],
+            }
+        )
+
+    # Resources ordered by peak demand (mined first), then name.
+    res_order = sorted(
+        {p["resource"] for p in patches},
+        key=lambda r: (-series.get(r, {}).get("peak_demand_drills", 0.0), r),
+    )
+
+    # Default selection: nearest-first greedy to cover each resource's demand.
+    # Only when patch capacities are known (fp > 0); without the spatial block
+    # every capacity is None, so a greedy fill can never reach `need` and would
+    # otherwise select *every* patch — leave the selection empty instead.
+    by_res: dict[str, list[dict]] = defaultdict(list)
+    for p in patches:
+        by_res[p["resource"]].append(p)
+    initial: list[int] = []
+    if fp > 0:
+        for r in res_order:
+            need = series.get(r, {}).get("peak_demand_drills", 0.0)
+            if need <= 0:
+                continue
+            cum = 0.0
+            for p in sorted(by_res[r], key=lambda x: x["distance"]):
+                if cum >= need:
+                    break
+                cum += p["capacity"] or 0.0
+                initial.append(p["id"])
+
+    oil_spots = [
+        {"x": float(o.get("x", 0)), "y": float(o.get("y", 0))}
+        for o in (map_probe.get("oil_spots") or [])
+    ]
+    water = [
+        {
+            "cx": float(w.get("centroid_x", 0)),
+            "cy": float(w.get("centroid_y", 0)),
+            "r": (
+                math.sqrt(float(w.get("tile_count", 0)) / math.pi)
+                if w.get("tile_count")
+                else 2.0
+            ),
+            "tile_count": int(w.get("tile_count", 0) or 0),
+            "distance": round(float(w.get("distance", 0)), 1),
+        }
+        for w in (map_probe.get("water_patches") or [])
+    ]
+
+    # Map rectangle = bbox of every drawn feature, padded.
+    xs: list[float] = []
+    ys: list[float] = []
+    for p in patches:
+        xs += [p["cx"] - p["r"], p["cx"] + p["r"]]
+        ys += [p["cy"] - p["r"], p["cy"] + p["r"]]
+    for w in water:
+        xs += [w["cx"] - w["r"], w["cx"] + w["r"]]
+        ys += [w["cy"] - w["r"], w["cy"] + w["r"]]
+    if not xs:
+        xs = ys = [-100.0, 100.0]
+    pad = 15.0
+    map_rect = {
+        "x": min(xs) - pad,
+        "y": min(ys) - pad,
+        "w": max(xs) - min(xs) + 2 * pad,
+        "h": max(ys) - min(ys) + 2 * pad,
+    }
+
+    return {
+        "scenario": l2.get("scenario", "?"),
+        "mode": l2.get("mode", "?"),
+        "footprint": round(fp, 3) if fp > 0 else None,
+        "has_footprint": fp > 0,
+        "t0_offset": round(t0_off, 2),
+        "resources": res_order,
+        "patches": patches,
+        "series": series,
+        "oil_spots": oil_spots,
+        "water": water,
+        "map_rect": map_rect,
+        "initial_selected": initial,
+        "seed": map_probe.get("seed"),
+    }
+
+
+_SUPPLY_CURVE_TEMPLATE = r"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>__SC_TITLE__</title>
+<style>
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size:12px; }
+  #app { display:flex; height:100vh; }
+  #left { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #right { width:330px; min-width:330px; border-left:1px solid #bbb; background:#f5f5f5;
+           display:flex; flex-direction:column; }
+  #toolbar { padding:6px 10px; border-bottom:1px solid #bbb; background:#ececec;
+             display:flex; gap:14px; align-items:center; }
+  #toolbar .meta { margin-left:auto; color:#555; font-size:11px; }
+  #map-wrap { flex:1.4; position:relative; min-height:0; overflow:hidden; }
+  #map { position:absolute; inset:0; width:100%; height:100%; background:#ffffff;
+         user-select:none; display:block; }
+  .map-bg { fill:#f4f1e8; }
+  #chart-wrap { flex:1; border-top:1px solid #bbb; display:flex; flex-direction:column; min-height:0; }
+  #chart-head { padding:5px 10px; background:#f0f0f0; display:flex; gap:12px; align-items:center; }
+  #chart-svg { flex:1; width:100%; min-height:0; display:block; background:#fff; }
+  .patch { cursor:pointer; stroke:#333; stroke-width:0.5; opacity:0.30; }
+  .patch.sel { opacity:0.85; stroke:#1a1a1a; stroke-width:2; }
+  .patch.oil { opacity:0.85; stroke:#88bb55; stroke-width:2; }
+  .patch.oil.sel { stroke:#1a1a1a; }
+  .patch-label { font-size:28px; fill:#ffffff; stroke:#000; stroke-width:2; paint-order:stroke fill;
+                 font-weight:bold; pointer-events:none; }
+  .origin-line { vector-effect:non-scaling-stroke; pointer-events:none; }
+  .oil-spot { fill:#1a1a1a; opacity:0.7; pointer-events:none; }
+  .water { fill:#1565c0; opacity:0.45; pointer-events:none; }
+  .oil-label { font-size:24px; fill:#cfe; stroke:#000; stroke-width:2; paint-order:stroke fill;
+               font-weight:bold; pointer-events:none; }
+  #right h2 { margin:8px 12px 4px; font-size:13px; }
+  #tbl-wrap { flex:1; overflow-y:auto; }
+  table.grp { border-collapse:collapse; width:100%; font-size:11px; }
+  table.grp th { background:#e3e3e3; padding:3px 6px; text-align:right; position:sticky; top:0; }
+  table.grp th.l { text-align:left; }
+  tr.group td { background:#dfe6ee; font-weight:bold; padding:4px 6px; cursor:pointer; border-top:1px solid #bbb; }
+  tr.group td.ok { color:#0a7d2c; }
+  tr.group td.short { color:#c0271a; }
+  tr.patch td { padding:2px 6px; text-align:right; border-bottom:1px solid #eee; }
+  tr.patch td.l { text-align:left; cursor:pointer; }
+  tr.patch.sel td { background:#dceeff; }
+  tr.patch:hover td { background:#eef4fb; }
+  .num { font-variant-numeric:tabular-nums; }
+  button { padding:3px 9px; font-size:11px; cursor:pointer; border:1px solid #999;
+           background:#fafafa; border-radius:3px; }
+  select { font-size:12px; padding:2px; }
+</style></head>
+<body>
+<div id="app">
+  <div id="left">
+    <div id="toolbar">
+      <strong>Ore supply curve</strong>
+      <button id="reset-view">Reset view</button>
+      <button id="export-yaml" title="Download the current selection as a patch-selection L2 input">Export YAML</button>
+      <label><input type="checkbox" id="show-labels" checked> Patch labels</label>
+      <label><input type="checkbox" id="show-origin" checked> Origin lines</label>
+      <span class="meta"><span id="zoom-pct">zoom 100%</span> &middot; <span id="meta-text"></span></span>
+    </div>
+    <div id="map-wrap"><svg id="map" viewBox="__SC_VIEWBOX__"></svg></div>
+    <div id="chart-wrap">
+      <div id="chart-head">
+        <span class="meta" id="chart-meta" style="color:#555;font-size:11px"></span>
+        <span style="color:#444">&mdash; <span style="border-bottom:2px solid #888">solid</span> built &middot;
+          <span style="border-bottom:2px dotted #888">faint</span> utilized &middot;
+          <span style="border-bottom:2px dashed #b5651d">burner</span> equiv &middot;
+          <span style="border-bottom:1px dashed #c0271a">&#9476;</span> cumulative patch capacity (by distance)</span>
+        <label style="margin-left:auto">Resource: <select id="res-select"></select></label>
+      </div>
+      <svg id="chart-svg"></svg>
+    </div>
+  </div>
+  <div id="right">
+    <h2>Patches &mdash; click map or rows to select</h2>
+    <div id="tbl-wrap"></div>
+  </div>
+</div>
+<script>const DATA = __SC_DATA__;</script>
+<script>
+const NS="http://www.w3.org/2000/svg";
+__JS_HELPERS__
+const svg=document.getElementById("map");
+const ivb=svg.viewBox.baseVal;
+const initVB={x:ivb.x,y:ivb.y,w:ivb.width,h:ivb.height};
+const patchById={}; for(const p of DATA.patches) patchById[p.id]=p;
+const selected=new Set(DATA.initial_selected);
+const collapsed=new Set();
+let activeRes = DATA.resources.find(r => (DATA.series[r]||{}).peak_demand_drills>0) || DATA.resources[0];
+const fpTxt = DATA.footprint==null ? "n/a (pre-spatial solve)" : (DATA.footprint+"t");
+
+document.getElementById("meta-text").textContent =
+  `${DATA.scenario} · ${DATA.mode} · seed ${DATA.seed} · drill fp ${fpTxt}`;
+
+// ---------- map: in-map background rect, water, oil, patches ----------
+const bg=document.createElementNS(NS,"g"); svg.appendChild(bg);
+{ const r=DATA.map_rect, rect=document.createElementNS(NS,"rect");
+  rect.setAttribute("x",r.x); rect.setAttribute("y",r.y);
+  rect.setAttribute("width",r.w); rect.setAttribute("height",r.h);
+  rect.classList.add("map-bg"); bg.appendChild(rect); }
+for(const w of DATA.water){
+  const c=document.createElementNS(NS,"circle");
+  c.setAttribute("cx",w.cx); c.setAttribute("cy",w.cy); c.setAttribute("r",Math.max(w.r,2));
+  c.classList.add("water");
+  const ti=document.createElementNS(NS,"title"); ti.textContent=`water · ${w.tile_count}t · d=${w.distance}`;
+  c.appendChild(ti); bg.appendChild(c);
+}
+for(const p of DATA.patches){
+  const c=document.createElementNS(NS,"circle");
+  c.setAttribute("cx",p.cx); c.setAttribute("cy",p.cy); c.setAttribute("r",Math.max(p.r,2));
+  c.setAttribute("fill",p.color); c.classList.add("patch");
+  if(p.is_oil) c.classList.add("oil");
+  c.classList.toggle("sel",selected.has(p.id));
+  c.dataset.pid=p.id;
+  const cap=p.capacity==null?"?":p.capacity;
+  const ti=document.createElementNS(NS,"title");
+  ti.textContent = p.is_oil
+    ? `#${p.id} crude-oil · ${p.spot_count} spots · cap ${cap} pumpjacks · d=${p.distance}`
+    : `#${p.id} ${p.resource} · ${p.tile_count}t · cap ${cap} drills · d=${p.distance}`;
+  c.appendChild(ti);
+  c.addEventListener("click",e=>{e.stopPropagation(); toggle(p.id);});
+  bg.appendChild(c);
+  const l=document.createElementNS(NS,"text");
+  l.setAttribute("text-anchor","middle");
+  if(p.is_oil){
+    l.setAttribute("x",p.cx); l.setAttribute("y",p.cy-p.r-3);
+    l.classList.add("oil-label"); l.textContent=`oil#${p.id}`;
+  } else {
+    l.setAttribute("x",p.cx); l.setAttribute("y",p.cy); l.setAttribute("dy","0.3em");
+    l.classList.add("patch-label"); l.textContent=`#${p.id}`;
+  }
+  bg.appendChild(l);
+}
+for(const o of DATA.oil_spots){
+  const c=document.createElementNS(NS,"circle");
+  c.setAttribute("cx",o.x); c.setAttribute("cy",o.y); c.setAttribute("r",3);
+  c.classList.add("oil-spot"); bg.appendChild(c);
+}
+
+// ---------- origin (start position) orientation lines ----------
+const originLayer=document.createElementNS(NS,"g"); svg.appendChild(originLayer);
+function drawOriginLines(){
+  while(originLayer.firstChild) originLayer.removeChild(originLayer.firstChild);
+  if(!document.getElementById("show-origin").checked) return;
+  for(const pid of selected){
+    const p=patchById[pid]; if(!p) continue;
+    const l=document.createElementNS(NS,"line");
+    l.setAttribute("x1",p.cx); l.setAttribute("y1",p.cy);
+    l.setAttribute("x2",0); l.setAttribute("y2",0);
+    l.setAttribute("stroke",p.color); l.setAttribute("stroke-width",1.5);
+    l.setAttribute("stroke-dasharray","4,4"); l.setAttribute("opacity",0.75);
+    l.classList.add("origin-line");
+    originLayer.appendChild(l);
+  }
+  const dot=document.createElementNS(NS,"circle");
+  dot.setAttribute("cx",0); dot.setAttribute("cy",0); dot.setAttribute("r",4);
+  dot.setAttribute("fill","#d11"); dot.setAttribute("stroke","#fff");
+  dot.setAttribute("stroke-width",1.5); dot.classList.add("origin-line");
+  originLayer.appendChild(dot);
+}
+
+// ---------- right pane: grouped table ----------
+const tbl=document.getElementById("tbl-wrap");
+function buildTable(){
+  let h=`<table class="grp"><thead><tr>
+    <th class="l">patch</th><th>dist</th><th>cap</th><th>dense</th></tr></thead><tbody>`;
+  const byRes={};
+  for(const p of DATA.patches){(byRes[p.resource]=byRes[p.resource]||[]).push(p);}
+  for(const r of DATA.resources){
+    const ps=(byRes[r]||[]).slice().sort((a,b)=>a.distance-b.distance);
+    const req=(DATA.series[r]||{}).peak_demand_drills||0;
+    const selCap=ps.filter(p=>selected.has(p.id)).reduce((s,p)=>s+(p.capacity||0),0);
+    const nsel=ps.filter(p=>selected.has(p.id)).length;
+    const unit=(DATA.series[r]||{}).unit||"drills";
+    const cls = req<=0 ? "" : (selCap>=req ? "ok" : "short");
+    const suff = req<=0 ? "(unmined)" : `${nsel} sel · ${selCap.toFixed(0)} / ${req.toFixed(0)} ${esc(unit)}`;
+    const isC=collapsed.has(r);
+    h+=`<tr class="group" data-res="${esc(r)}"><td colspan="4" class="${cls}">
+        ${isC?"▸":"▾"} ${esc(r)} — ${suff}</td></tr>`;
+    if(isC) continue;
+    for(const p of ps){
+      const sc=selected.has(p.id)?"sel":"";
+      const capTxt=p.capacity==null?"—":p.capacity.toFixed(0);
+      const denTxt=p.density==null?"—":(p.density*100).toFixed(0)+"%";
+      h+=`<tr class="patch ${sc}" data-pid="${p.id}">
+        <td class="l"><input type="checkbox" data-pid="${p.id}" ${selected.has(p.id)?"checked":""}>
+          #${p.id}</td>
+        <td class="num">${p.distance.toFixed(0)}</td>
+        <td class="num">${capTxt}</td>
+        <td class="num">${denTxt}</td></tr>`;
+    }
+  }
+  h+=`</tbody></table>`;
+  tbl.innerHTML=h;
+  tbl.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+    cb.addEventListener("change",e=>{e.stopPropagation(); toggle(Number(cb.dataset.pid));});
+  });
+  tbl.querySelectorAll('tr.patch td.l').forEach(td=>{
+    td.addEventListener("click",e=>{ if(e.target.tagName!=="INPUT") centerOn(Number(td.parentNode.dataset.pid)); });
+  });
+  tbl.querySelectorAll('tr.group').forEach(tr=>{
+    tr.addEventListener("click",()=>{
+      const r=tr.dataset.res;
+      if(collapsed.has(r)) collapsed.delete(r); else collapsed.add(r);
+      buildTable();
+    });
+  });
+}
+
+// ---------- selection ----------
+function toggle(pid){
+  if(selected.has(pid)) selected.delete(pid); else selected.add(pid);
+  document.querySelector(`.patch[data-pid="${pid}"]`)?.classList.toggle("sel",selected.has(pid));
+  buildTable(); drawChart(); drawOriginLines();
+}
+function centerOn(pid){
+  const p=patchById[pid]; if(!p) return;
+  const vb=svg.viewBox.baseVal;
+  setVB(p.cx-vb.width/2, p.cy-vb.height/2, vb.width, vb.height);
+}
+
+// ---------- dropdown ----------
+const sel=document.getElementById("res-select");
+for(const r of DATA.resources){
+  const o=document.createElement("option"); o.value=r;
+  const req=(DATA.series[r]||{}).peak_demand_drills||0;
+  o.textContent=req>0?`${r} (req ${req.toFixed(0)})`:`${r} (unmined)`;
+  sel.appendChild(o);
+}
+function syncDropdown(){ sel.value=activeRes; }
+sel.addEventListener("change",()=>{ activeRes=sel.value; drawChart(); });
+
+// ---------- chart ----------
+const csvg=document.getElementById("chart-svg");
+function drawChart(){
+  while(csvg.firstChild) csvg.removeChild(csvg.firstChild);
+  const ser=DATA.series[activeRes]; if(!ser) return;
+  const st=ser.steps;
+  const W=csvg.clientWidth||800, H=csvg.clientHeight||240;
+  const m={l:48,r:120,t:12,b:28};
+  const x0=DATA.t0_offset, x1=st.length?st[st.length-1].t1:x0+1;
+  const selP=DATA.patches.filter(p=>p.resource===activeRes&&selected.has(p.id)&&p.capacity!=null)
+                         .sort((a,b)=>a.distance-b.distance);
+  let cum=0; const thresholds=[];
+  for(const p of selP){ cum+=p.capacity; thresholds.push({y:cum,p}); }
+  const unit=ser.unit||"drills";
+  const maxBuilt=Math.max(0,...st.map(s=>Math.max(s.built,s.burner||0)));
+  const yMax=Math.max(maxBuilt, cum, ser.peak_demand_drills, 1)*1.1;
+  const sx=v=>m.l+(v-x0)/(x1-x0||1)*(W-m.l-m.r);
+  const sy=v=>H-m.b-(v/yMax)*(H-m.t-m.b);
+
+  const ax=document.createElementNS(NS,"g");
+  for(let i=0;i<=4;i++){
+    const yv=yMax*i/4, y=sy(yv);
+    ax.appendChild(line(m.l,y,W-m.r,y,"#eee",1));
+    ax.appendChild(txt(m.l-6,y+3,yv.toFixed(0),"end","#666",10));
+  }
+  const xr=x1-x0, tickStep = xr>600?120:xr>120?60:xr>30?10:5;
+  for(let xv=Math.ceil(x0/tickStep)*tickStep; xv<=x1; xv+=tickStep){
+    const x=sx(xv);
+    ax.appendChild(line(x,m.t,x,H-m.b,"#f3f3f3",1));
+    ax.appendChild(txt(x,H-m.b+14,fmtAxisTime(xv),"middle","#666",10));
+  }
+  ax.appendChild(txt(2,m.t-2,unit,"start","#444",10));
+  csvg.appendChild(ax);
+
+  const anyBurner=st.some(s=>(s.burner||0)>1e-6);
+  if(anyBurner) csvg.appendChild(stepPath(st,"burner",sx,sy,"#b5651d",1.6,0.9,"4,3"));
+  csvg.appendChild(stepPath(st,"utilized",sx,sy,patchColor(activeRes),1.3,0.35,null));
+  csvg.appendChild(stepPath(st,"built",sx,sy,patchColor(activeRes),2.2,1.0,null));
+
+  for(let i=0;i<thresholds.length;i++){
+    const th=thresholds[i], y=sy(th.y);
+    const ln=line(m.l,y,W-m.r,y,"#c0271a",1.2); ln.setAttribute("stroke-dasharray","5,4");
+    csvg.appendChild(ln);
+    csvg.appendChild(txt(W-m.r+4,y+3,`#${th.p.id}: ${th.y.toFixed(0)}`,"start","#c0271a",9));
+  }
+  const req=ser.peak_demand_drills;
+  document.getElementById("chart-meta").textContent =
+    `${activeRes}: peak ${req.toFixed(0)} ${unit} · selected cap ${cum.toFixed(0)} `
+    + (cum>=req?"✓ covers":"✗ short")+` · ${selP.length} patch(es)`;
+}
+function patchColor(r){ return (DATA.patches.find(p=>p.resource===r)||{}).color||"#1f77b4"; }
+function stepPath(st,key,sx,sy,color,w,op,dash){
+  let d="",started=false;
+  for(const s of st){ const v=s[key]||0;
+    d+=(started?"L":"M")+sx(s.t0).toFixed(1)+","+sy(v).toFixed(1)+" ";
+    d+="L"+sx(s.t1).toFixed(1)+","+sy(v).toFixed(1)+" "; started=true; }
+  const p=document.createElementNS(NS,"path"); p.setAttribute("d",d);
+  p.setAttribute("fill","none"); p.setAttribute("stroke",color);
+  p.setAttribute("stroke-width",w); p.setAttribute("opacity",op);
+  if(dash) p.setAttribute("stroke-dasharray",dash);
+  return p;
+}
+function line(x1,y1,x2,y2,c,w){const l=document.createElementNS(NS,"line");
+  l.setAttribute("x1",x1);l.setAttribute("y1",y1);l.setAttribute("x2",x2);l.setAttribute("y2",y2);
+  l.setAttribute("stroke",c);l.setAttribute("stroke-width",w);return l;}
+function txt(x,y,s,anc,c,fs){const t=document.createElementNS(NS,"text");
+  t.setAttribute("x",x);t.setAttribute("y",y);t.setAttribute("text-anchor",anc);
+  t.setAttribute("fill",c);t.setAttribute("font-size",fs);t.textContent=s;return t;}
+
+// ---------- pan / zoom ----------
+function setVB(x,y,w,h){
+  if(w>initVB.w+1e-6 || h>initVB.h+1e-6){ x=initVB.x; y=initVB.y; w=initVB.w; h=initVB.h; }
+  svg.setAttribute("viewBox",`${x} ${y} ${w} ${h}`); updateZoom();
+}
+function updateZoom(){
+  const vb=svg.viewBox.baseVal, z=initVB.w/vb.width;
+  document.getElementById("zoom-pct").textContent=`zoom ${(z*100).toFixed(0)}%`;
+  document.querySelectorAll(".patch-label").forEach(el=>{el.style.fontSize=(28/z)+"px";el.style.strokeWidth=(2/z);});
+  document.querySelectorAll(".oil-label").forEach(el=>{el.style.fontSize=(24/z)+"px";el.style.strokeWidth=(2/z);});
+}
+function clientToUser(cx,cy){
+  const ctm=svg.getScreenCTM(); if(!ctm) return {x:0,y:0};
+  const pt=svg.createSVGPoint(); pt.x=cx; pt.y=cy; return pt.matrixTransform(ctm.inverse());
+}
+document.getElementById("reset-view").addEventListener("click",()=>setVB(initVB.x,initVB.y,initVB.w,initVB.h));
+document.getElementById("show-labels").addEventListener("change",e=>{
+  document.querySelectorAll(".patch-label").forEach(el=>el.style.display=e.target.checked?"":"none");});
+document.getElementById("show-origin").addEventListener("change",drawOriginLines);
+svg.addEventListener("wheel",e=>{e.preventDefault();
+  const f=e.deltaY>0?1.2:1/1.2, vb=svg.viewBox.baseVal, u=clientToUser(e.clientX,e.clientY);
+  setVB(u.x-(u.x-vb.x)*f, u.y-(u.y-vb.y)*f, vb.width*f, vb.height*f);},{passive:false});
+let drag=null;
+svg.addEventListener("mousedown",e=>{const vb=svg.viewBox.baseVal, rect=svg.getBoundingClientRect();
+  const upp=Math.max(vb.width/rect.width, vb.height/rect.height);
+  drag={x:e.clientX,y:e.clientY,vx:vb.x,vy:vb.y,upp};});
+svg.addEventListener("mousemove",e=>{ if(!drag)return; const vb=svg.viewBox.baseVal;
+  setVB(drag.vx-(e.clientX-drag.x)*drag.upp, drag.vy-(e.clientY-drag.y)*drag.upp, vb.width, vb.height);});
+svg.addEventListener("mouseup",()=>drag=null); svg.addEventListener("mouseleave",()=>drag=null);
+
+// ---------- YAML export (patch-selection L2 input) ----------
+function buildYAML(){
+  const L=[];
+  L.push("# Patch selection — OPTIONAL L2 input (fplan rates add-selection / --patch-selection).");
+  L.push("# Generated by the supply-curve viz. Per resource: which patches to commit miners");
+  L.push("# to, and the derived cap. L2 overrides that resource's tile pool (drills) /");
+  L.push("# oil-spot count (pumpjacks) with these; resources omitted keep full map availability.");
+  L.push(`seed: ${DATA.seed}`);
+  L.push(`scenario: ${DATA.scenario}`);
+  if(DATA.footprint!=null) L.push(`drill_footprint: ${DATA.footprint}`);
+  L.push("resources:");
+  const byRes={};
+  for(const p of DATA.patches){(byRes[p.resource]=byRes[p.resource]||[]).push(p);}
+  let any=false;
+  for(const r of DATA.resources){
+    const ps=(byRes[r]||[]).filter(p=>selected.has(p.id)).sort((a,b)=>a.distance-b.distance);
+    if(!ps.length) continue;
+    any=true;
+    const unit=(DATA.series[r]||{}).unit||"drills";
+    const cap=ps.reduce((s,p)=>s+(p.capacity||0),0);
+    const peak=(DATA.series[r]||{}).peak_demand_drills||0;
+    L.push(`  ${r}:`);
+    L.push(`    unit: ${unit}`);
+    L.push(`    patches: [${ps.map(p=>p.id).join(", ")}]`);
+    if(unit==="pumpjacks"){
+      L.push(`    spots: ${ps.reduce((s,p)=>s+(p.spot_count||0),0)}`);
+    } else {
+      L.push(`    total_tiles: ${ps.reduce((s,p)=>s+(p.tile_count||0),0)}`);
+    }
+    L.push(`    capacity: ${cap.toFixed(1)}`);
+    L.push(`    peak_demand: ${peak.toFixed(1)}`);
+  }
+  if(!any) L.push("  {}  # nothing selected");
+  return L.join("\n")+"\n";
+}
+document.getElementById("export-yaml").addEventListener("click",()=>{
+  const blob=new Blob([buildYAML()],{type:"text/yaml"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download=`${DATA.scenario}_patch-selection.yaml`;
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+});
+
+// ---------- boot ----------
+buildTable(); syncDropdown(); updateZoom(); drawOriginLines();
+window.addEventListener("resize",drawChart);
+requestAnimationFrame(drawChart);
+</script></body></html>
+"""
+
+
+def render_supply_curve_html(ds: dict) -> str:
+    """Render the supply-curve dataset to self-contained interactive HTML.
+
+    Untrusted map/solve text reaches two sinks: the embedded JSON (neutralized
+    with ``_script_safe``) and ``innerHTML`` interpolations in the JS, which use
+    an ``esc()`` helper. The title is HTML-escaped; the viewBox is numeric.
+    """
+    r = ds["map_rect"]
+    viewbox = f"{r['x']:.1f} {r['y']:.1f} {r['w']:.1f} {r['h']:.1f}"
+    repl = {
+        "__SC_TITLE__": escape(f"supply-curve {ds['scenario']}"),
+        "__SC_VIEWBOX__": viewbox,
+        "__SC_DATA__": _script_safe(json.dumps(ds, separators=(",", ":"))),
+        "__JS_HELPERS__": _JS_SHARED_HELPERS,
+    }
+    return _SC_PLACEHOLDER_RE.sub(lambda m: repl[m.group(0)], _SUPPLY_CURVE_TEMPLATE)

@@ -1598,6 +1598,11 @@ CHEST_SCALE = 100.0
 # Electric mining drills can't switch what ore they mine (placed on a patch),
 # so their capacity is split per-ore (see the per-ore assignment block).
 ELECTRIC_MINING_DRILL = "electric-mining-drill"
+# Burner mining drills are a pooled, hard-capped bootstrap (NOT ore-split and
+# NOT tile-pool-capped). We can't report a per-ore burner *count*, but we can
+# report per-ore utilized drill-equivalents from their ore-seconds (see the
+# `burner_mining` output field) so mixed-facility ore extraction is visible.
+BURNER_MINING_DRILL = "burner-mining-drill"
 
 # Steel furnaces can't switch what they smelt either (a furnace fed iron-ore
 # can't become a copper smelter mid-run), so they get the same per-output
@@ -2425,6 +2430,32 @@ def _per_step_records(
                 }
             )
 
+        # Per-ore burner-mining-drill extraction (mixed-facility ore output).
+        # Burner drills are a pooled bootstrap (not ore-split, not
+        # tile-pool-capped), so there's no per-ore *count* to report — but the
+        # ore-seconds they mine ARE attributable via x_real, and dividing by
+        # base_speed·duration gives utilized drill-EQUIVALENTS per ore. This is
+        # production-consistent (tied to actual ore output by the LP) and lets
+        # the supply-curve viz show the early-game burner contribution without
+        # conflating it with the tile-pool-capped electric demand.
+        burner = model.buildings.get(BURNER_MINING_DRILL)
+        burner_mining: list[dict] = []
+        if burner is not None and burner.base_speed and rate_d > 0:
+            b_secs: dict[str, float] = {}
+            for (r_name, b_name, ii), v in sol.x_real.items():
+                if ii != i or b_name != BURNER_MINING_DRILL or v < tol:
+                    continue
+                r = model.recipes.get(r_name)
+                if r is None or r.kind != "mining" or not r.outputs:
+                    continue
+                ore = r.outputs[0].name
+                b_secs[ore] = b_secs.get(ore, 0.0) + recipe_time.get(r_name, 0.0) * v
+            for ore in sorted(b_secs):
+                equiv = b_secs[ore] / (burner.base_speed * rate_d)
+                if equiv < tol:
+                    continue
+                burner_mining.append({"ore": ore, "drills_equiv": float(equiv)})
+
         # Per-output steel-furnace assignment: which furnaces smelt which
         # product (a furnace can't switch product mid-run). Same first-class
         # treatment as the drill split, emitted as `steel-furnace@<output>`.
@@ -2480,6 +2511,8 @@ def _per_step_records(
             record["items"] = items_record
         if mining_assignment:
             record["mining_assignment"] = mining_assignment
+        if burner_mining:
+            record["burner_mining"] = burner_mining
         if smelting_assignment:
             record["smelting_assignment"] = smelting_assignment
         if player_time is not None:
@@ -2491,6 +2524,55 @@ def _per_step_records(
         records.append(record)
 
     return records
+
+
+def _spatial_dict(inst: L2Instance, model: GameModel) -> dict | None:
+    """The spatial inputs the solve actually consumed, persisted so downstream
+    views read the *same* caps the LP enforced — no model reload, no recomputed
+    footprint, no drift.
+
+    Single-sourced from the `L2Instance` and the deployed-facility footprints:
+    the per-resource `drill_cap` here is exactly `tile_pool / footprint`, the
+    upper bound build_lp puts on `electric-mining-drill@<ore>` (see the per-ore
+    drill block), and `oil_spot_count` is the pumpjack cap. The ore-patch
+    supply-curve viz keys off this instead of re-deriving footprints from the
+    game model. Returns None when the run carried no map probe (nothing
+    spatial to record)."""
+    if not inst.tile_pool and inst.map_area <= 0 and inst.oil_spot_count <= 0:
+        return None
+    drill = model.buildings.get(ELECTRIC_MINING_DRILL)
+    drill_fp = (
+        inst.deployed_facility(model, drill).tile_footprint
+        if drill is not None
+        else 0.0
+    )
+
+    spatial: dict = {
+        "map_area": float(inst.map_area),
+        "max_area_fraction": float(inst.max_area_fraction),
+        "oil_spot_count": int(inst.oil_spot_count),
+    }
+    # The footprint and base_speed the per-resource caps / utilization used, so a
+    # consumer recovers patch capacity (tiles / footprint) and the *utilized*
+    # drill count (recipe_seconds / (base_speed · duration)) without reloading
+    # the game model. Electric drills are the only ore-split, tile-pool-capped
+    # miner today; pumpjacks are spot-capped, not footprint-capped.
+    if drill is not None and drill_fp > 0:
+        spatial["miners"] = {
+            ELECTRIC_MINING_DRILL: {
+                "footprint": float(drill_fp),
+                "base_speed": float(drill.base_speed),
+            }
+        }
+    resources: dict = {}
+    for res, pool in sorted(inst.tile_pool.items()):
+        entry: dict = {"tile_pool": float(pool)}
+        if drill_fp > 0:
+            entry["drill_cap"] = float(pool) / drill_fp
+        resources[res] = entry
+    if resources:
+        spatial["resources"] = resources
+    return spatial
 
 
 def _solution_dict(
@@ -2514,7 +2596,7 @@ def _solution_dict(
 
     from fplan.l2 import pseudo_recipes as _pr
 
-    return {
+    out: dict = {
         "scenario": inst.scenario.name,
         "source": inst.scenario.source,
         "l1_method": inst.l1_method,
@@ -2545,6 +2627,10 @@ def _solution_dict(
             n: float(v) for n, v in sorted(sol.excluded_consumed.items())
         },
     }
+    spatial = _spatial_dict(inst, model)
+    if spatial is not None:
+        out["spatial"] = spatial
+    return out
 
 
 def write_solution(

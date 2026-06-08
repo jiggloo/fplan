@@ -156,6 +156,71 @@ def test_solve_l2_config_missing(tmp_path, monkeypatch, use_fixture_model) -> No
     assert r.exit_code == 1 and "L2 config not found" in (r.stdout + (r.stderr or ""))
 
 
+def _sel_file(tmp_path: Path, name: str = "sel.yaml") -> Path:
+    p = tmp_path / name
+    p.write_text("resources:\n  iron-ore: {unit: drills, total_tiles: 100}\n")
+    return p
+
+
+def _capture_patch_selection(captured: dict):
+    """Fake build_instance that records the patch_selection_path it was given and
+    returns a minimal instance (only `.warnings` is read by the CLI before solve)."""
+
+    def _bi(*a, **k):
+        captured["patch_selection_path"] = k.get("patch_selection_path")
+        return types.SimpleNamespace(warnings=[])
+
+    return _bi
+
+
+def test_solve_uses_bound_patch_selection(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    runner.invoke(app, ["rates", "add-selection", "r", str(_sel_file(tmp_path))])
+    captured: dict = {}
+    monkeypatch.setattr(
+        "fplan.l2.instance.build_instance", _capture_patch_selection(captured)
+    )
+    _patch_solve(monkeypatch, _fake_solve())
+    r = runner.invoke(app, ["rates", "solve", "r"])
+    assert r.exit_code == 0, r.output
+    # the run's bound patch-selection is resolved and passed into build_instance
+    assert captured["patch_selection_path"] is not None
+    assert Path(captured["patch_selection_path"]).name == "sel.yaml"
+
+
+def test_solve_flag_overrides_bound_patch_selection(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    runner.invoke(app, ["rates", "add-selection", "r", str(_sel_file(tmp_path))])
+    other = _sel_file(tmp_path, "other.yaml")
+    captured: dict = {}
+    monkeypatch.setattr(
+        "fplan.l2.instance.build_instance", _capture_patch_selection(captured)
+    )
+    _patch_solve(monkeypatch, _fake_solve())
+    r = runner.invoke(app, ["rates", "solve", "r", "--patch-selection", str(other)])
+    assert r.exit_code == 0, r.output
+    # an explicit --patch-selection wins over the bound one
+    assert Path(captured["patch_selection_path"]).name == "other.yaml"
+
+
+def test_solve_patch_selection_missing_file_errors(
+    tmp_path, monkeypatch, use_fixture_model
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _make_run(tmp_path)
+    # A named-but-missing patch-selection is a clean exit 1 (invariant #1), before
+    # any model load — so no solve mock is needed.
+    r = runner.invoke(app, ["rates", "solve", "r", "--patch-selection", "nope.yaml"])
+    assert r.exit_code == 1
+    assert "patch-selection not found" in (r.stdout + (r.stderr or ""))
+
+
 def test_solve_dry_run(tmp_path, monkeypatch, use_fixture_model) -> None:
     monkeypatch.chdir(tmp_path)
     _make_run(tmp_path)
