@@ -160,6 +160,18 @@ def test_silo_modules_non_finite_count_is_clean(model: GameModel, bad: float) ->
     assert any("non-finite" in w for w in warns)
 
 
+def test_silo_modules_huge_count_overflow_is_clean(model: GameModel) -> None:
+    # A huge-but-finite beacon count (1e308) passes the finite check but
+    # overflows power_w to inf when multiplied; the final finiteness guard
+    # returns identity-with-warning rather than feeding the LP a non-finite
+    # coefficient.
+    s = _scenario(beacon=1e308, **{"speed-module": 40, "productivity-module-3": 4})
+    warns: list[str] = []
+    r = l2_instance.compute_silo_modules(s, model, enabled=True, warnings=warns)
+    assert r.power_w is None and r.note is None and r.speed_mult == 1.0
+    assert any("non-finite factors" in w for w in warns)
+
+
 def test_silo_modules_mixed_tier_prefers_strongest(model: GameModel) -> None:
     # 4 prod-1 + 4 prod-3 declared, only 4 silo slots → the stronger prod-3 fills
     # them (productivity 1.40, not the prod-1 1.16).
