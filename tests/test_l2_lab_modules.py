@@ -104,13 +104,23 @@ def test_lab_modules_unknown_module_is_skipped(model: GameModel) -> None:
     assert any("not a productivity module" in w for w in warns)
 
 
-def test_lab_modules_non_finite_effect_is_clean(model: GameModel) -> None:
-    # A degenerate module effect (inf productivity) must skip-with-warning, never
-    # feed the LP a non-finite coefficient (invariant #1).
+@pytest.mark.parametrize(
+    "eff",
+    [
+        ModuleEffect(speed=-0.05, productivity=float("inf"), consumption=0.4),
+        # NaN speed: max(0.2, nan) == 0.2 would silently mask it past the finite
+        # guard, so the raw effects must be checked before the clamp.
+        ModuleEffect(speed=float("nan"), productivity=0.04, consumption=0.4),
+        ModuleEffect(speed=-0.05, productivity=0.04, consumption=float("nan")),
+    ],
+)
+def test_lab_modules_non_finite_effect_is_clean(
+    model: GameModel, eff: ModuleEffect
+) -> None:
+    # A degenerate module effect (inf/NaN) must skip-with-warning, never feed the
+    # LP a non-finite (or silently-wrong) coefficient.
     effects = dict(model.module_effects)
-    effects["productivity-module"] = ModuleEffect(
-        speed=-0.05, productivity=float("inf"), consumption=0.4
-    )
+    effects["productivity-module"] = eff
     bad_model = replace(model, module_effects=effects)
     warns: list[str] = []
     r = l2_instance.compute_lab_modules(bad_model, True, "productivity-module", warns)
@@ -220,6 +230,23 @@ def test_build_lp_no_prod_pool_before_module_unlock(
     )
     _m, handles = l2_solve.build_lp(inst, model)
     assert handles["res_prod"] == {}
+
+
+def test_build_lp_no_prod_pool_when_deployment_disabled(
+    model: GameModel, tmp_path: Path
+) -> None:
+    # The productive labs' only cost is the module reservation, which is part of
+    # the infra-flow coupling deployment_enabled toggles. With deployment off the
+    # variant must NOT be offered — else the +productivity bonus would be free
+    # (the same free-lunch class as the science-flow term). Bare labs only.
+    inst = l2_instance.build_instance(
+        _scenario(), _l1(tmp_path, _POST_MODULE_LAYERS), model
+    )
+    inst = replace(inst, deployment_enabled=False)
+    m, handles = l2_solve.build_lp(inst, model)
+    assert handles["res_prod"] == {} and handles["lab_prod"] == {}
+    names = {c.name for c in m.getConss()}
+    assert not any("cap_lab_prod" in n or "lab_module_infra" in n for n in names)
 
 
 def test_prod_pool_draws_science_per_cycle(model: GameModel, tmp_path: Path) -> None:

@@ -536,8 +536,8 @@ module tier:
 ```yaml
 # my-tuning.yaml — passed with: rates solve <run> --l2-config my-tuning.yaml
 lab_modules:
-  enabled: true
-  module: productivity-module   # any productivity module in the game data
+  enabled: false                  # run all research on bare labs
+  # module: productivity-module-3   # or keep it enabled and pick a higher tier
 ```
 
 #### `rates viz`

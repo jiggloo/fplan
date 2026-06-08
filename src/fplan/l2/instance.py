@@ -875,6 +875,19 @@ def compute_lab_modules(
         return off
 
     slots = lab.module_slots
+    # Check the raw effects for finiteness BEFORE the max() clamps below: a NaN
+    # would otherwise be silently swallowed (max(0.2, nan) == 0.2), emitting a
+    # variant with wrong factors instead of skipping. Effects come from game data,
+    # not untrusted input — this is defense-in-depth, not a threat-model path.
+    if not all(
+        math.isfinite(x) for x in (eff.speed, eff.productivity, eff.consumption)
+    ):
+        if warnings is not None:
+            warnings.append(
+                "lab modules: non-finite module effects in the data; "
+                "running all research on bare labs"
+            )
+        return off
     prod_bonus = slots * eff.productivity
     # Factorio clamps a machine's speed multiplier to ≥20% and its draw to ≥20%
     # of base; with prod modules the consumption bonus is positive so the power

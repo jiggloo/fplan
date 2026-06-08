@@ -593,9 +593,19 @@ def build_lp(
     # step's lab pool with the bare labs (x_pseudo) and reserves lab_modules_per
     # modules each. Bounded like building counts so the new lab_prod[i]×duration[i]
     # bilinear term has a finite McCormick envelope.
+    # Gated on deployment_enabled: the productive labs' only cost is the module
+    # reservation below, which is itself part of the infra-flow coupling that
+    # deployment_enabled toggles. Without it the +productivity bonus would be
+    # free and the LP would max productive labs out — the same free-lunch class as
+    # the science-flow term above — so when infra reservation is off the variant
+    # is simply not offered (bare labs only), not offered-but-uncharged.
     res_prod: dict[tuple[str, int], object] = {}
     lab_prod: dict[int, object] = {}
-    lab_mod_active = inst.lab_module_item is not None and inst.lab_modules_per > 0
+    lab_mod_active = (
+        inst.lab_module_item is not None
+        and inst.lab_modules_per > 0
+        and inst.deployment_enabled
+    )
     if lab_mod_active and inst.lab_module_item in tracked:
         lab_ub = _building_count_ub("lab")
         for i, step in enumerate(inst.steps):
@@ -867,10 +877,11 @@ def build_lp(
 
     # Lab productive-module infrastructure reservation: each productive lab
     # holds lab_modules_per modules, reserved from item flow like belts/poles
-    # (durable, non-consuming) at the step's start boundary. Gated with the rest
-    # of the infra-flow coupling by deployment_enabled; without it the prod labs
-    # would be module-free and the LP would always max them out.
-    if lab_mod_active and inst.deployment_enabled and inst.lab_module_item in tracked:
+    # (durable, non-consuming) at the step's start boundary. lab_mod_active already
+    # implies deployment_enabled (the variant isn't offered without it), so this is
+    # the cost that makes the +productivity bonus non-free; lab_prod is empty
+    # otherwise and the loop is a no-op.
+    if lab_mod_active and inst.lab_module_item in tracked:
         for i, lp in lab_prod.items():
             if (inst.lab_module_item, i) in item_vars:
                 m.addCons(
