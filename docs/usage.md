@@ -485,6 +485,33 @@ Game-physics facts (boiler/rocket constants), the constraint formulation itself,
 and the SCIP random seed are not in the config — the first two stay authoritative
 in code, the seed is a per-solve flag recorded in the manifest.
 
+#### Rocket-silo modules
+
+The rocket-silo crafts rocket-parts much faster with modules and a beacon ring,
+and that speedup is **scenario-driven**: the modules and beacons a scenario lists
+in `items_produced` are applied to the silo's rocket-part crafting. Productivity
+modules fill the silo's slots (raising rocket-part output per craft); speed
+modules go in the beacons ringing it (raising crafting speed), transmitted at the
+beacon's `distribution_effectivity`. Productivity modules in beacons are
+disallowed (the game forbids them), and the effect magnitudes come from the game
+data — so naming `productivity-module-3` vs `productivity-module` just works.
+
+The bundled `default-victory` declares the WR-TAS loadout — 4× `productivity-module-3`
+in the silo and 40× `speed-module` across 20 beacons (→ ×4.40 speed, ×1.40
+rocket-part output, 13.15 MW). When the hack fires, `rates solve` prints a
+`⚙ rocket-silo modules: …` line so the effect is visible. A scenario that
+declares no silo modules runs the silo at base speed.
+
+Disable the behavior with a `silo_modules` block in the same
+[L2 tuning config](#l2-tuning-config) you pass via `--l2-config` (e.g. to
+compare against an un-moduled silo):
+
+```yaml
+# my-tuning.yaml — passed with: rates solve <run> --l2-config my-tuning.yaml
+silo_modules:
+  enabled: false
+```
+
 #### `rates viz`
 
 Render a solved run's `rates.yaml` as **self-contained interactive HTML** —

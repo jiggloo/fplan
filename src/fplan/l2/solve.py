@@ -253,6 +253,21 @@ def _scale_oil_yield(
         ]
 
 
+def _scale_silo_productivity(
+    net_coefs: dict[str, list[tuple[str, float]]], factor: float
+) -> None:
+    """Scale rocket-part output by the silo's productivity factor (bonus output
+    per craft from the silo's productivity modules — see
+    instance.compute_silo_modules). rocket-part is only crafted in the silo, so
+    scaling its positive output globally is safe. Mutates net_coefs."""
+    if factor == 1.0:
+        return
+    rp = net_coefs.get("rocket-part")
+    if not rp:
+        return
+    net_coefs["rocket-part"] = [(item, c * factor if c > 0 else c) for item, c in rp]
+
+
 def _safe(name: str) -> str:
     """SCIP var/constraint name sanitizer."""
     return name.replace("/", "_").replace("|", "_")
@@ -371,6 +386,7 @@ def build_lp(
     for p in pseudo_by_name.values():
         net_coefs[p.name] = _pseudo_net_coefs(p)
     _scale_oil_yield(net_coefs, model, inst.oil_yield_multiplier)
+    _scale_silo_productivity(net_coefs, inst.silo_productivity)
     _scale_item_units(net_coefs, "storage-tank", STORAGE_TANK_SCALE)
     for _chest in STORAGE_CHESTS:
         _scale_item_units(net_coefs, _chest, CHEST_SCALE)
@@ -768,6 +784,8 @@ def build_lp(
         speed = building.base_speed
         if b_name == "lab":
             speed = speed * lab_speed_mult[i]  # research-speed bonus
+        elif b_name == "rocket-silo":
+            speed = speed * inst.silo_speed_mult  # scenario-declared modules
         rhs = effective_count * speed * duration_vars[i]
         m.addCons(lhs <= rhs, name=_safe(f"cap_{b_name}_{i}"))
 
@@ -1472,7 +1490,13 @@ def build_lp(
             if t == 0:
                 continue
             b_power_mw = b.base_power_w / _J_PER_MJ
-            term = t * b_power_mw / b.base_speed * var
+            speed = b.base_speed
+            if b_name == "rocket-silo":
+                # Scenario-declared modules: faster crafts + beacon/module power.
+                speed = speed * inst.silo_speed_mult
+                if inst.silo_power_w is not None:
+                    b_power_mw = inst.silo_power_w / _J_PER_MJ
+            term = t * b_power_mw / speed * var
             demand_terms.append(term)
         # Pseudo-recipe electric demand (lab is electric).
         for (p_name, i2), var in x_pseudo.items():
@@ -1965,7 +1989,13 @@ def solve(
         if b is None or b.energy_source_type != "electric" or b.base_power_w <= 0:
             continue
         t = recipe_time.get(r_name, 0.0)
-        elec_demand_sol[i] += val * t * (b.base_power_w / _J_PER_MJ) / b.base_speed
+        power_w = b.base_power_w
+        speed = b.base_speed
+        if b_name == "rocket-silo":  # scenario-declared modules (match build_lp)
+            speed = speed * inst.silo_speed_mult
+            if inst.silo_power_w is not None:
+                power_w = inst.silo_power_w
+        elec_demand_sol[i] += val * t * (power_w / _J_PER_MJ) / speed
     for (p_name, i), val in x_pseudo_sol.items():
         p = pseudo_by_name[p_name]
         t = recipe_time.get(p_name, 0.0)
@@ -2088,6 +2118,8 @@ def _capacity_utilization(
         )
         lhs = sum(recipe_time.get(r, 0.0) * w * v for r, v, w in entries)
         speed = building.base_speed * (lab_mult[i] if b_name == "lab" else 1.0)
+        if b_name == "rocket-silo":  # scenario-declared modules (match build_lp)
+            speed = speed * inst.silo_speed_mult
         cap = eff * speed * float(sol.duration.get(i, 0.0))
         _emit(i, b_name, lhs, cap)
 
@@ -2178,6 +2210,7 @@ def _per_step_records(
     for p in pseudo_by_name.values():
         net_coefs[p.name] = _pseudo_net_coefs(p)
     _scale_oil_yield(net_coefs, model, inst.oil_yield_multiplier)
+    _scale_silo_productivity(net_coefs, inst.silo_productivity)
     _scale_item_units(net_coefs, "storage-tank", STORAGE_TANK_SCALE)
     for _chest in STORAGE_CHESTS:
         _scale_item_units(net_coefs, _chest, CHEST_SCALE)

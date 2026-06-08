@@ -15,9 +15,10 @@ Design principles:
   which Buildings can run them (via `category` matching). Steady-state
   LP downstream doesn't care which kind it is.
 - **Buildings are the catalog of physical production sources.** Each has
-  primitives (speed, power, category compatibility). For now, modules
-  and beacons are NOT modeled — `Facility` exists as a wrapper so the
-  module-aware code can slot in later without disturbing the LP layer.
+  primitives (speed, power, category compatibility). Module + beacon
+  *effects* are parsed (`module_effects`, `beacon`) and consumed by the
+  scenario-driven rocket-silo hack in `fplan.l2.instance`; a general
+  per-`Facility` module system isn't wired into the LP yet.
 - **All numeric values are floats** (no integer scaling). Probabilistic
   outputs collapse to their expected fractional values.
 - **Items are thin metadata.** Cross-references (which recipes produce
@@ -33,8 +34,9 @@ Energy convention:
 - Heat capacity is in J / fluid-unit / degree-C.
 
 OUT OF SCOPE (deliberate gaps to be added later):
-- Modules and beacons (Facility infrastructure is in place; the
-  apply_modules math is a TODO).
+- A general per-Facility module system (apply_modules math). Module/beacon
+  effects ARE parsed and used by the L2 rocket-silo hack, but arbitrary
+  buildings don't yet take a module loadout in the LP.
 - Deployment overhead on a Facility (belts/poles/footprint share). The
   `Facility` fields exist; the L2 migration reintroduces the per-building
   deployment overlay in `make_facility` (see the note there).
@@ -53,7 +55,7 @@ OUT OF SCOPE (deliberate gaps to be added later):
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from fplan.model.data import GameData, Technology, load
@@ -154,6 +156,30 @@ class Building:
     # area constraint for every building, even ones without a custom
     # deployment pattern. 0.0 if the prototype lacked both boxes.
     base_tile_footprint: float = 0.0
+
+
+@dataclass(frozen=True)
+class ModuleEffect:
+    """A module item's effect bonuses (fractional), parsed from the prototype's
+    `effect` field. Missing sub-effects default to 0.0. Signs are the game's —
+    e.g. productivity-module-3 → speed −0.15, productivity +0.10, consumption
+    +0.80. Used by the L2 rocket-silo module hack (see fplan.l2.instance)."""
+
+    speed: float = 0.0
+    productivity: float = 0.0
+    consumption: float = 0.0
+
+
+@dataclass(frozen=True)
+class BeaconSpec:
+    """The beacon prototype's module-transmission primitives: how many module
+    slots it has, the fraction of a module's effect it transmits
+    (`distribution_effectivity`, 0.5 for the vanilla beacon), and its power
+    draw. All zero when the data carries no beacon (e.g. a trimmed fixture)."""
+
+    module_slots: int = 0
+    distribution_effectivity: float = 0.0
+    power_w: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -298,6 +324,40 @@ def _recipe_outputs_from_raw(rec: dict) -> list[Stack]:
 
 def _module_slots(ent: dict) -> int:
     return int((ent.get("module_specification") or {}).get("module_slots", 0))
+
+
+def _effect_bonus(eff: dict, key: str) -> float:
+    """A module `effect` sub-bonus (e.g. effect.productivity.bonus), 0 if absent."""
+    v = eff.get(key)
+    return float(v.get("bonus", 0.0)) if isinstance(v, dict) else 0.0
+
+
+def _extract_module_effects(raw: dict) -> dict[str, ModuleEffect]:
+    """Parse every module item's `effect` into a `ModuleEffect` keyed by name."""
+    out: dict[str, ModuleEffect] = {}
+    for name, ent in (raw.get("module") or {}).items():
+        eff = ent.get("effect") or {}
+        out[name] = ModuleEffect(
+            speed=_effect_bonus(eff, "speed"),
+            productivity=_effect_bonus(eff, "productivity"),
+            consumption=_effect_bonus(eff, "consumption"),
+        )
+    return out
+
+
+def _extract_beacon(raw: dict) -> BeaconSpec:
+    """The beacon prototype's transmission primitives (vanilla has one beacon)."""
+    beacons = raw.get("beacon") or {}
+    ent = beacons.get("beacon") or next(iter(beacons.values()), None)
+    if not ent:
+        return BeaconSpec()
+    return BeaconSpec(
+        module_slots=int(
+            (ent.get("module_specification") or {}).get("module_slots", 0)
+        ),
+        distribution_effectivity=float(ent.get("distribution_effectivity", 0.0)),
+        power_w=parse_energy(ent.get("energy_usage")) or 0.0,
+    )
 
 
 def _tile_footprint(ent: dict) -> float:
@@ -668,6 +728,11 @@ class GameModel:
     recipes: dict[str, Recipe]
     buildings: dict[str, Building]
     technologies: dict[str, Technology]
+    # Module effect bonuses + the beacon's transmission primitives. Consumed by
+    # the L2 rocket-silo module hack (scenario-declared modules → silo speedup /
+    # rocket-part productivity). Empty/zero when the data carries neither.
+    module_effects: dict[str, ModuleEffect] = field(default_factory=dict)
+    beacon: BeaconSpec = field(default_factory=BeaconSpec)
 
     # --- Cross-reference helpers (computed on demand, no stored index) ---
 
@@ -829,67 +894,6 @@ class GameModel:
 
 
 # ---------------------------------------------------------------------------
-# Rocket-silo module hack
-# ---------------------------------------------------------------------------
-# Deliberate game-data post-process (NOT a canonical fact); a stand-in until
-# Facility.apply_modules lands. Models the silo's 4 module slots filled with
-# productivity-module-1, plus 20 beacons (2 speed-module-1 each) ringing it,
-# transmitted at the beacon's 0.5 distribution_effectivity. Module effects are
-# from the game data — speed-module: +0.2 speed / +0.5 consumption;
-# productivity-module: +0.04 productivity / -0.05 speed / +0.4 consumption;
-# beacon: 480kW, 0.5 effectivity. Resulting silo bonuses:
-#   speed       = 4·(-0.05) + 40·0.2·0.5  = +3.80  -> ×4.80 crafting speed
-#   productivity= 4·0.04                  = +0.16  -> ×1.16 rocket-part output
-#   consumption = 4·0.4 + 40·0.5·0.5      = +11.6  -> silo 250kW -> 3.15MW
-#   beacon power= 20·480kW                = 9.6MW  -> rig total 12.75MW
-# Productivity is bonus OUTPUT per craft (not faster crafts), so it scales the
-# rocket-part recipe output rather than the silo speed. The modules' own
-# production cost is NOT modeled here — it's required via the scenario's
-# items_produced / checkpoint (40 speed-module + 4 productivity-module).
-SILO_PROD_MODULES = 4
-SILO_BEACON_COUNT = 20
-BEACON_SPEED_MODULES_EACH = 2
-BEACON_EFFECTIVITY = 0.5
-BEACON_POWER_W = 480_000.0
-_SPEED_MOD = {"speed": 0.2, "consumption": 0.5}
-_PROD_MOD = {"productivity": 0.04, "speed": -0.05, "consumption": 0.4}
-
-
-def _apply_rocket_silo_modules(
-    buildings: dict[str, Building], recipes: dict[str, Recipe]
-) -> None:
-    silo = buildings.get("rocket-silo")
-    if silo is not None:
-        n_beacon_mods = SILO_BEACON_COUNT * BEACON_SPEED_MODULES_EACH
-        speed_bonus = (
-            SILO_PROD_MODULES * _PROD_MOD["speed"]
-            + n_beacon_mods * _SPEED_MOD["speed"] * BEACON_EFFECTIVITY
-        )
-        consumption_bonus = (
-            SILO_PROD_MODULES * _PROD_MOD["consumption"]
-            + n_beacon_mods * _SPEED_MOD["consumption"] * BEACON_EFFECTIVITY
-        )
-        power = (
-            silo.base_power_w * (1.0 + consumption_bonus)
-            + SILO_BEACON_COUNT * BEACON_POWER_W
-        )
-        buildings["rocket-silo"] = replace(
-            silo,
-            base_speed=silo.base_speed * (1.0 + speed_bonus),
-            base_power_w=power,
-        )
-    # Productivity = extra output per craft (not faster crafts): scale the
-    # rocket-part recipe output. rocket-part is only made in the silo, so this
-    # is safe globally.
-    prod_bonus = SILO_PROD_MODULES * _PROD_MOD["productivity"]
-    rp = recipes.get("rocket-part")
-    if rp is not None and prod_bonus:
-        rp.outputs = [
-            replace(s, amount=s.amount * (1.0 + prod_bonus)) for s in rp.outputs
-        ]
-
-
-# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -912,11 +916,16 @@ def load_model(
     recipes = _crafting_recipes(g.raw, g.technologies)
     recipes.update(_mining_recipes(g.raw))
     recipes.update(_pumping_recipes(buildings))
-    _apply_rocket_silo_modules(buildings, recipes)
     items = _extract_items(g.raw)
+    # The rocket-silo module hack is NOT applied here any more — it's
+    # scenario-driven and lives in fplan.l2.instance (it reads the modules a
+    # scenario declares and these module/beacon effects). The base model stays
+    # scenario-agnostic.
     return GameModel(
         items=items,
         recipes=recipes,
         buildings=buildings,
         technologies=g.technologies,
+        module_effects=_extract_module_effects(g.raw),
+        beacon=_extract_beacon(g.raw),
     )

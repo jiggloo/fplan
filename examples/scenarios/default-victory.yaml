@@ -18,8 +18,8 @@ techs_researched:
   - steel-axe         # +100% character mining speed
 items_produced:
   beacon: 20
-  speed-module: 40        # 2 per beacon × 20 beacons ringing the silo
-  productivity-module: 4  # the silo's 4 module slots
+  speed-module: 40          # 2 per beacon × 20 beacons ringing the silo
+  productivity-module-3: 4  # the silo's 4 slots (prod-3, the WR TAS loadout)
 rocket_launches: 1   # 1 launch, no payload
 
 # L2+ inputs: world-state at t₀. Numbers below are from a reference
@@ -55,9 +55,9 @@ initial_state:
 # closing the LP-relaxation cheat where the silo was fractionalized
 # to ~0.37 units amortized across the build step.
 #
-# Beacons are foundation for future speed-module boosting of the
-# silo; the constraint exists so the layout plan has them already
-# placed before modules become operational.
+# The beacons (with their speed modules) drive the silo's rocket-part
+# speedup via the L2 silo-modules hack; the constraint exists so the
+# layout plan has them placed before rocket-part production begins.
 #
 # The 50-of-each science-pack floor is a slack buffer: in-game science
 # consumption is never perfectly just-in-time (labs hold partial stacks,
@@ -74,7 +74,7 @@ checkpoints:
         rocket-silo: 1
         beacon: 20
         speed-module: 40
-        productivity-module: 4
+        productivity-module-3: 4
         automation-science-pack: 50
         logistic-science-pack: 50
         chemical-science-pack: 50

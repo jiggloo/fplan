@@ -34,7 +34,7 @@ def model() -> GameModel:
 
 
 def test_fixture_model_shape(model: GameModel) -> None:
-    assert len(model.items) == 21
+    assert len(model.items) == 24  # +3 module items (prod-1, prod-3, speed-1)
     assert len(model.recipes) == 20
     assert len(model.buildings) == 18
     assert len(model.technologies) == 38
@@ -50,10 +50,22 @@ def test_fixture_mining_and_pumping(model: GameModel) -> None:
     )
 
 
-def test_fixture_rocket_silo_module_hack(model: GameModel) -> None:
-    assert round(model.buildings["rocket-silo"].base_speed, 2) == 4.8
+def test_fixture_module_and_beacon_parsing(model: GameModel) -> None:
+    # The base model no longer bakes in the rocket-silo speedup — that's
+    # scenario-driven in L2 now (see fplan.l2.instance). The silo runs at its
+    # base crafting speed and rocket-part has its base output.
+    assert model.buildings["rocket-silo"].base_speed == pytest.approx(1.0)
     rp = model.recipes["rocket-part"]
-    assert rp.outputs and rp.outputs[0].amount == pytest.approx(1.16, rel=1e-3)
+    assert rp.outputs and rp.outputs[0].amount == pytest.approx(1.0)
+    # Module effects + beacon primitives ARE parsed, for the L2 hack to consume.
+    p3 = model.module_effects["productivity-module-3"]
+    assert p3.productivity == pytest.approx(0.10)
+    assert p3.speed == pytest.approx(-0.15)
+    assert p3.consumption == pytest.approx(0.80)
+    assert model.module_effects["speed-module"].speed == pytest.approx(0.20)
+    assert model.beacon.module_slots == 2
+    assert model.beacon.distribution_effectivity == pytest.approx(0.5)
+    assert model.beacon.power_w == pytest.approx(480_000.0)
 
 
 def test_fixture_fuel_and_footprint(model: GameModel) -> None:
