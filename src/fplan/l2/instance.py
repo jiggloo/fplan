@@ -948,6 +948,10 @@ class Assignment:
     mining_buildings: tuple[str, ...] = ()  # per-ore, strict non-decreasing
     smelting_buildings: tuple[str, ...] = ()  # per-output, +destroy if consumable
     crafting: CraftingAssignmentSpec | None = None  # per-recipe, full repurpose
+    # building -> tech: drop that building's recipe/step vars once the tech is
+    # researched (e.g. assembling-machine-1 after low-density-structure). Applied
+    # in the solver's x_real construction independently of the crafting split.
+    retire_after: dict[str, str] = field(default_factory=dict)
     note: str | None = None  # one-line human summary when any class is active
 
     @property
@@ -1003,8 +1007,20 @@ def resolve_assignment(
                 f"crafting assignment: none of [{configured}] are reachable in "
                 "this scenario; assemblers stay pooled"
             )
+    # Retirement is a building-availability prune (drop AM1 vars after LDS),
+    # independent of whether the crafting split is active; keep only reachable
+    # buildings so an irrelevant entry is a clean no-op.
+    retire_after = {
+        b: t for b, t in cfg.crafting_retire_after.items() if b in reachable_buildings
+    }
     note = _assignment_note(mining, smelting, crafting, cfg)
-    return Assignment(mining, smelting, crafting, note)
+    return Assignment(
+        mining_buildings=mining,
+        smelting_buildings=smelting,
+        crafting=crafting,
+        retire_after=retire_after,
+        note=note,
+    )
 
 
 def _assignment_note(

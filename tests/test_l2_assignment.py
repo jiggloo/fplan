@@ -416,3 +416,76 @@ def test_assignment_note_lists_active_classes(model: GameModel, tmp_path: Path) 
     inst = _inst(model, tmp_path)
     note = inst.assignment.note
     assert note and "mining per-ore" in note and "crafting per-recipe" in note
+
+
+# --------------------------------------------------------------------------- #
+# assembler retirement (drop AM1 vars after a tech)
+# --------------------------------------------------------------------------- #
+
+
+def test_config_retire_after_default() -> None:
+    c = l2config.load_config(None)
+    assert c.crafting_retire_after == {"assembling-machine-1": "low-density-structure"}
+
+
+def test_config_retire_after_yaml_override(tmp_path: Path) -> None:
+    # Like the other dict configs (deployment, seeds), retire_after deep-merges
+    # per building: a user can change a building's tech or add one. Neutralize a
+    # building by pointing it at a tech it never researches.
+    f = tmp_path / "cfg.yaml"
+    f.write_text(
+        "assignment:\n"
+        "  crafting:\n"
+        "    retire_after:\n"
+        "      assembling-machine-1: rocket-silo\n"
+        "      assembling-machine-2: ''\n"
+    )
+    c = l2config.load_config(f)
+    assert c.crafting_retire_after["assembling-machine-1"] == "rocket-silo"
+    assert c.crafting_retire_after["assembling-machine-2"] == ""
+
+
+def test_resolve_retire_after_filtered_to_reachable(model: GameModel) -> None:
+    cfg = l2config.load_config(None)
+    # AM1 reachable → kept; AM1 absent → dropped.
+    a = l2_instance.resolve_assignment(
+        model, cfg, frozenset({"assembling-machine-1"}), True
+    )
+    assert a.retire_after == {"assembling-machine-1": "low-density-structure"}
+    a2 = l2_instance.resolve_assignment(model, cfg, frozenset({"lab"}), True)
+    assert a2.retire_after == {}
+
+
+def test_lp_retires_am1_after_tech(model: GameModel, tmp_path: Path) -> None:
+    # Reach low-density-structure so retirement fires; seed AM1 so it's reachable.
+    layers = _LAYERS + [["advanced-material-processing-2"], ["low-density-structure"]]
+    inst = l2_instance.build_instance(_scenario(), _l1(tmp_path, layers), model)
+    lds = next(
+        s.index for s in inst.steps if s.research_tech == "low-density-structure"
+    )
+    _m, handles = l2_solve.build_lp(inst, model)
+    am1_steps = {i for (_r, b, i) in handles["x_real"] if b == "assembling-machine-1"}
+    # AM1 used before/at the LDS research step, gone once LDS is researched.
+    assert any(i <= lds for i in am1_steps)
+    assert not any(i > lds for i in am1_steps), "AM1 vars must be dropped post-LDS"
+    # AM2 still runs after LDS (it takes over).
+    am2_post = {
+        i for (_r, b, i) in handles["x_real"] if b == "assembling-machine-2" and i > lds
+    }
+    assert am2_post
+
+
+def test_lp_no_retirement_when_disabled(model: GameModel, tmp_path: Path) -> None:
+    cfg = replace(l2config.load_config(None), crafting_retire_after={})
+    layers = _LAYERS + [["advanced-material-processing-2"], ["low-density-structure"]]
+    inst = l2_instance.build_instance(
+        _scenario(), _l1(tmp_path, layers), model, l2_config=cfg
+    )
+    lds = next(
+        s.index for s in inst.steps if s.research_tech == "low-density-structure"
+    )
+    _m, handles = l2_solve.build_lp(inst, model)
+    am1_post = {
+        i for (_r, b, i) in handles["x_real"] if b == "assembling-machine-1" and i > lds
+    }
+    assert am1_post, "with retirement off, AM1 keeps running after LDS"

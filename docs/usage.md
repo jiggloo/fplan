@@ -587,7 +587,16 @@ assignment:
     split_science_packs: true     # every *-science-pack recipe gets its own block
     split_items: [engine-unit, inserter, transport-belt, pipe, boiler,
                   steam-engine, steel-furnace, electric-mining-drill]
+    retire_after:                 # drop a building's vars once a tech is researched
+      assembling-machine-1: low-density-structure
 ```
+
+`retire_after` drops an assembler's recipe/step variables once the named tech is
+researched — by then plans have upgraded to a higher tier (AM1→AM2/AM3 by
+low-density-structure), so those variables are pure overhead. It's realism-free
+pruning that shrinks the curated split (on default-victory it removes ~11% of the
+bilinear terms). The map deep-merges per building; to keep a building usable for
+the whole campaign, point it at a tech it never researches (`assembling-machine-1: ""`).
 
 #### `rates viz`
 

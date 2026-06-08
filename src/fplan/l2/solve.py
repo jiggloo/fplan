@@ -442,12 +442,23 @@ def build_lp(
     # recipe to `forbidden_real_recipes` on every step that the
     # checkpoint excludes from running it — those (recipe, b, step)
     # entries get no variable created here.
+    # Building retirement: once an assembler's successor is unlocked, plans have
+    # upgraded off it (observed on default-victory: AM1 → AM2/AM3 by the time
+    # low-density-structure is researched), so its (recipe, step) vars are pure
+    # overhead. Dropping them past the configured tech is realism-free var/bucket
+    # pruning that shrinks the curated crafting split (see inst.assignment).
+    retire_after = inst.assignment.retire_after
     x_real: dict[tuple[str, str, int], object] = {}
     for i, step in enumerate(inst.steps):
         for r_name, b_name in step.recipe_building_pairs(
             model, inst.reachable_buildings
         ):
             if r_name in step.forbidden_real_recipes:
+                continue
+            if (
+                b_name in retire_after
+                and retire_after[b_name] in step.techs_researched_at_start
+            ):
                 continue
             # Disabled smelting buildings (electric-furnace) get no activity
             # var at all — smelting is served by stone + the per-output-split

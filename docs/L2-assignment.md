@@ -95,17 +95,30 @@ themselves). Everything else on an assembler stays in the pooled `unassigned`
 capacity (one bilinear term). AM3 is intentionally left unsplit — it's terminal
 and carries the rocket-silo module hack.
 
+## Building retirement
+
+An assembler whose successor is unlocked is dead weight: by the time
+low-density-structure is researched, plans have upgraded AM1 → AM2/AM3 (observed
+directly), so AM1's recipe/step variables only ever sit at zero. `crafting.retire_after`
+(building → tech) drops them once the tech is researched — realism-free var/bucket
+pruning that shrinks the curated split where it's largest. On default-victory it
+removes the **~228 post-LDS AM1 buckets (~11% of all bilinear)**, taking the model
+from ~2,018 to ~1,783. It's applied in the solver's `x_real` construction,
+independently of whether the crafting split is active.
+
 ## Tractability
 
 On `default-victory` (47 planning steps) the three classes raise the bilinear
 (nonconvex) constraint count from **844** (mining + smelting on the single
-electric drill / steel furnace only) to **~2,018** with burner drills, stone
-furnaces, and the curated crafting split added — roughly 2.4×, and within the
-range the HiGHS-barrier backend solves (it finds and improves a feasible primal;
-see [the solve doc](L2-rates-solve.md) for the barrier-vs-simplex story). The
-split set is the lever: if a model regresses, trim `crafting.split_items` rather
-than the temporal rules. The result is a feasible/time-limited primal, not a
-proven optimum.
+electric drill / steel furnace only) to **~1,783** with burner drills, stone
+furnaces, and the curated crafting split added (after AM1 retirement; ~2,018
+without it) — within the range the HiGHS-barrier backend solves, though the model
+is **seed-sensitive** at this size: a multi-seed search (the standard workflow)
+finds a feasible primal on a subset of seeds, the best ~comparable to the
+pre-assignment baseline. The levers, in order: `crafting.retire_after`, then
+`crafting.split_items`, never the temporal rules. See [the solve
+doc](L2-rates-solve.md) for the barrier-vs-simplex story. The result is a
+feasible/time-limited primal, not a proven optimum.
 
 ## Output
 

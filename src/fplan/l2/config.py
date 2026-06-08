@@ -21,7 +21,7 @@ reproducibility.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 
@@ -40,6 +40,11 @@ _DEFAULTS_RESOURCE = "l2-defaults.yaml"
 _DEFAULT_MINING_ASSIGN_BUILDINGS = ("electric-mining-drill", "burner-mining-drill")
 _DEFAULT_SMELTING_ASSIGN_BUILDINGS = ("stone-furnace", "steel-furnace")
 _DEFAULT_CRAFTING_ASSIGN_BUILDINGS = ("assembling-machine-1", "assembling-machine-2")
+# Retire an assembler (drop its recipe/step vars) once the named tech is
+# researched — by then plans have upgraded to a higher tier. Realism-free var
+# pruning that shrinks the crafting split. Empty to keep every assembler usable
+# for the whole campaign.
+_DEFAULT_CRAFTING_RETIRE_AFTER = {"assembling-machine-1": "low-density-structure"}
 _DEFAULT_CRAFTING_SPLIT_ITEMS = frozenset(
     {
         "engine-unit",
@@ -120,6 +125,11 @@ class L2Config:
     crafting_split_science_packs: bool = True
     crafting_split_items: frozenset[str] = _DEFAULT_CRAFTING_SPLIT_ITEMS
     crafting_unassign_cost_s: float = 1.0
+    # building -> tech: drop that building's recipe/step vars once the tech is
+    # researched (e.g. assembling-machine-1 after low-density-structure).
+    crafting_retire_after: dict[str, str] = field(
+        default_factory=lambda: dict(_DEFAULT_CRAFTING_RETIRE_AFTER)
+    )
 
     def deployment_for(self, building_name: str) -> DeploymentPattern:
         """The deployment pattern for a building, or an empty one (no infra,
@@ -185,6 +195,8 @@ def _assignment_fields(d: dict) -> dict:
     smelting_b = smelting.get("buildings", _DEFAULT_SMELTING_ASSIGN_BUILDINGS)
     crafting_b = crafting.get("buildings", _DEFAULT_CRAFTING_ASSIGN_BUILDINGS)
     split_items = crafting.get("split_items", _DEFAULT_CRAFTING_SPLIT_ITEMS)
+    retire = crafting.get("retire_after", _DEFAULT_CRAFTING_RETIRE_AFTER)
+    retire = {} if retire is None else retire
     return {
         "mining_assignment_buildings": tuple(str(b) for b in mining_b),
         "smelting_assignment_buildings": tuple(str(b) for b in smelting_b),
@@ -193,6 +205,7 @@ def _assignment_fields(d: dict) -> dict:
         "crafting_split_science_packs": bool(crafting.get("split_science_packs", True)),
         "crafting_split_items": frozenset(str(i) for i in split_items),
         "crafting_unassign_cost_s": float(crafting.get("unassign_cost_s", 1.0)),
+        "crafting_retire_after": {str(b): str(t) for b, t in retire.items()},
     }
 
 
