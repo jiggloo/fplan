@@ -18,8 +18,8 @@ techs_researched:
   - steel-axe         # +100% character mining speed
 items_produced:
   beacon: 20
-  speed-module: 40        # 2 per beacon × 20 beacons ringing the silo
-  productivity-module: 4  # the silo's 4 module slots
+  speed-module: 40          # 2 per beacon × 20 beacons ringing the silo
+  productivity-module-3: 4  # the silo's 4 slots (prod-3, the WR TAS loadout)
 rocket_launches: 1   # 1 launch, no payload
 
 # L2+ inputs: world-state at t₀. Numbers below are from a reference
@@ -74,7 +74,7 @@ checkpoints:
         rocket-silo: 1
         beacon: 20
         speed-module: 40
-        productivity-module: 4
+        productivity-module-3: 4
         automation-science-pack: 50
         logistic-science-pack: 50
         chemical-science-pack: 50

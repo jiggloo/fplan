@@ -212,6 +212,16 @@ class L2Instance:
     # The solver reads its knobs from here; build_instance also uses it to
     # resolve mode seeding, caps, and policy sets.
     cfg: L2Config
+    # Rocket-silo module hack (scenario-driven; see compute_silo_modules). The
+    # LP applies these to the silo's rocket-part crafting: effective speed ×
+    # silo_speed_mult, rocket-part output × silo_productivity, and silo_power_w
+    # (None → the building's base power). Identity/None when no modules are
+    # declared or the hack is disabled. silo_module_note is a one-line summary
+    # the CLI prints when the hack fires.
+    silo_speed_mult: float = 1.0
+    silo_productivity: float = 1.0
+    silo_power_w: float | None = None
+    silo_module_note: str | None = None
 
     def capacity_end_weight(self, building_name: str = "") -> float:
         """End-of-step weight in the capacity-constraint interpolation, per
@@ -669,6 +679,96 @@ def _load_l1_output(path: Path) -> dict:
     return data
 
 
+@dataclass(frozen=True)
+class SiloModules:
+    """The rocket-silo module hack's effective factors (see compute_silo_modules)."""
+
+    speed_mult: float = 1.0  # multiplies the silo's rocket-part crafting speed
+    productivity: float = 1.0  # multiplies the rocket-part output per craft
+    power_w: float | None = None  # effective silo draw (None → base power)
+    note: str | None = None  # one-line human summary when the hack fires
+
+
+def compute_silo_modules(
+    scenario_obj: scenario_mod.Scenario, model: GameModel, enabled: bool
+) -> SiloModules:
+    """Apply the modules/beacons a scenario declares to the rocket-silo.
+
+    Reads the goal's ``items_produced`` for module + beacon counts, fills the
+    silo's slots with the declared **productivity** modules and the beacons with
+    the declared **speed** modules (Factorio forbids productivity modules in
+    beacons), and returns the effective crafting-speed multiplier, the
+    rocket-part productivity factor (bonus output per craft), and the silo's
+    effective power (base × (1 + consumption bonus) + the beacons' draw). Effect
+    magnitudes, slot counts, and the beacon's distribution_effectivity all come
+    from the game data — nothing is hard-coded.
+
+    Identity (no effect) when ``enabled`` is False, the data has no rocket-silo,
+    or the scenario declares nothing relevant. This is a deliberate stand-in for
+    a full module system — it models one rocket-silo rig (its slots + a beacon
+    ring); the modules' own production cost is the scenario's responsibility
+    (they're listed in ``items_produced``)."""
+    off = SiloModules()
+    if not enabled:
+        return off
+    silo = model.buildings.get("rocket-silo")
+    if silo is None or silo.module_slots <= 0:
+        return off
+
+    declared = {n: float(c) for n, c in scenario_obj.goal.items_produced}
+    # Partition declared modules: productivity → silo slots, speed-only → beacons.
+    prod_mods, speed_mods = [], []
+    for name in sorted(declared):
+        eff = model.module_effects.get(name)
+        if eff is None:
+            continue
+        if eff.productivity > 0:
+            prod_mods.append(name)
+        elif eff.speed != 0:
+            speed_mods.append(name)
+
+    beacon = model.beacon
+    beacon_count = int(declared.get("beacon", 0))
+    beacon_capacity = beacon_count * beacon.module_slots
+
+    speed_bonus = prod_bonus = cons_bonus = 0.0
+    detail: list[str] = []
+    silo_used = 0
+    for name in prod_mods:
+        take = int(min(declared[name], silo.module_slots - silo_used))
+        if take <= 0:
+            break
+        eff = model.module_effects[name]
+        speed_bonus += take * eff.speed
+        prod_bonus += take * eff.productivity
+        cons_bonus += take * eff.consumption
+        silo_used += take
+        detail.append(f"{take}× {name} (silo)")
+
+    beacon_used = 0
+    for name in speed_mods:
+        take = int(min(declared[name], beacon_capacity - beacon_used))
+        if take <= 0:
+            break
+        eff = model.module_effects[name]
+        speed_bonus += take * eff.speed * beacon.distribution_effectivity
+        cons_bonus += take * eff.consumption * beacon.distribution_effectivity
+        beacon_used += take
+        detail.append(f"{take}× {name} in {beacon_count} beacons")
+
+    if silo_used == 0 and beacon_used == 0:
+        return off
+
+    speed_mult = 1.0 + speed_bonus
+    productivity = 1.0 + prod_bonus
+    power_w = silo.base_power_w * (1.0 + cons_bonus) + beacon_count * beacon.power_w
+    note = (
+        f"rocket-silo modules: {', '.join(detail)} → speed ×{speed_mult:.2f}, "
+        f"rocket-part output ×{productivity:.2f}, power {power_w / 1e6:.2f}MW"
+    )
+    return SiloModules(speed_mult, productivity, power_w, note)
+
+
 def build_instance(
     scenario_obj: scenario_mod.Scenario,
     l1_output_path: str | Path,
@@ -858,6 +958,9 @@ def build_instance(
     # tile-pool / oil-spot path above — no new constraint. Absent → unchanged.
     md = apply_patch_selection(md, patch_selection_path, warnings)
 
+    # Rocket-silo module hack: apply the modules/beacons the scenario declares.
+    silo = compute_silo_modules(scenario_obj, model, cfg.silo_modules_enabled)
+
     return L2Instance(
         scenario=scenario_obj,
         l1_method=str(l1.get("method", "?")),
@@ -883,6 +986,10 @@ def build_instance(
         player_time_enabled=player_time_enabled,
         warnings=tuple(warnings),
         cfg=cfg,
+        silo_speed_mult=silo.speed_mult,
+        silo_productivity=silo.productivity,
+        silo_power_w=silo.power_w,
+        silo_module_note=silo.note,
     )
 
 
@@ -922,6 +1029,8 @@ def _print_summary(inst: L2Instance, model: GameModel) -> None:
         f"Reachable buildings:    {len(inst.reachable_buildings)} / "
         f"{len(model.buildings)}"
     )
+    if inst.silo_module_note:
+        print(f"\n{inst.silo_module_note}")
     if inst.warnings:
         print(f"\nWarnings ({len(inst.warnings)}):")
         for w in inst.warnings:

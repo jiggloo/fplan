@@ -73,6 +73,9 @@ class L2Config:
     single_machine_recipes: frozenset[str]
     split_research_techs: frozenset[str]
     fuel_excluded: frozenset[str]
+    # Rocket-silo module hack: apply the modules/beacons a scenario declares to
+    # the silo's rocket-part crafting. False → silo runs at base speed.
+    silo_modules_enabled: bool = True
 
     def deployment_for(self, building_name: str) -> DeploymentPattern:
         """The deployment pattern for a building, or an empty one (no infra,
@@ -149,6 +152,9 @@ def _from_dict(d: dict) -> L2Config:
             single_machine_recipes=frozenset(policy["single_machine_recipes"]),
             split_research_techs=frozenset(policy["split_research_techs"]),
             fuel_excluded=frozenset(policy["fuel_excluded"]),
+            silo_modules_enabled=bool(
+                (d.get("silo_modules") or {}).get("enabled", True)
+            ),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"invalid L2 config: {exc}") from exc

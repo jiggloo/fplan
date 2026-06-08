@@ -2626,5 +2626,72 @@
     "time": 30
    }
   }
+ },
+ "module": {
+  "productivity-module": {
+   "name": "productivity-module",
+   "type": "module",
+   "category": "productivity",
+   "tier": 1,
+   "effect": {
+    "productivity": {
+     "bonus": 0.04
+    },
+    "speed": {
+     "bonus": -0.05
+    },
+    "consumption": {
+     "bonus": 0.4
+    },
+    "pollution": {
+     "bonus": 0.05
+    }
+   }
+  },
+  "productivity-module-3": {
+   "name": "productivity-module-3",
+   "type": "module",
+   "category": "productivity",
+   "tier": 3,
+   "effect": {
+    "productivity": {
+     "bonus": 0.1
+    },
+    "speed": {
+     "bonus": -0.15
+    },
+    "consumption": {
+     "bonus": 0.8
+    },
+    "pollution": {
+     "bonus": 0.1
+    }
+   }
+  },
+  "speed-module": {
+   "name": "speed-module",
+   "type": "module",
+   "category": "speed",
+   "tier": 1,
+   "effect": {
+    "speed": {
+     "bonus": 0.2
+    },
+    "consumption": {
+     "bonus": 0.5
+    }
+   }
+  }
+ },
+ "beacon": {
+  "beacon": {
+   "name": "beacon",
+   "type": "beacon",
+   "distribution_effectivity": 0.5,
+   "energy_usage": "480kW",
+   "module_specification": {
+    "module_slots": 2
+   }
+  }
  }
 }

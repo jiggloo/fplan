@@ -106,3 +106,12 @@ policy:
   split_research_techs: [engine, rocket-silo]
   # Items barred as a boiler fuel choice (kept in the model otherwise).
   fuel_excluded: [wood]
+
+# Rocket-silo module hack. When enabled, the modules/beacons a scenario declares
+# in items_produced are applied to the rocket-silo's rocket-part crafting:
+# productivity modules fill the silo's slots, speed modules go in the beacons
+# ringing it (transmitted at the beacon's distribution_effectivity), raising the
+# silo's effective crafting speed, the rocket-part output (productivity), and
+# power. Disable to run the silo at its base speed with no modules.
+silo_modules:
+  enabled: true
