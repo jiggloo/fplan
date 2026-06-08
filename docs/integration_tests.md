@@ -102,6 +102,13 @@ Each seed's candidate lands under `runs/fishminer/rates-search/` (with a
 `summary.yaml` index); the best is promoted to `runs/fishminer/rates.yaml` after
 a prompt (`--force` to skip). The `rates-search/` scratch is ephemeral.
 
+The `default-victory` campaign also exercises the two module hacks against the
+full model (the fixture can't drive a real solve). Confirm the solve log prints
+both `⚙ rocket-silo modules: …` and `⚙ lab modules: …`, and — since the time
+objective only adopts the slower productive labs when science is worth saving —
+check the promoted `rates.yaml` for `productivity-module` production feeding the
+research steps (the lab productivity-module variant being used, not just offered).
+
 ### L2 viz
 
 Render a solved run's `rates.yaml` as interactive HTML (timeline +

@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import math
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -107,6 +107,10 @@ class Solution:
     # SCIP randomization seed used for this run; emitted in the YAML
     # so a "lucky" run can be re-played exactly by passing --seed N.
     seed: int | None = None
+    # Lab productivity-module variant: (research, step) -> cycles run on
+    # productive labs (the slower, +productivity loadout). Empty when the
+    # variant is inactive. The bare cycles stay in x_pseudo.
+    res_prod: dict[tuple[str, int], float] = field(default_factory=dict)
 
 
 # Internal energy scaling: the LP works in MJ and MW so coefficients
@@ -579,6 +583,50 @@ def build_lp(
         for i in range(n_steps)
     }
 
+    # --- lab productivity-module variant: a second, slower research pool ---
+    #
+    # When active, research at a step where the prod module is already unlocked
+    # may run on "productive labs" (lab slots filled with the module):
+    # res_prod[(research, i)] cycles, each delivering (1 + lab_prod_bonus)
+    # research at lab_speed_frac speed (the delivery + capacity constraints
+    # below). lab_prod[i] is the productive-lab count at step i — it shares the
+    # step's lab pool with the bare labs (x_pseudo) and reserves lab_modules_per
+    # modules each. Bounded like building counts so the new lab_prod[i]×duration[i]
+    # bilinear term has a finite McCormick envelope.
+    # Gated on deployment_enabled: the productive labs' only cost is the module
+    # reservation below, which is itself part of the infra-flow coupling that
+    # deployment_enabled toggles. Without it the +productivity bonus would be
+    # free and the LP would max productive labs out — the same free-lunch class as
+    # the science-flow term above — so when infra reservation is off the variant
+    # is simply not offered (bare labs only), not offered-but-uncharged.
+    res_prod: dict[tuple[str, int], object] = {}
+    lab_prod: dict[int, object] = {}
+    lab_mod_active = (
+        inst.lab_module_item is not None
+        and inst.lab_modules_per > 0
+        and inst.deployment_enabled
+    )
+    if lab_mod_active and inst.lab_module_item in tracked:
+        lab_ub = _building_count_ub("lab")
+        for i, step in enumerate(inst.steps):
+            r = step.research
+            if r is None or (r.name, i) not in x_pseudo:
+                continue
+            # Gate: the module must be unlocked (producible) at the start of this
+            # step — research before the module tech stays bare-only.
+            if not any(
+                o.name == inst.lab_module_item
+                for rec in step.available_recipes(model)
+                for o in rec.outputs
+            ):
+                continue
+            res_prod[(r.name, i)] = m.addVar(
+                name=_safe(f"resprod_{r.name}_{i}"), lb=0.0, vtype="C"
+            )
+            lab_prod[i] = m.addVar(
+                name=_safe(f"labprod_{i}"), lb=0.0, ub=lab_ub, vtype="C"
+            )
+
     # --- fuel allocation for non-boiler burner buildings ---
     # Stone-furnace, steel-furnace, burner-mining-drill all consume
     # chemical fuel during recipe execution. Their recipes don't list
@@ -647,6 +695,15 @@ def build_lp(
         for item_name, c in net_coefs.get(p_name, ()):
             if item_name in tracked:
                 flow_terms[(item_name, i)].append(c * var)
+    # Productive-lab research draws science packs at the SAME per-cycle rate as a
+    # bare cycle (prod modules add research output, not cheaper inputs). Without
+    # this term res_prod would deliver research while consuming nothing, letting
+    # the LP research for free — the science savings must come only from needing
+    # fewer real cycles (the delivery equality), never from un-drawn packs.
+    for (p_name, i), var in res_prod.items():
+        for item_name, c in net_coefs.get(p_name, ()):
+            if item_name in tracked:
+                flow_terms[(item_name, i)].append(c * var)
     for (r_name, i), var in x_hand.items():
         for item_name, c in net_coefs.get(r_name, ()):
             if item_name in tracked:
@@ -689,15 +746,20 @@ def build_lp(
                 name=_safe(f"ckpt_{cp.name}_{n}_b{b}"),
             )
 
-    # Research equality: x_pseudo[(research, i)] == cycles_required.
+    # Research delivery: bare cycles + productive cycles (each delivering
+    # 1 + lab_prod_bonus research) meet the required cycle count. With no
+    # productive labs this reduces to x_pseudo == cycles_required.
     for i, step in enumerate(inst.steps):
         r = step.research
         if r is None:
             continue
         if (r.name, i) not in x_pseudo:
             continue
+        delivered = x_pseudo[(r.name, i)]
+        if (r.name, i) in res_prod:
+            delivered = delivered + (1.0 + inst.lab_prod_bonus) * res_prod[(r.name, i)]
         m.addCons(
-            x_pseudo[(r.name, i)] == (r.cycles_required or 0.0),
+            delivered == (r.cycles_required or 0.0),
             name=_safe(f"research_{r.name}"),
         )
 
@@ -786,8 +848,46 @@ def build_lp(
             speed = speed * lab_speed_mult[i]  # research-speed bonus
         elif b_name == "rocket-silo":
             speed = speed * inst.silo_speed_mult  # scenario-declared modules
+        # Lab productivity-module variant: split the step's lab pool into bare
+        # labs (full speed, x_pseudo) and lab_prod[i] productive labs (slower,
+        # res_prod). Both draw from the same effective_count; the prod pool's
+        # extra research is credited in the delivery constraint, its modules
+        # reserved below. Without the variant this is the single pooled cap.
+        if b_name == "lab" and lab_mod_active and i in lab_prod:
+            prod_lhs = quicksum(
+                recipe_time.get(r, 0.0) * weight * res_prod[(r, i)]
+                for r, _, weight in entries
+                if (r, i) in res_prod
+            )
+            m.addCons(
+                lhs <= (effective_count - lab_prod[i]) * speed * duration_vars[i],
+                name=_safe(f"cap_lab_bare_{i}"),
+            )
+            m.addCons(
+                prod_lhs
+                <= lab_prod[i] * speed * inst.lab_speed_frac * duration_vars[i],
+                name=_safe(f"cap_lab_prod_{i}"),
+            )
+            m.addCons(
+                lab_prod[i] <= effective_count, name=_safe(f"lab_prod_le_total_{i}")
+            )
+            continue
         rhs = effective_count * speed * duration_vars[i]
         m.addCons(lhs <= rhs, name=_safe(f"cap_{b_name}_{i}"))
+
+    # Lab productive-module infrastructure reservation: each productive lab
+    # holds lab_modules_per modules, reserved from item flow like belts/poles
+    # (durable, non-consuming) at the step's start boundary. lab_mod_active already
+    # implies deployment_enabled (the variant isn't offered without it), so this is
+    # the cost that makes the +productivity bonus non-free; lab_prod is empty
+    # otherwise and the loop is a no-op.
+    if lab_mod_active and inst.lab_module_item in tracked:
+        for i, lp in lab_prod.items():
+            if (inst.lab_module_item, i) in item_vars:
+                m.addCons(
+                    item_vars[(inst.lab_module_item, i)] >= inst.lab_modules_per * lp,
+                    name=_safe(f"lab_module_infra_{i}"),
+                )
 
     # --- player hand-crafting capacity (one fixed-count serial actor) ---
     #
@@ -1514,6 +1614,25 @@ def build_lp(
                     continue
                 b_power_mw = b.base_power_w / _J_PER_MJ
                 demand_terms.append(t * weight * b_power_mw / b.base_speed * var)
+        # Productive-lab demand: the variant's slower, higher-draw cycles cost
+        # lab_power_factor × the bare per-cycle lab energy (see compute_lab_modules).
+        for (p_name, i2), var in res_prod.items():
+            if i2 != i:
+                continue
+            p = pseudo_by_name[p_name]
+            t = recipe_time.get(p_name, 0.0)
+            if t == 0:
+                continue
+            for b_name, weight in p.capacity_per_building:
+                b = model.buildings.get(b_name)
+                if b is None or b.energy_source_type != "electric":
+                    continue
+                if b.base_power_w <= 0:
+                    continue
+                b_power_mw = b.base_power_w / _J_PER_MJ
+                demand_terms.append(
+                    t * weight * b_power_mw * inst.lab_power_factor / b.base_speed * var
+                )
 
         # Burn supply (MJ per cycle, x in cycles).
         supply_terms = [
@@ -1536,6 +1655,8 @@ def build_lp(
     handles = {
         "x_real": x_real,
         "x_pseudo": x_pseudo,
+        "res_prod": res_prod,
+        "lab_prod": lab_prod,
         "x_hand": x_hand,
         "item": item_vars,
         "duration": duration_vars,
@@ -1953,6 +2074,9 @@ def solve(
     x_pseudo_sol = {
         k: m.getVal(v) for k, v in handles["x_pseudo"].items() if m.getVal(v) > tol
     }
+    res_prod_sol = {
+        k: m.getVal(v) for k, v in handles["res_prod"].items() if m.getVal(v) > tol
+    }
     x_hand_sol = {
         k: m.getVal(v) for k, v in handles["x_hand"].items() if m.getVal(v) > tol
     }
@@ -2008,6 +2132,22 @@ def solve(
             )
         if p.electric_output_j_per_cycle > 0:
             elec_supply_sol[i] += val * (p.electric_output_j_per_cycle / _J_PER_MJ)
+    # Productive-lab demand (variant cycles): lab_power_factor × the bare rate.
+    for (p_name, i), val in res_prod_sol.items():
+        p = pseudo_by_name[p_name]
+        t = recipe_time.get(p_name, 0.0)
+        for b_name, weight in p.capacity_per_building:
+            b = model.buildings.get(b_name)
+            if b is None or b.energy_source_type != "electric" or b.base_power_w <= 0:
+                continue
+            elec_demand_sol[i] += (
+                val
+                * t
+                * weight
+                * (b.base_power_w / _J_PER_MJ)
+                * inst.lab_power_factor
+                / b.base_speed
+            )
 
     excluded_consumed: dict[str, float] = {ex: 0.0 for ex in inst.excluded_items}
     for (r_name, _b, _i), val in x_real_sol.items():
@@ -2027,6 +2167,7 @@ def solve(
             objective=m.getObjVal(),
             x_real=x_real_sol,
             x_pseudo=x_pseudo_sol,
+            res_prod=res_prod_sol,
             x_hand=x_hand_sol,
             item=item_sol,
             duration=duration_sol,
@@ -2117,6 +2258,15 @@ def _capacity_utilization(
             sol.item.get((b_name, i + 1), 0.0)
         )
         lhs = sum(recipe_time.get(r, 0.0) * w * v for r, v, w in entries)
+        # Lab productivity-module variant: productive cycles (res_prod) run at
+        # lab_speed_frac, so each costs recipe_time / speed_frac full-speed
+        # lab-seconds. Fold them into the lab's lhs against the shared pool, the
+        # same accounting build_lp's two split caps make against effective_count.
+        if b_name == "lab" and inst.lab_module_item is not None:
+            for r, _v, w in entries:
+                rp = sol.res_prod.get((r, i), 0.0)
+                if rp:
+                    lhs += recipe_time.get(r, 0.0) * w * rp / inst.lab_speed_frac
         speed = building.base_speed * (lab_mult[i] if b_name == "lab" else 1.0)
         if b_name == "rocket-silo":  # scenario-declared modules (match build_lp)
             speed = speed * inst.silo_speed_mult
@@ -2291,6 +2441,23 @@ def _per_step_records(
                 {
                     "recipe": p_name,
                     "building": "+".join(b for b, _ in p.capacity_per_building),
+                    "cycles": float(v),
+                    "recipe_sec_used": float(v * p.time_seconds),
+                }
+            )
+        # Productive-lab research (the lab prod-module variant): same recipe as the
+        # bare research row, run on module-filled labs. Emitted as its own row so
+        # the per-item flow accounting (grouped by recipe) counts its science draw
+        # — otherwise productive-lab research would report zero consumption.
+        for (p_name, ii), v in sol.res_prod.items():
+            if ii != i or v < tol:
+                continue
+            p = pseudo_by_name[p_name]
+            labs = "+".join(b for b, _ in p.capacity_per_building)
+            activity.append(
+                {
+                    "recipe": p_name,
+                    "building": f"{labs} (productive)",
                     "cycles": float(v),
                     "recipe_sec_used": float(v * p.time_seconds),
                 }

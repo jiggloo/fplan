@@ -512,6 +512,34 @@ silo_modules:
   enabled: false
 ```
 
+#### Lab productivity modules
+
+Research can run on **productive labs** — labs with every module slot filled by a
+productivity module. Each productive lab trades speed (and draws more power) for
+bonus research per cycle, so a tech finishes on fewer science packs. Unlike the
+silo's fixed loadout, the count of productive labs is the **solver's choice**: it
+runs research on productive labs only where that saves enough science to beat the
+slowdown, and reserves the modules as infrastructure (produced on demand, not
+declared in `items_produced`). The variant is offered only for research that runs
+**after** the module is unlocked; earlier research stays on bare labs.
+
+The module fills every slot of the lab (2 in vanilla → 2× `productivity-module`,
+the prod-1 tier, by default). Effect magnitudes and the slot count come from the
+game data. When the variant is active, `rates solve` prints a `⚙ lab modules: …`
+line summarizing the loadout (e.g. `research output ×1.08, speed ×0.90, power
+×2.00`).
+
+Configure it with a `lab_modules` block in the same
+[L2 tuning config](#l2-tuning-config) — disable the variant, or pick a higher
+module tier:
+
+```yaml
+# my-tuning.yaml — passed with: rates solve <run> --l2-config my-tuning.yaml
+lab_modules:
+  enabled: false                  # run all research on bare labs
+  # module: productivity-module-3   # or keep it enabled and pick a higher tier
+```
+
 #### `rates viz`
 
 Render a solved run's `rates.yaml` as **self-contained interactive HTML** —

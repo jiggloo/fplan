@@ -168,7 +168,9 @@ def _capture_patch_selection(captured: dict):
 
     def _bi(*a, **k):
         captured["patch_selection_path"] = k.get("patch_selection_path")
-        return types.SimpleNamespace(warnings=[], silo_module_note=None)
+        return types.SimpleNamespace(
+            warnings=[], silo_module_note=None, lab_module_note=None
+        )
 
     return _bi
 

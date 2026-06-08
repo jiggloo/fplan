@@ -402,6 +402,67 @@
    "category": "rocket-building",
    "result": "rocket-part",
    "type": "recipe"
+  },
+  "productivity-module": {
+   "name": "productivity-module",
+   "enabled": false,
+   "normal": {
+    "result": "productivity-module",
+    "ingredients": [
+     [
+      "electronic-circuit",
+      5
+     ],
+     [
+      "copper-cable",
+      5
+     ]
+    ]
+   },
+   "expensive": {
+    "result": "productivity-module",
+    "ingredients": [
+     [
+      "electronic-circuit",
+      5
+     ],
+     [
+      "copper-cable",
+      5
+     ]
+    ]
+   },
+   "type": "recipe"
+  },
+  "lab": {
+   "name": "lab",
+   "normal": {
+    "result": "lab",
+    "ingredients": [
+     [
+      "electronic-circuit",
+      10
+     ],
+     [
+      "iron-gear-wheel",
+      10
+     ]
+    ]
+   },
+   "expensive": {
+    "result": "lab",
+    "ingredients": [
+     [
+      "electronic-circuit",
+      10
+     ],
+     [
+      "iron-gear-wheel",
+      10
+     ]
+    ]
+   },
+   "type": "recipe"
   }
  },
  "resource": {

@@ -115,3 +115,14 @@ policy:
 # power. Disable to run the silo at its base speed with no modules.
 silo_modules:
   enabled: true
+
+# Lab productivity-module variant. When enabled, the solver may run research on a
+# slower "productive lab" loadout — labs filled with `module` (prod-1 by default)
+# — for any research step where that module is already unlocked. Each productive
+# lab trades −speed (and +power) for +productivity, so a tech finishes on fewer
+# science packs; the optimizer decides how many labs run productive, and the
+# modules are reserved as infrastructure (produced on demand, not declared).
+# Disable to run all research on bare labs.
+lab_modules:
+  enabled: true
+  module: productivity-module
