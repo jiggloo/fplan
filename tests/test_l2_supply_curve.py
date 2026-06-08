@@ -94,6 +94,17 @@ def test_apply_patch_selection_non_mapping_raises(tmp_path: Path) -> None:
         instance.apply_patch_selection(_base_map(), f, [])
 
 
+def test_apply_patch_selection_non_finite_spots_skips(tmp_path: Path) -> None:
+    # `.inf` is valid YAML → float inf; int(round(inf)) overflows. Untrusted
+    # input must skip-with-warning, not escape as a raw traceback (invariant #1).
+    f = tmp_path / "sel.yaml"
+    f.write_text("resources:\n  crude-oil: {unit: pumpjacks, spots: .inf}\n")
+    warns: list[str] = []
+    md = instance.apply_patch_selection(_base_map(), f, warns)
+    assert md.oil_spot_count == 34  # unchanged from base
+    assert warns and "non-numeric" in warns[0]
+
+
 def test_apply_patch_selection_no_resources_key_warns(tmp_path: Path) -> None:
     f = tmp_path / "sel.yaml"
     f.write_text("seed: 1\nscenario: x\n")  # well-formed, but no `resources:`

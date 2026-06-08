@@ -649,7 +649,10 @@ def apply_patch_selection(
                 oil_spots = int(round(float(raw)))
             else:
                 tile_pool[str(res)] = float(raw)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: `spots: .inf` / `1e400` parses to a float inf, and
+            # int(round(inf)) overflows — an untrusted hand-edited value must
+            # skip-with-warning, never escape as a raw traceback (invariant #1).
             warnings.append(
                 f"patch-selection {p}: resource {res!r} has a non-numeric "
                 f"`{field_name}`; skipped"
