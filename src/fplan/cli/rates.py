@@ -350,6 +350,8 @@ def solve(
         typer.echo(f"  ⚠ {w}")
     if inst.silo_module_note:
         typer.echo(f"  ⚙ {inst.silo_module_note}")
+    if inst.lab_module_note:
+        typer.echo(f"  ⚙ {inst.lab_module_note}")
 
     if dry_run:
         l2_instance._print_summary(inst, model)

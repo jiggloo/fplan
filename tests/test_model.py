@@ -35,7 +35,9 @@ def model() -> GameModel:
 
 def test_fixture_model_shape(model: GameModel) -> None:
     assert len(model.items) == 24  # +3 module items (prod-1, prod-3, speed-1)
-    assert len(model.recipes) == 20
+    assert (
+        len(model.recipes) == 22
+    )  # +lab, +productivity-module (lab prod-module variant)
     assert len(model.buildings) == 18
     assert len(model.technologies) == 38
 

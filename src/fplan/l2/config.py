@@ -76,6 +76,13 @@ class L2Config:
     # Rocket-silo module hack: apply the modules/beacons a scenario declares to
     # the silo's rocket-part crafting. False → silo runs at base speed.
     silo_modules_enabled: bool = True
+    # Lab productivity-module variant: offer the LP a slower "productive lab"
+    # loadout (labs filled with `lab_modules_item`) for research that runs after
+    # the module is unlocked. False → only bare labs. The module tier defaults to
+    # productivity-module (prod-1); the count of productive labs is the LP's
+    # choice, with the modules reserved as infrastructure (no fixed declaration).
+    lab_modules_enabled: bool = True
+    lab_modules_item: str = "productivity-module"
 
     def deployment_for(self, building_name: str) -> DeploymentPattern:
         """The deployment pattern for a building, or an empty one (no infra,
@@ -103,6 +110,22 @@ def _load_yaml(text: str, source: str) -> dict:
     if not isinstance(data, dict):
         raise ValueError(f"{source}: L2 config must be a mapping")
     return data
+
+
+def _lab_modules_fields(d: dict) -> dict:
+    """Parse the optional ``lab_modules`` block into :class:`L2Config` kwargs.
+
+    A ``null`` block (or an absent one) falls back to defaults. A non-mapping
+    scalar (e.g. ``lab_modules: true``) makes ``.get`` raise ``AttributeError``,
+    which the caller's ``except`` maps to a clean error (invariant #1) — unlike a
+    bare ``or {}``, this never silently re-enables on ``lab_modules: false``;
+    disable with ``lab_modules: {enabled: false}``."""
+    block = d.get("lab_modules")
+    block = {} if block is None else block
+    return {
+        "lab_modules_enabled": bool(block.get("enabled", True)),
+        "lab_modules_item": str(block.get("module", "productivity-module")),
+    }
 
 
 def _from_dict(d: dict) -> L2Config:
@@ -155,6 +178,7 @@ def _from_dict(d: dict) -> L2Config:
             silo_modules_enabled=bool(
                 (d.get("silo_modules") or {}).get("enabled", True)
             ),
+            **_lab_modules_fields(d),
         )
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         # AttributeError: a scalar where a mapping is expected (e.g.

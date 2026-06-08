@@ -222,6 +222,19 @@ class L2Instance:
     silo_productivity: float = 1.0
     silo_power_w: float | None = None
     silo_module_note: str | None = None
+    # Lab productivity-module variant (config-driven; see compute_lab_modules).
+    # When active (lab_module_item is not None), the LP offers a slower
+    # "productive lab" loadout per research step where the module is unlocked:
+    # each prod cycle delivers (1 + lab_prod_bonus) research, runs at
+    # ×lab_speed_frac speed and ×lab_power_factor energy, and reserves
+    # lab_modules_per of lab_module_item as infrastructure. Identity (no variant)
+    # when None / 0. lab_module_note is the one-line summary the CLI prints.
+    lab_prod_bonus: float = 0.0
+    lab_speed_frac: float = 1.0
+    lab_power_factor: float = 1.0
+    lab_module_item: str | None = None
+    lab_modules_per: int = 0
+    lab_module_note: str | None = None
 
     def capacity_end_weight(self, building_name: str = "") -> float:
         """End-of-step weight in the capacity-constraint interpolation, per
@@ -813,6 +826,76 @@ def compute_silo_modules(
     return SiloModules(speed_mult, productivity, power_w, note)
 
 
+@dataclass(frozen=True)
+class LabModules:
+    """The lab productivity-module variant's effective factors (see
+    compute_lab_modules). Identity = a bare lab (no productive variant)."""
+
+    prod_bonus: float = 0.0  # extra research delivered per prod cycle (e.g. 0.08)
+    speed_frac: float = 1.0  # prod-lab speed ÷ base speed (e.g. 0.90)
+    power_factor: float = 1.0  # prod-cycle energy ÷ bare-cycle energy (e.g. 2.0)
+    module_item: str | None = None  # the module filling each slot (None → off)
+    modules_per: int = 0  # modules reserved per productive lab (lab.module_slots)
+    note: str | None = None  # one-line human summary when the variant is active
+
+
+def compute_lab_modules(
+    model: GameModel,
+    enabled: bool,
+    module_name: str,
+    warnings: list[str] | None = None,
+) -> LabModules:
+    """Derive the "productive lab" loadout: a lab with every module slot filled
+    by ``module_name`` (a productivity module).
+
+    Returns the per-prod-cycle research bonus, the speed fraction (prod modules
+    slow the lab), and the energy factor relative to a bare cycle —
+    ``(1 + consumption bonus) ÷ speed_frac`` — all read from the game data
+    (the lab's ``module_slots`` and the module's effects). The LP applies these
+    to a second, optional research pool and reserves ``modules_per`` of the
+    module per productive lab; how many labs run productive is the LP's choice.
+
+    Identity (no variant) when ``enabled`` is False, the data has no lab with
+    module slots, or ``module_name`` is not a productivity module. Like the
+    rocket-silo hack, this is a deliberate stand-in for a full module system —
+    it models one fixed lab loadout, not arbitrary per-lab module choices."""
+    off = LabModules()
+    if not enabled:
+        return off
+    lab = model.buildings.get("lab")
+    if lab is None or lab.module_slots <= 0:
+        return off
+    eff = model.module_effects.get(module_name)
+    if eff is None or eff.productivity <= 0:
+        if warnings is not None:
+            warnings.append(
+                f"lab modules: {module_name!r} is not a productivity module "
+                "(or absent from the data); running all research on bare labs"
+            )
+        return off
+
+    slots = lab.module_slots
+    prod_bonus = slots * eff.productivity
+    # Factorio clamps a machine's speed multiplier to ≥20% and its draw to ≥20%
+    # of base; with prod modules the consumption bonus is positive so the power
+    # clamp never binds, but keep both honest.
+    speed_frac = max(0.2, 1.0 + slots * eff.speed)
+    power_factor = max(0.2, 1.0 + slots * eff.consumption) / speed_frac
+    if not all(math.isfinite(x) for x in (prod_bonus, speed_frac, power_factor)):
+        if warnings is not None:
+            warnings.append(
+                "lab modules: degenerate module effects produced non-finite "
+                "factors; running all research on bare labs"
+            )
+        return off
+    note = (
+        f"lab modules: {slots}× {module_name} per productive lab → research "
+        f"output ×{1.0 + prod_bonus:.2f}, speed ×{speed_frac:.2f}, power "
+        f"×{power_factor:.2f} (the solver chooses how many labs run productive)"
+    )
+    return LabModules(prod_bonus, speed_frac, power_factor, module_name, slots, note)
+
+
 def build_instance(
     scenario_obj: scenario_mod.Scenario,
     l1_output_path: str | Path,
@@ -1004,6 +1087,11 @@ def build_instance(
 
     # Rocket-silo module hack: apply the modules/beacons the scenario declares.
     silo = compute_silo_modules(scenario_obj, model, cfg.silo_modules_enabled, warnings)
+    # Lab productivity-module variant: derive the productive-lab loadout the LP
+    # may use for research after the module is unlocked.
+    lab = compute_lab_modules(
+        model, cfg.lab_modules_enabled, cfg.lab_modules_item, warnings
+    )
 
     return L2Instance(
         scenario=scenario_obj,
@@ -1034,6 +1122,12 @@ def build_instance(
         silo_productivity=silo.productivity,
         silo_power_w=silo.power_w,
         silo_module_note=silo.note,
+        lab_prod_bonus=lab.prod_bonus,
+        lab_speed_frac=lab.speed_frac,
+        lab_power_factor=lab.power_factor,
+        lab_module_item=lab.module_item,
+        lab_modules_per=lab.modules_per,
+        lab_module_note=lab.note,
     )
 
 
@@ -1075,6 +1169,8 @@ def _print_summary(inst: L2Instance, model: GameModel) -> None:
     )
     if inst.silo_module_note:
         print(f"\n{inst.silo_module_note}")
+    if inst.lab_module_note:
+        print(f"\n{inst.lab_module_note}")
     if inst.warnings:
         print(f"\nWarnings ({len(inst.warnings)}):")
         for w in inst.warnings:
