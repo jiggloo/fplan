@@ -94,6 +94,22 @@ def test_apply_patch_selection_non_mapping_raises(tmp_path: Path) -> None:
         instance.apply_patch_selection(_base_map(), f, [])
 
 
+def test_apply_patch_selection_no_resources_key_warns(tmp_path: Path) -> None:
+    f = tmp_path / "sel.yaml"
+    f.write_text("seed: 1\nscenario: x\n")  # well-formed, but no `resources:`
+    warns: list[str] = []
+    md = instance.apply_patch_selection(_base_map(), f, warns)
+    assert md.tile_pool["iron-ore"] == 5000.0  # unchanged
+    assert warns and "resources" in warns[0]
+
+
+def test_apply_patch_selection_resources_not_mapping_raises(tmp_path: Path) -> None:
+    f = tmp_path / "sel.yaml"
+    f.write_text("resources:\n  - iron-ore\n  - copper-ore\n")  # a list, not a map
+    with pytest.raises(ValueError, match="must be a mapping"):
+        instance.apply_patch_selection(_base_map(), f, [])
+
+
 # --------------------------------------------------------------------------- #
 # build_instance(patch_selection_path=...) end-to-end into the instance
 # --------------------------------------------------------------------------- #
@@ -427,3 +443,18 @@ def test_viz_no_supply_curve_flag(tmp_path: Path, monkeypatch) -> None:
     res = runner.invoke(app, ["rates", "viz", "r", "--no-heatmap", "--no-supply-curve"])
     assert res.exit_code == 0, res.output
     assert not (rd / "viz" / "rates-supply-curve.html").exists()
+
+
+def test_viz_notes_pre_spatial_rates(tmp_path: Path, monkeypatch) -> None:
+    """A rates.yaml from before the spatial: block still renders the supply curve,
+    with a note that capacities are omitted until a re-solve."""
+    monkeypatch.chdir(tmp_path)
+    rd = _make_run(tmp_path)
+    l2 = _solved_l2()
+    del l2["spatial"]
+    (rd / "rates.yaml").write_text(yaml.safe_dump(l2))
+    monkeypatch.setattr(cli_main, "load_model_or_exit", lambda config_file: None)
+    res = runner.invoke(app, ["rates", "viz", "r", "--no-heatmap"])
+    assert res.exit_code == 0, res.output
+    assert "predates the spatial: block" in res.output
+    assert (rd / "viz" / "rates-supply-curve.html").exists()

@@ -643,7 +643,10 @@ def apply_patch_selection(
             continue
         try:
             if unit == "pumpjacks":
-                oil_spots = int(raw)
+                # round rather than truncate — a hand-edited fractional `spots`
+                # (3.9) should land on 4, not 3 (the viz export always writes an
+                # integer, so this only bites a hand-edited file).
+                oil_spots = int(round(float(raw)))
             else:
                 tile_pool[str(res)] = float(raw)
         except (TypeError, ValueError):

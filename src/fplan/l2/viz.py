@@ -1897,20 +1897,24 @@ def build_supply_curve_dataset(l2: dict, map_probe: dict) -> dict | None:
     )
 
     # Default selection: nearest-first greedy to cover each resource's demand.
+    # Only when patch capacities are known (fp > 0); without the spatial block
+    # every capacity is None, so a greedy fill can never reach `need` and would
+    # otherwise select *every* patch — leave the selection empty instead.
     by_res: dict[str, list[dict]] = defaultdict(list)
     for p in patches:
         by_res[p["resource"]].append(p)
     initial: list[int] = []
-    for r in res_order:
-        need = series.get(r, {}).get("peak_demand_drills", 0.0)
-        if need <= 0:
-            continue
-        cum = 0.0
-        for p in sorted(by_res[r], key=lambda x: x["distance"]):
-            if cum >= need:
-                break
-            cum += p["capacity"] or 0.0
-            initial.append(p["id"])
+    if fp > 0:
+        for r in res_order:
+            need = series.get(r, {}).get("peak_demand_drills", 0.0)
+            if need <= 0:
+                continue
+            cum = 0.0
+            for p in sorted(by_res[r], key=lambda x: x["distance"]):
+                if cum >= need:
+                    break
+                cum += p["capacity"] or 0.0
+                initial.append(p["id"])
 
     oil_spots = [
         {"x": float(o.get("x", 0)), "y": float(o.get("y", 0))}

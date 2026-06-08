@@ -34,9 +34,9 @@ regions:
 
 Units are per-resource: **drills** (`capacity = tile_count / footprint`) for ore,
 **pumpjacks** (one per oil spot) for crude-oil. `density` (= `tile_count /
-bbox_area`) is surfaced because the capacity estimate is a ±30% ballpark — a
-low-density patch packs fewer drills than its tile count implies; a true per-patch
-drill layout is L3's job.
+bbox_area`) is surfaced because the capacity estimate is a uniform-packing
+approximation — a low-density patch packs fewer drills than its tile count
+implies; a true per-patch drill layout is L3's job.
 
 ### It reads the solve, not the model
 
