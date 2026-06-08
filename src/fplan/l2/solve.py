@@ -50,7 +50,7 @@ from pyscipopt import Model, quicksum
 
 from fplan.l2 import backend as l2_backend
 from fplan.l2 import instance as l2_phases
-from fplan.l2.instance import L2Instance, PseudoRecipe
+from fplan.l2.instance import CraftingAssignmentSpec, L2Instance, PseudoRecipe
 from fplan.model import GameModel, Recipe
 
 
@@ -70,13 +70,13 @@ class Solution:
     x_hand: dict[tuple[str, int], float]
     item: dict[tuple[str, int], float]  # (item, tier) -> count
     duration: dict[int, float]  # step -> seconds
-    # Per-ore electric-drill assignment: (ore, tier) -> drill count on that ore.
-    # Surfaces which drills sit on which patch for L3 placement.
-    drill_assign: dict[tuple[str, int], float]
-    # Per-output steel-furnace assignment: (output, tier) -> furnace count
+    # Per-ore mining-drill assignment: (drill, ore, tier) -> drill count on that
+    # ore. Surfaces which drills sit on which patch for L3 placement.
+    drill_assign: dict[tuple[str, str, int], float]
+    # Per-output furnace assignment: (furnace, output, tier) -> furnace count
     # committed to smelting that product. Surfaces which furnaces smelt what
     # for L3 placement (a furnace can't switch product mid-run).
-    furnace_assign: dict[tuple[str, int], float]
+    furnace_assign: dict[tuple[str, str, int], float]
     excluded_consumed: dict[str, float]  # tracked-but-not-constrained items
     # Fuel chosen per (burner-building, step):
     # (fuel, building, step) -> units burned.
@@ -111,6 +111,10 @@ class Solution:
     # productive labs (the slower, +productivity loadout). Empty when the
     # variant is inactive. The bare cycles stay in x_pseudo.
     res_prod: dict[tuple[str, int], float] = field(default_factory=dict)
+    # Assembler recipe-assignment: (building, recipe, tier) -> count of that
+    # building committed to that recipe. Empty when the feature is inactive.
+    # Surfaces the repurpose-penalized static blocks for L3 placement.
+    assembler_assign: dict[tuple[str, str, int], float] = field(default_factory=dict)
 
 
 # Internal energy scaling: the LP works in MJ and MW so coefficients
@@ -296,6 +300,33 @@ def _end_state_count(inst: L2Instance, item: str) -> float:
     if item == "rocket-silo" and any(c for _, c in goal.rocket_launches):
         counts.append(1.0)
     return max(counts) if counts else 0.0
+
+
+def _building_consumers(
+    model: GameModel, building_name: str
+) -> list[tuple[str, float]]:
+    """Recipes that consume ``building_name`` as an ingredient, with the amount
+    consumed per cycle — e.g. assembling-machine-2's recipe eats an
+    assembling-machine-1, boiler's eats a stone-furnace. Read straight from the
+    game-data recipe ingredients, never a hard-coded pair list, so it stays
+    correct as the data changes. Used to bound the assembler `destroy` drain to
+    real upgrade-consumption. Returns ``[(recipe_name, amount), …]``."""
+    return [
+        (rc.name, s.amount)
+        for rc in model.recipes.values()
+        for s in rc.ingredients
+        if s.name == building_name
+    ]
+
+
+def _recipe_is_split(
+    model: GameModel, spec: CraftingAssignmentSpec, recipe_name: str
+) -> bool:
+    """Whether ``recipe_name`` gets its own per-recipe assembler bucket (+
+    repurpose penalty) under ``spec``, vs. staying in the shared pool — i.e. its
+    primary output is in the curated split set."""
+    r = model.recipes.get(recipe_name)
+    return bool(r and r.outputs and spec.splits_output(r.outputs[0].name))
 
 
 def build_lp(
@@ -814,14 +845,15 @@ def build_lp(
     #   lower-bound:   weight=0 → effective = item[b, i]
     #   experimental:  weight=0 for raw extractors (drills, pumps),
     #                  weight=1 → item[b, i+1] for everything else
+    # Buildings whose pooled capacity is replaced by a per-key assignment split
+    # below (mining drills per-ore, furnaces per-output, assemblers per-recipe) —
+    # config-driven, see inst.assignment. Those sections own both the pooled and
+    # the per-key caps for their buildings, so the generic pooled loop skips them.
+    split_capacity_buildings = inst.assignment.split_capacity_buildings
     for (b_name, i), entries in cap_terms.items():
         if not any(recipe_time.get(r, 0.0) > 0.0 for r, _, _ in entries):
             continue
-        # Electric drills (per-ore) and steel furnaces (per-output) are split
-        # below — a drill on iron can't switch to copper, a furnace smelting
-        # iron can't switch to copper. Their pooled capacity is replaced by
-        # per-assignment capacity, so skip them here.
-        if b_name in (ELECTRIC_MINING_DRILL, STEEL_FURNACE):
+        if b_name in split_capacity_buildings:
             continue
         building = model.buildings.get(b_name)
         if building is None:
@@ -962,44 +994,48 @@ def build_lp(
                     name=_safe(f"singlecraft_{r_name}_{i}"),
                 )
 
-    # --- electric-mining-drill: per-ore assignment (drills can't switch ore) ---
+    # --- mining drills: per-ore assignment (a drill can't switch ore) ---
     #
-    # Unlike assemblers, an electric drill sits on a patch and can't change
-    # what it mines. So instead of one pooled capacity, each ore gets its own
-    # drill-assignment count d[ore, i] that is non-decreasing (no repurposing)
-    # and sums to the total drill count. These are first-class, persisted to
-    # the output as `electric-mining-drill@<ore>` so L3 placement knows how
-    # many drills sit on each patch. Bilinear (d × duration), same kind as the
-    # pooled capacity it replaces. Ores are derived from the reachable mining
-    # pairs, so an ore needing un-researched tech (e.g. uranium) never appears.
-    drill_assign: dict[tuple[str, int], object] = {}
-    if ELECTRIC_MINING_DRILL in inst.reachable_buildings:
-        drill = model.buildings[ELECTRIC_MINING_DRILL]
+    # A mining drill sits on a patch and can't change what it mines. So instead
+    # of one pooled capacity, each ore gets its own drill-assignment count
+    # d[b, ore, i] that is non-decreasing (no repurposing) and sums to that
+    # drill's count. First-class, persisted as `<drill>@<ore>` so L3 placement
+    # knows how many drills sit on each patch. Bilinear (d × duration), same kind
+    # as the pooled capacity it replaces. Applied to every configured drill
+    # (inst.assignment.mining_buildings — electric + burner by default); neither
+    # is consumed by any recipe, so both are purely non-decreasing (no destroy
+    # drain, unlike consumable furnaces below). Ores are derived from the
+    # reachable mining pairs, so an ore needing un-researched tech never appears.
+    #
+    # An ore is worth modeling only if something downstream uses it — consumed as
+    # a recipe ingredient or burned as fuel. uranium-ore is mineable in the data
+    # but has no consumer without uranium-processing research, so on
+    # default-victory it's dead weight; skip it (no per-ore vars) and force its
+    # drill mining to zero. Computed once, shared across drill buildings.
+    needed_ores: set[str] = set()
+    for step in inst.steps:
+        for r in step.available_recipes(model):
+            if r.kind == "mining":
+                continue
+            for ing in r.ingredients:
+                needed_ores.add(ing.name)
+    for n, it in model.items.items():
+        if it.fuel_value_j:
+            needed_ores.add(n)
+
+    drill_assign: dict[tuple[str, str, int], object] = {}
+    for b_name in inst.assignment.mining_buildings:
+        drill = model.buildings.get(b_name)
+        if drill is None or b_name not in inst.reachable_buildings:
+            continue
         drill_speed = drill.base_speed
         drill_fp = inst.deployed_facility(model, drill).tile_footprint
-        drill_end_w = inst.capacity_end_weight(ELECTRIC_MINING_DRILL)
-        # An ore is worth modeling only if something downstream uses it —
-        # consumed as a recipe ingredient or burned as fuel. uranium-ore is
-        # mineable in the data (enabled_at_start) but has no consumer without
-        # uranium-processing research, so on default-victory it's dead weight.
-        # Skip those ores (no per-ore vars) and force their electric-drill
-        # mining to zero (you don't place drills on ore nobody uses).
-        needed_ores: set[str] = set()
-        for step in inst.steps:
-            for r in step.available_recipes(model):
-                if r.kind == "mining":
-                    continue
-                for ing in r.ingredients:
-                    needed_ores.add(ing.name)
-        for n, it in model.items.items():
-            if it.fuel_value_j:
-                needed_ores.add(n)
-
-        # ore -> mining recipe names actually paired with the electric drill.
+        drill_end_w = inst.capacity_end_weight(b_name)
+        # ore -> mining recipe names actually paired with this drill.
         ore_recipes: dict[str, set[str]] = {}
         unused_drill_mining: list[tuple[str, str, int]] = []
-        for r_name, b_name, i in x_real:
-            if b_name != ELECTRIC_MINING_DRILL:
+        for r_name, bb, i in x_real:
+            if bb != b_name:
                 continue
             r = model.recipes.get(r_name)
             if r is None or r.kind != "mining":
@@ -1008,11 +1044,16 @@ def build_lp(
             if ore in needed_ores:
                 ore_recipes.setdefault(ore, set()).add(r_name)
             else:
-                unused_drill_mining.append((r_name, b_name, i))
+                unused_drill_mining.append((r_name, bb, i))
+        if not ore_recipes:
+            continue
 
-        # Forbid mining unused ores on electric drills (no demand, no vars).
+        # Forbid mining unused ores on this drill (no demand, no vars).
         for key in unused_drill_mining:
-            m.addCons(x_real[key] == 0.0, name=_safe(f"no_mine_{key[0]}_{key[2]}"))
+            m.addCons(
+                x_real[key] == 0.0,
+                name=_safe(f"no_mine_{key[1]}_{key[0]}_{key[2]}"),
+            )
 
         for ore in sorted(ore_recipes):
             # UB: drills that physically fit on this ore's patch (finite box
@@ -1020,113 +1061,384 @@ def build_lp(
             if ore in inst.tile_pool and drill_fp > 0:
                 ore_ub = inst.tile_pool[ore] / drill_fp
             else:
-                ore_ub = _building_count_ub(ELECTRIC_MINING_DRILL)
+                ore_ub = _building_count_ub(b_name)
             for tier in range(n_tiers):
-                drill_assign[(ore, tier)] = m.addVar(
-                    name=_safe(f"drill_{ore}_{tier}"), lb=0.0, ub=ore_ub, vtype="C"
+                drill_assign[(b_name, ore, tier)] = m.addVar(
+                    name=_safe(f"drill_{b_name}_{ore}_{tier}"),
+                    lb=0.0,
+                    ub=ore_ub,
+                    vtype="C",
                 )
 
         for ore, recipes in ore_recipes.items():
             for i in range(n_steps):
-                # Per-ore capacity, mirroring the pooled form but on d[ore,·].
+                # Per-ore capacity, mirroring the pooled form but on d[b,ore,·].
                 eff_terms = []
                 if (1.0 - drill_end_w) > 0:
-                    eff_terms.append((1.0 - drill_end_w) * drill_assign[(ore, i)])
+                    eff_terms.append(
+                        (1.0 - drill_end_w) * drill_assign[(b_name, ore, i)]
+                    )
                 if drill_end_w > 0:
-                    eff_terms.append(drill_end_w * drill_assign[(ore, i + 1)])
+                    eff_terms.append(drill_end_w * drill_assign[(b_name, ore, i + 1)])
                 lhs = quicksum(
-                    recipe_time.get(r, 0.0) * var
-                    for (r_name, b_name, ii), var in x_real.items()
-                    if ii == i and b_name == ELECTRIC_MINING_DRILL and r_name in recipes
-                    for r in (r_name,)
+                    recipe_time.get(r_name, 0.0) * var
+                    for (r_name, bb, ii), var in x_real.items()
+                    if ii == i and bb == b_name and r_name in recipes
                 )
                 m.addCons(
                     lhs <= quicksum(eff_terms) * drill_speed * duration_vars[i],
-                    name=_safe(f"cap_drill_{ore}_{i}"),
+                    name=_safe(f"cap_drill_{b_name}_{ore}_{i}"),
                 )
 
         for tier in range(n_tiers):
             # Assignments sum to the (single) drill count that drives area /
             # infra / player-time, so the split never inflates those.
             m.addCons(
-                quicksum(drill_assign[(ore, tier)] for ore in ore_recipes)
-                <= item_vars[(ELECTRIC_MINING_DRILL, tier)],
-                name=_safe(f"drill_total_{tier}"),
+                quicksum(drill_assign[(b_name, ore, tier)] for ore in ore_recipes)
+                <= item_vars[(b_name, tier)],
+                name=_safe(f"drill_total_{b_name}_{tier}"),
             )
             # Non-decreasing per ore: a drill placed on an ore stays there.
             if tier + 1 < n_tiers:
                 for ore in ore_recipes:
                     m.addCons(
-                        drill_assign[(ore, tier + 1)] >= drill_assign[(ore, tier)],
-                        name=_safe(f"drill_mono_{ore}_{tier}"),
+                        drill_assign[(b_name, ore, tier + 1)]
+                        >= drill_assign[(b_name, ore, tier)],
+                        name=_safe(f"drill_mono_{b_name}_{ore}_{tier}"),
                     )
 
-    # --- steel-furnace: per-output assignment (a furnace can't switch product) ---
+    # --- furnaces: per-output assignment (a furnace can't switch product) ---
     #
-    # Exactly the electric-drill story, one tier up the chain: a steel furnace
-    # fed iron-ore can't be retasked to smelt copper between steps. Pooled
-    # capacity would let the LP melt iron now and copper later on the "same"
-    # furnaces, flattening nothing. So each smelted output gets its own
-    # furnace-assignment count that is non-decreasing (no repurposing) and sums
-    # to the steel-furnace total. First-class, persisted as
-    # `steel-furnace@<output>` (e.g. steel-furnace@iron-plate) for L3 placement
-    # and the viz. Bilinear (count × duration), the same kind as the pooled
-    # capacity it replaces — kept minimal by disabling electric-furnace smelting
-    # and leaving stone furnaces pooled.
-    furnace_assign: dict[tuple[str, int], object] = {}
-    if STEEL_FURNACE in inst.reachable_buildings:
-        furnace = model.buildings[STEEL_FURNACE]
+    # The drill story one tier up the chain: a furnace smelts whatever its input
+    # belt feeds, and can't be retasked between steps. Each smelted output gets
+    # its own furnace-assignment count f[b, out, i] that sums to that furnace's
+    # total, persisted as `<furnace>@<output>` for L3 placement. Bilinear
+    # (count × duration). Applied to every configured furnace
+    # (inst.assignment.smelting_buildings — stone + steel by default; disabling
+    # electric-furnace smelting keeps the term count bounded).
+    #
+    # Steel and stone furnaces differ in one way: recipes CONSUME stone furnaces
+    # (boilers and burner drills each eat one). A consumed furnace is picked up
+    # and destroyed, not repurposed, so its bucket must be able to shrink — a
+    # strict non-decreasing rule would forbid bootstrapping smelting on stone
+    # furnaces and then cannibalizing them. So a consumable furnace gets per-
+    # output `destroy` vars that relax monotonicity by at most the step's real
+    # consumption (detected from game data, like the assembler drain); a furnace
+    # with no consumer (steel) stays strictly non-decreasing. No player-time
+    # penalty on either (unlike the assembler split). `smelt_input_to_output`
+    # records each ore→plate mapping for the burner-drill coupling below.
+    furnace_assign: dict[tuple[str, str, int], object] = {}
+    smelt_input_to_output: dict[str, str] = {}
+    for b_name in inst.assignment.smelting_buildings:
+        furnace = model.buildings.get(b_name)
+        if furnace is None or b_name not in inst.reachable_buildings:
+            continue
         furnace_speed = furnace.base_speed
-        furnace_end_w = inst.capacity_end_weight(STEEL_FURNACE)
-        # smelted output item -> smelting recipe names paired with steel-furnace.
+        furnace_end_w = inst.capacity_end_weight(b_name)
+        # smelted output item -> smelting recipe names paired with this furnace.
         out_recipes: dict[str, set[str]] = {}
-        for r_name, b_name, _i in x_real:
-            if b_name != STEEL_FURNACE:
+        for r_name, bb, _i in x_real:
+            if bb != b_name:
                 continue
             r = model.recipes.get(r_name)
             if r is None or not r.outputs:
                 continue
-            out_recipes.setdefault(r.outputs[0].name, set()).add(r_name)
+            out = r.outputs[0].name
+            out_recipes.setdefault(out, set()).add(r_name)
+            if r.ingredients:
+                smelt_input_to_output.setdefault(r.ingredients[0].name, out)
+        if not out_recipes:
+            continue
+        out_ub = _building_count_ub(b_name)
 
         for out in sorted(out_recipes):
-            out_ub = _building_count_ub(STEEL_FURNACE)
             for tier in range(n_tiers):
-                furnace_assign[(out, tier)] = m.addVar(
-                    name=_safe(f"furnace_{out}_{tier}"), lb=0.0, ub=out_ub, vtype="C"
+                furnace_assign[(b_name, out, tier)] = m.addVar(
+                    name=_safe(f"furnace_{b_name}_{out}_{tier}"),
+                    lb=0.0,
+                    ub=out_ub,
+                    vtype="C",
                 )
 
         for out, recipes in out_recipes.items():
             for i in range(n_steps):
-                # Per-output capacity, mirroring the pooled form on f[out,·].
+                # Per-output capacity, mirroring the pooled form on f[b,out,·].
                 eff_terms = []
                 if (1.0 - furnace_end_w) > 0:
-                    eff_terms.append((1.0 - furnace_end_w) * furnace_assign[(out, i)])
+                    eff_terms.append(
+                        (1.0 - furnace_end_w) * furnace_assign[(b_name, out, i)]
+                    )
                 if furnace_end_w > 0:
-                    eff_terms.append(furnace_end_w * furnace_assign[(out, i + 1)])
+                    eff_terms.append(
+                        furnace_end_w * furnace_assign[(b_name, out, i + 1)]
+                    )
                 lhs = quicksum(
                     recipe_time.get(r_name, 0.0) * var
-                    for (r_name, b_name, ii), var in x_real.items()
-                    if ii == i and b_name == STEEL_FURNACE and r_name in recipes
+                    for (r_name, bb, ii), var in x_real.items()
+                    if ii == i and bb == b_name and r_name in recipes
                 )
                 m.addCons(
                     lhs <= quicksum(eff_terms) * furnace_speed * duration_vars[i],
-                    name=_safe(f"cap_furnace_{out}_{i}"),
+                    name=_safe(f"cap_furnace_{b_name}_{out}_{i}"),
                 )
 
         for tier in range(n_tiers):
             # Assignments sum to the (single) furnace count that drives area /
             # infra / player-time, so the split never inflates those.
             m.addCons(
-                quicksum(furnace_assign[(out, tier)] for out in out_recipes)
-                <= item_vars[(STEEL_FURNACE, tier)],
-                name=_safe(f"furnace_total_{tier}"),
+                quicksum(furnace_assign[(b_name, out, tier)] for out in out_recipes)
+                <= item_vars[(b_name, tier)],
+                name=_safe(f"furnace_total_{b_name}_{tier}"),
             )
-            # Non-decreasing per output: a furnace committed to a product stays.
-            if tier + 1 < n_tiers:
+
+        # Recipes eating this furnace as an ingredient (stone-furnace → boiler /
+        # burner-drill); empty for steel → strict monotonicity.
+        consumers = _building_consumers(model, b_name)
+        for i in range(n_steps):
+            if i + 1 >= n_tiers:
+                break
+            if not consumers:
                 for out in out_recipes:
                     m.addCons(
-                        furnace_assign[(out, tier + 1)] >= furnace_assign[(out, tier)],
-                        name=_safe(f"furnace_mono_{out}_{tier}"),
+                        furnace_assign[(b_name, out, i + 1)]
+                        >= furnace_assign[(b_name, out, i)],
+                        name=_safe(f"furnace_mono_{b_name}_{out}_{i}"),
+                    )
+                continue
+            # Consumable furnace: a bucket may drop, but only by what's consumed.
+            consumed_terms = []
+            for rc_name, amt in consumers:
+                consumed_terms.extend(
+                    amt * var
+                    for (rr, _bb, ii), var in x_real.items()
+                    if rr == rc_name and ii == i
+                )
+                if (rc_name, i) in x_hand:
+                    consumed_terms.append(amt * x_hand[(rc_name, i)])
+            destroy_vars = []
+            for out in out_recipes:
+                # Finite ub so the (assign-side) slack can't form a free ray; the
+                # binding cap is the consumption sum below.
+                destroy_v = m.addVar(
+                    name=_safe(f"furn_destroy_{b_name}_{out}_{i}"),
+                    lb=0.0,
+                    ub=out_ub,
+                    vtype="C",
+                )
+                destroy_vars.append(destroy_v)
+                m.addCons(
+                    furnace_assign[(b_name, out, i + 1)]
+                    >= furnace_assign[(b_name, out, i)] - destroy_v,
+                    name=_safe(f"furnace_mono_{b_name}_{out}_{i}"),
+                )
+            m.addCons(
+                quicksum(destroy_vars) <= quicksum(consumed_terms),
+                name=_safe(f"furnace_destroy_cap_{b_name}_{i}"),
+            )
+
+    # --- bootstrap 1:1 burner-drill ↔ stone-furnace coupling ---
+    #
+    # In the hand-placed starter base a burner drill feeds a stone furnace ~1:1
+    # (burner ~0.25 ore/s ≈ stone-furnace plate rate). So every
+    # burner-mining-drill@<ore> requires at least one stone-furnace@<plate> on
+    # the matching product (plate derived from the smelting recipes above, not
+    # hard-coded). A lower bound enforced every tier; binds only while burner
+    # drills exist (they phase out under the burner cap as electric drills take
+    # over, after which it's trivially 0 ≥ 0). Both buckets are linear vars, so
+    # this is a linear constraint. Skipped unless both classes are assigned.
+    if (
+        BURNER_MINING_DRILL in inst.assignment.mining_buildings
+        and STONE_FURNACE in inst.assignment.smelting_buildings
+    ):
+        for ore, plate in sorted(smelt_input_to_output.items()):
+            for tier in range(n_tiers):
+                d = drill_assign.get((BURNER_MINING_DRILL, ore, tier))
+                f = furnace_assign.get((STONE_FURNACE, plate, tier))
+                if d is not None and f is not None:
+                    m.addCons(
+                        f >= d,
+                        name=_safe(f"burner_furnace_couple_{ore}_{tier}"),
+                    )
+
+    # --- assembler: per-recipe assignment with repurpose cost ---
+    #
+    # A real assembler is set to ONE recipe; switching it is a player action.
+    # This generalizes the per-ore drill / per-output furnace splits to
+    # crafters, with one difference those don't have: the assignment is
+    # REPURPOSABLE (drills/furnaces are strictly non-decreasing). Assemblers must
+    # repurpose — e.g. once research ends, AM2s move from science packs to
+    # rocket-part materials — so a hard non-decreasing rule would be infeasible.
+    #
+    # Each configured building (inst.assignment.crafting.buildings) splits into
+    # a pooled `unassigned` count plus per-recipe `assigned[b,r,tier]` buckets,
+    # for the CURATED split set only (every science pack + the configured items);
+    # all other recipes share the pool. Linking ties pool + Σ assigned to the
+    # building count. Transitions per step cost player time:
+    #   unassigned → assigned[r] : assign_cost_s  (set a recipe, ~1 tick)
+    #   assigned[r] → unassigned : unassign_cost_s (walk back + clear; the knob)
+    # Consuming an assembler as an ingredient (AM1→AM2, AM2→AM3) is a free
+    # DESTRUCTION — its consumer recipes detected from game data, not hard-coded —
+    # draining a bucket with no switch cost, capped by the step's real
+    # consumption. The split is curated because the bilinear-term count is SCIP's
+    # cost driver; a full split is intractable. `assign_pt_terms` feeds the
+    # per-step player_time budget below. None (feature off / player-time off /
+    # no reachable assembler) ⇒ this whole section is a no-op and assemblers keep
+    # their single pooled capacity above.
+    assembler_assign: dict[tuple[str, str, int], object] = {}
+    assembler_unassigned: dict[tuple[str, int], object] = {}
+    assign_pt_terms: dict[int, list] = {}
+    aa_spec = inst.assignment.crafting
+    if aa_spec is not None:
+        assign_pt_terms = {i: [] for i in range(n_steps)}
+        for b_name in aa_spec.buildings:
+            building = model.buildings.get(b_name)
+            if building is None or b_name not in inst.reachable_buildings:
+                continue
+            speed = building.base_speed
+            end_w = inst.capacity_end_weight(b_name)
+            ub = _building_count_ub(b_name)
+            recipes_b = sorted({r for (r, bb, _i) in x_real if bb == b_name})
+            if not recipes_b:
+                continue
+            split_recipes = [
+                r for r in recipes_b if _recipe_is_split(model, aa_spec, r)
+            ]
+            pooled_recipes = [
+                r for r in recipes_b if not _recipe_is_split(model, aa_spec, r)
+            ]
+            # A bucket starts at its recipe's first available tier (pre-unlock it
+            # is structurally 0 — no var, no bilinear term).
+            first_tier = {
+                r: min(i for (rr, bb, i) in x_real if rr == r and bb == b_name)
+                for r in split_recipes
+            }
+            for tier in range(n_tiers):
+                assembler_unassigned[(b_name, tier)] = m.addVar(
+                    name=_safe(f"asm_pool_{b_name}_{tier}"), lb=0.0, ub=ub, vtype="C"
+                )
+            for r in split_recipes:
+                for tier in range(first_tier[r], n_tiers):
+                    assembler_assign[(b_name, r, tier)] = m.addVar(
+                        name=_safe(f"asm_{b_name}_{r}_{tier}"),
+                        lb=0.0,
+                        ub=ub,
+                        vtype="C",
+                    )
+            # Initial assemblers are unassigned (scenarios carry no assignment).
+            for r in split_recipes:
+                if (b_name, r, 0) in assembler_assign:
+                    m.addCons(
+                        assembler_assign[(b_name, r, 0)] == 0.0,
+                        name=_safe(f"asm_init0_{b_name}_{r}"),
+                    )
+            # Linking: pool + Σ assigned == item[b] at every tier, so the split
+            # never inflates the count that drives area / infra / player-time.
+            for tier in range(n_tiers):
+                m.addCons(
+                    assembler_unassigned[(b_name, tier)]
+                    + quicksum(
+                        assembler_assign[(b_name, r, tier)]
+                        for r in split_recipes
+                        if (b_name, r, tier) in assembler_assign
+                    )
+                    == item_vars[(b_name, tier)],
+                    name=_safe(f"asm_link_{b_name}_{tier}"),
+                )
+            # Per-split-recipe capacity: time_r · x ≤ assigned · speed · dur
+            # (start/end blend mirrors the pooled form).
+            for r in split_recipes:
+                t_r = recipe_time.get(r, 0.0)
+                for i in range(n_steps):
+                    if (r, b_name, i) not in x_real:
+                        continue
+                    eff = []
+                    if (1.0 - end_w) > 0 and (b_name, r, i) in assembler_assign:
+                        eff.append((1.0 - end_w) * assembler_assign[(b_name, r, i)])
+                    if end_w > 0 and (b_name, r, i + 1) in assembler_assign:
+                        eff.append(end_w * assembler_assign[(b_name, r, i + 1)])
+                    m.addCons(
+                        t_r * x_real[(r, b_name, i)]
+                        <= quicksum(eff) * speed * duration_vars[i],
+                        name=_safe(f"cap_asm_{b_name}_{r}_{i}"),
+                    )
+            # Pooled capacity for the non-split recipes (one bilinear term/step).
+            for i in range(n_steps):
+                pooled_terms = [
+                    recipe_time.get(r, 0.0) * x_real[(r, b_name, i)]
+                    for r in pooled_recipes
+                    if (r, b_name, i) in x_real and recipe_time.get(r, 0.0) > 0
+                ]
+                if not pooled_terms:
+                    continue
+                eff = []
+                if (1.0 - end_w) > 0:
+                    eff.append((1.0 - end_w) * assembler_unassigned[(b_name, i)])
+                if end_w > 0:
+                    eff.append(end_w * assembler_unassigned[(b_name, i + 1)])
+                m.addCons(
+                    quicksum(pooled_terms) <= quicksum(eff) * speed * duration_vars[i],
+                    name=_safe(f"cap_asmpool_{b_name}_{i}"),
+                )
+            # Transitions: Δbucket = assign − unassign − destroy. assign/unassign
+            # carry player time; destroy is free but capped by the step's real
+            # consumption of this building (data-driven, AM1→AM2 / AM2→AM3).
+            consumers = _building_consumers(model, b_name)
+            for i in range(n_steps):
+                destroy_vars = []
+                for r in split_recipes:
+                    a_next = assembler_assign.get((b_name, r, i + 1))
+                    if a_next is None:
+                        continue
+                    a_cur = assembler_assign.get((b_name, r, i))  # None ⇒ 0
+                    # Finite bounds matter: assign/unassign sit on opposite sides
+                    # of the balance, so uncapped they form a free ray (both → ∞)
+                    # that wrecks SCIP's LP. A transition can't move more machines
+                    # than can exist, so cap at the building ub.
+                    assign_v = m.addVar(
+                        name=_safe(f"asm_assign_{b_name}_{r}_{i}"),
+                        lb=0.0,
+                        ub=ub,
+                        vtype="C",
+                    )
+                    unassign_v = m.addVar(
+                        name=_safe(f"asm_unassign_{b_name}_{r}_{i}"),
+                        lb=0.0,
+                        ub=ub,
+                        vtype="C",
+                    )
+                    delta = a_next - (a_cur if a_cur is not None else 0.0)
+                    if consumers:
+                        destroy_v = m.addVar(
+                            name=_safe(f"asm_destroy_{b_name}_{r}_{i}"),
+                            lb=0.0,
+                            ub=ub,
+                            vtype="C",
+                        )
+                        destroy_vars.append(destroy_v)
+                        m.addCons(
+                            delta == assign_v - unassign_v - destroy_v,
+                            name=_safe(f"asm_bal_{b_name}_{r}_{i}"),
+                        )
+                    else:
+                        m.addCons(
+                            delta == assign_v - unassign_v,
+                            name=_safe(f"asm_bal_{b_name}_{r}_{i}"),
+                        )
+                    assign_pt_terms[i].append(aa_spec.assign_cost_s * assign_v)
+                    assign_pt_terms[i].append(aa_spec.unassign_cost_s * unassign_v)
+                if consumers and destroy_vars:
+                    consumed_terms = []
+                    for rc_name, amt in consumers:
+                        consumed_terms.extend(
+                            amt * var
+                            for (rr, _bb, ii), var in x_real.items()
+                            if rr == rc_name and ii == i
+                        )
+                        if (rc_name, i) in x_hand:
+                            consumed_terms.append(amt * x_hand[(rc_name, i)])
+                    m.addCons(
+                        quicksum(destroy_vars) <= quicksum(consumed_terms),
+                        name=_safe(f"asm_destroy_cap_{b_name}_{i}"),
                     )
 
     # --- spatial caps (unconditional) + infrastructure reservation (flag-gated) ---
@@ -1352,6 +1664,10 @@ def build_lp(
             for (r_name, ii), var in x_hand.items():
                 if ii == i and wood_per_recipe.get(r_name, 0.0) > 0:
                     terms.append(wood_per_recipe[r_name] * wood_to_time * var)
+            # Assembler (re)assignment is a serial player action — walk to the
+            # machine and set/clear its recipe (assign_pt_terms, built above;
+            # empty when the feature is inactive).
+            terms.extend(assign_pt_terms.get(i, ()))
             if terms:
                 m.addCons(
                     quicksum(terms) <= duration_vars[i], name=_safe(f"player_time_{i}")
@@ -1662,6 +1978,7 @@ def build_lp(
         "duration": duration_vars,
         "drill_assign": drill_assign,
         "furnace_assign": furnace_assign,
+        "assembler_assign": assembler_assign,
         "fuel_burn": fuel_burn,
         "elec_demand_lin": elec_demand_lin,
         "elec_supply_lin": elec_supply_lin,
@@ -1753,11 +2070,13 @@ BURNER_MINING_DRILL = "burner-mining-drill"
 # can't become a copper smelter mid-run), so they get the same per-output
 # assignment split as the electric drill (see the steel-furnace block).
 STEEL_FURNACE = "steel-furnace"
-# Each extra smelting building multiplies the per-output bilinear capacity
-# terms. To keep that minimal we disable electric-furnace smelting outright
-# and split only the steel furnace; stone furnaces stay pooled (capped, see
-# inst.cfg.stone_furnace_cap) because splitting them would also entangle the early
-# stone-furnace/boiler bootstrap.
+STONE_FURNACE = "stone-furnace"
+# Electric-furnace smelting is disabled outright (smelting served by the split
+# stone + steel furnaces) to keep the per-output bilinear-term count bounded.
+# Stone furnaces are split per-output like steel (config-driven, see
+# inst.assignment.smelting_buildings) but stay capped (inst.cfg.stone_furnace_cap)
+# to force the bootstrap transition to steel, and — being consumed by boilers /
+# burner drills — carry the consumable `destroy` drain (see the furnace block).
 # Cap on pooled (unsplit) stone-furnace count, forcing transition to the
 # split steel furnaces — the smelting analogue of BURNER_DRILL_CAP. Stone
 # furnaces are transitional bootstrap smelters; without a cap the LP would
@@ -2094,6 +2413,11 @@ def solve(
         for k, v in handles["furnace_assign"].items()
         if abs(m.getVal(v)) > tol
     }
+    assembler_assign_sol = {
+        k: m.getVal(v)
+        for k, v in handles["assembler_assign"].items()
+        if abs(m.getVal(v)) > tol
+    }
     fuel_burn_sol = {
         k: m.getVal(v) for k, v in handles["fuel_burn"].items() if m.getVal(v) > tol
     }
@@ -2173,6 +2497,7 @@ def solve(
             duration=duration_sol,
             drill_assign=drill_assign_sol,
             furnace_assign=furnace_assign_sol,
+            assembler_assign=assembler_assign_sol,
             excluded_consumed=excluded_consumed,
             fuel_burn=fuel_burn_sol,
             electric_demand=elec_demand_sol,
@@ -2273,14 +2598,16 @@ def _capacity_utilization(
         cap = eff * speed * float(sol.duration.get(i, 0.0))
         _emit(i, b_name, lhs, cap)
 
-    # Electric drills, per ore (capacity drawn only on that ore's assigned
-    # drills — a drill on iron can't serve copper).
-    drill = model.buildings.get(ELECTRIC_MINING_DRILL)
-    if drill is not None and sol.drill_assign:
-        drill_end_w = inst.capacity_end_weight(ELECTRIC_MINING_DRILL)
+    # Mining drills, per ore (capacity drawn only on that ore's assigned drills —
+    # a drill on iron can't serve copper), per configured drill building.
+    for b_name in sorted({b for (b, _o, _t) in sol.drill_assign}):
+        drill = model.buildings.get(b_name)
+        if drill is None:
+            continue
+        drill_end_w = inst.capacity_end_weight(b_name)
         ore_secs: dict[tuple[str, int], float] = {}
-        for (r_name, b_name, i), v in sol.x_real.items():
-            if b_name != ELECTRIC_MINING_DRILL:
+        for (r_name, bb, i), v in sol.x_real.items():
+            if bb != b_name:
                 continue
             r = model.recipes.get(r_name)
             if r is None or r.kind != "mining" or not r.outputs:
@@ -2289,26 +2616,23 @@ def _capacity_utilization(
             ore_secs[(ore, i)] = (
                 ore_secs.get((ore, i), 0.0) + recipe_time.get(r_name, 0.0) * v
             )
-        for ore in sorted({o for (o, _t) in sol.drill_assign}):
+        for ore in sorted({o for (b, o, _t) in sol.drill_assign if b == b_name}):
             for i in range(n_steps):
                 eff = (1.0 - drill_end_w) * float(
-                    sol.drill_assign.get((ore, i), 0.0)
-                ) + drill_end_w * float(sol.drill_assign.get((ore, i + 1), 0.0))
+                    sol.drill_assign.get((b_name, ore, i), 0.0)
+                ) + drill_end_w * float(sol.drill_assign.get((b_name, ore, i + 1), 0.0))
                 cap = eff * drill.base_speed * float(sol.duration.get(i, 0.0))
-                _emit(
-                    i,
-                    f"{ELECTRIC_MINING_DRILL}@{ore}",
-                    ore_secs.get((ore, i), 0.0),
-                    cap,
-                )
+                _emit(i, f"{b_name}@{ore}", ore_secs.get((ore, i), 0.0), cap)
 
-    # Steel furnaces, per output.
-    furnace = model.buildings.get(STEEL_FURNACE)
-    if furnace is not None and sol.furnace_assign:
-        furnace_end_w = inst.capacity_end_weight(STEEL_FURNACE)
+    # Furnaces, per output, per configured furnace building.
+    for b_name in sorted({b for (b, _o, _t) in sol.furnace_assign}):
+        furnace = model.buildings.get(b_name)
+        if furnace is None:
+            continue
+        furnace_end_w = inst.capacity_end_weight(b_name)
         out_secs: dict[tuple[str, int], float] = {}
-        for (r_name, b_name, i), v in sol.x_real.items():
-            if b_name != STEEL_FURNACE:
+        for (r_name, bb, i), v in sol.x_real.items():
+            if bb != b_name:
                 continue
             r = model.recipes.get(r_name)
             if r is None or not r.outputs:
@@ -2317,13 +2641,15 @@ def _capacity_utilization(
             out_secs[(out, i)] = (
                 out_secs.get((out, i), 0.0) + recipe_time.get(r_name, 0.0) * v
             )
-        for out in sorted({o for (o, _t) in sol.furnace_assign}):
+        for out in sorted({o for (b, o, _t) in sol.furnace_assign if b == b_name}):
             for i in range(n_steps):
                 eff = (1.0 - furnace_end_w) * float(
-                    sol.furnace_assign.get((out, i), 0.0)
-                ) + furnace_end_w * float(sol.furnace_assign.get((out, i + 1), 0.0))
+                    sol.furnace_assign.get((b_name, out, i), 0.0)
+                ) + furnace_end_w * float(
+                    sol.furnace_assign.get((b_name, out, i + 1), 0.0)
+                )
                 cap = eff * furnace.base_speed * float(sol.duration.get(i, 0.0))
-                _emit(i, f"{STEEL_FURNACE}@{out}", out_secs.get((out, i), 0.0), cap)
+                _emit(i, f"{b_name}@{out}", out_secs.get((out, i), 0.0), cap)
 
     for i in by_step:
         by_step[i].sort(key=lambda u: -(u["utilization"] or 0.0))
@@ -2612,35 +2938,35 @@ def _per_step_records(
                 }
             )
 
-        # Per-ore electric-drill assignment: which drills sit on which patch.
-        # First-class so L3 placement can put each ore's drills on its patch.
-        ores = sorted({ore for (ore, _t) in sol.drill_assign})
+        # Per-ore mining-drill assignment: which drills sit on which patch, per
+        # drill building. First-class so L3 placement can put each ore's drills
+        # on its patch. Emitted as `<drill>@<ore>`.
         mining_assignment = []
-        for ore in ores:
-            start = float(sol.drill_assign.get((ore, i), 0.0))
-            end = float(sol.drill_assign.get((ore, i + 1), 0.0))
+        for b_name, ore in sorted({(b, o) for (b, o, _t) in sol.drill_assign}):
+            start = float(sol.drill_assign.get((b_name, ore, i), 0.0))
+            end = float(sol.drill_assign.get((b_name, ore, i + 1), 0.0))
             if start < tol and end < tol:
                 continue
             mining_assignment.append(
                 {
-                    "building": f"{ELECTRIC_MINING_DRILL}@{ore}",
+                    "building": f"{b_name}@{ore}",
                     "ore": ore,
                     "count_start": start,
                     "count_end": end,
                 }
             )
 
-        # Per-ore burner-mining-drill extraction (mixed-facility ore output).
-        # Burner drills are a pooled bootstrap (not ore-split, not
-        # tile-pool-capped), so there's no per-ore *count* to report — but the
-        # ore-seconds they mine ARE attributable via x_real, and dividing by
-        # base_speed·duration gives utilized drill-EQUIVALENTS per ore. This is
-        # production-consistent (tied to actual ore output by the LP) and lets
-        # the supply-curve viz show the early-game burner contribution without
-        # conflating it with the tile-pool-capped electric demand.
+        # Per-ore burner-drill extraction *equivalents* — a fallback for when
+        # burner drills are NOT ore-split (pooled): the ore-seconds they mine are
+        # attributable via x_real, and dividing by base_speed·duration gives
+        # utilized drill-EQUIVALENTS per ore for the supply-curve viz. When
+        # burners ARE split (the default) they carry real per-ore counts in
+        # mining_assignment above, so this block stays silent to avoid double
+        # reporting.
         burner = model.buildings.get(BURNER_MINING_DRILL)
+        burner_split = any(b == BURNER_MINING_DRILL for (b, _o, _t) in sol.drill_assign)
         burner_mining: list[dict] = []
-        if burner is not None and burner.base_speed and rate_d > 0:
+        if burner is not None and not burner_split and burner.base_speed and rate_d > 0:
             b_secs: dict[str, float] = {}
             for (r_name, b_name, ii), v in sol.x_real.items():
                 if ii != i or b_name != BURNER_MINING_DRILL or v < tol:
@@ -2656,22 +2982,42 @@ def _per_step_records(
                     continue
                 burner_mining.append({"ore": ore, "drills_equiv": float(equiv)})
 
-        # Per-output steel-furnace assignment: which furnaces smelt which
-        # product (a furnace can't switch product mid-run). Same first-class
-        # treatment as the drill split, emitted as `steel-furnace@<output>`.
-        outputs = sorted({o for (o, _t) in sol.furnace_assign})
+        # Per-output furnace assignment: which furnaces smelt which product (a
+        # furnace can't switch product mid-run), per furnace building. Emitted as
+        # `<furnace>@<output>`.
         smelting_assignment = []
-        for out in outputs:
-            start = float(sol.furnace_assign.get((out, i), 0.0))
-            end = float(sol.furnace_assign.get((out, i + 1), 0.0))
+        for b_name, out in sorted({(b, o) for (b, o, _t) in sol.furnace_assign}):
+            start = float(sol.furnace_assign.get((b_name, out, i), 0.0))
+            end = float(sol.furnace_assign.get((b_name, out, i + 1), 0.0))
             if start < tol and end < tol:
                 continue
             smelting_assignment.append(
                 {
-                    "building": f"{STEEL_FURNACE}@{out}",
+                    "building": f"{b_name}@{out}",
                     "output": out,
                     "count_start": start,
                     "count_end": end,
+                }
+            )
+
+        # Per-recipe assembler assignment: which assemblers are committed to
+        # which recipe — a static block for L3. Unlike the non-decreasing drill /
+        # furnace splits these are REPURPOSABLE (the player paid player-time to
+        # switch them), tagged `repurpose_penalized` so L3 knows the commitment
+        # can move between steps. Emitted as `<building>@<recipe>`.
+        assembler_assignment = []
+        for b_name, r_name in sorted({(b, r) for (b, r, _t) in sol.assembler_assign}):
+            start = float(sol.assembler_assign.get((b_name, r_name, i), 0.0))
+            end = float(sol.assembler_assign.get((b_name, r_name, i + 1), 0.0))
+            if start < tol and end < tol:
+                continue
+            assembler_assignment.append(
+                {
+                    "building": f"{b_name}@{r_name}",
+                    "recipe": r_name,
+                    "count_start": start,
+                    "count_end": end,
+                    "repurpose_penalized": True,
                 }
             )
 
@@ -2715,6 +3061,8 @@ def _per_step_records(
             record["burner_mining"] = burner_mining
         if smelting_assignment:
             record["smelting_assignment"] = smelting_assignment
+        if assembler_assignment:
+            record["assembler_assignment"] = assembler_assignment
         if player_time is not None:
             record["player_time"] = player_time
         if util_by_step.get(i):

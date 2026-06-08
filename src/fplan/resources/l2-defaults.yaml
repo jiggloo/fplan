@@ -7,7 +7,7 @@
 #
 # Out of scope here (kept in code): game-physics facts (boiler/rocket constants),
 # the constraint formulation, and the SCIP random seed (a per-invocation flag).
-version: "1.1.0"
+version: "1.2.0"
 
 # Per-building deployment: the persistent infrastructure (placed alongside the
 # building, NOT consumed per cycle) and the total tile footprint of one deployed
@@ -126,3 +126,45 @@ silo_modules:
 lab_modules:
   enabled: true
   module: productivity-module
+
+# Facility assignment — commit each facility to one job so L3 receives static
+# blocks instead of a pool that swaps job step to step. One concept, three
+# classes that share the per-key capacity split but differ in the LP mechanics
+# (their physical commitment differs); set a class's `buildings: []` to disable
+# it and keep that facility a single pooled capacity.
+assignment:
+  # Mining drills, per ore: a drill sits on a patch and can't switch ore, so
+  # each ore gets its own non-decreasing drill count (no repurposing). Neither
+  # drill is consumed by any recipe, so there is no teardown drain.
+  mining:
+    buildings: [electric-mining-drill, burner-mining-drill]
+  # Furnaces, per output: a furnace smelts whatever its input belt feeds, so
+  # each product gets its own non-decreasing furnace count. A CONSUMABLE furnace
+  # (stone-furnace is eaten by boilers / burner drills) may leave its bucket by
+  # at most the step's real consumption — detected from game-data ingredients,
+  # never hard-coded; steel-furnace has no consumer and stays strictly monotone.
+  smelting:
+    buildings: [stone-furnace, steel-furnace]
+  # Assemblers, per recipe: a real assembler is set to ONE recipe, and switching
+  # it is a player action. Each listed assembler splits into a pooled "unassigned"
+  # count plus per-recipe "assigned" buckets; transitions cost serial player time
+  # — assign (set a recipe) reuses physics.placement_tick_s (one game tick),
+  # unassign (walk back + clear) is `unassign_cost_s`. Consuming an assembler
+  # (AM1→AM2, AM2→AM3) is a free DESTRUCTION (data-driven). Unlike mining/smelting
+  # this is gated on player-time being modeled (else the switch cost vanishes).
+  # The split is curated — every *-science-pack plus `split_items` — because the
+  # bilinear-term count is the solver's cost driver and a full split is intractable.
+  crafting:
+    enabled: true
+    buildings: [assembling-machine-1, assembling-machine-2]  # AM3 excluded (terminal; carries the silo module hack)
+    unassign_cost_s: 1.0
+    split_science_packs: true
+    split_items:
+      - engine-unit
+      - electric-mining-drill
+      - steel-furnace
+      - boiler
+      - steam-engine
+      - pipe
+      - inserter
+      - transport-belt

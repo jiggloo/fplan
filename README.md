@@ -191,6 +191,9 @@ obvious without reading the docs.
   L2 deployment) enriches downward and never lives in the base model layer
 - [L2 rate-flattening](docs/L2-rate-flattening.md) — the `rates post` design:
   the causal-tube flattening methods and the diff visualization
+- [Facility assignment](docs/L2-assignment.md) — committing drills, furnaces, and
+  assemblers to a job so L3 gets static blocks: the three mechanics and the
+  tractability trade-off
 - [Patch selection](docs/L2-patch-selection.md) — the ore-patch supply-curve view
   and the patch-selection input it feeds back into the next solve
 
