@@ -689,8 +689,24 @@ class SiloModules:
     note: str | None = None  # one-line human summary when the hack fires
 
 
+def _clean_silo_count(raw: float, field: str, warnings: list[str] | None) -> float:
+    """A declared item count as a finite, non-negative float — 0 for
+    NaN/inf/negative. An untrusted scenario must never crash the build with a raw
+    ``int(inf)``/``int(nan)`` (invariant #1)."""
+    if math.isfinite(raw) and raw >= 0.0:
+        return raw
+    if warnings is not None:
+        warnings.append(
+            f"silo modules: ignoring non-finite/negative count for {field!r}"
+        )
+    return 0.0
+
+
 def compute_silo_modules(
-    scenario_obj: scenario_mod.Scenario, model: GameModel, enabled: bool
+    scenario_obj: scenario_mod.Scenario,
+    model: GameModel,
+    enabled: bool,
+    warnings: list[str] | None = None,
 ) -> SiloModules:
     """Apply the modules/beacons a scenario declares to the rocket-silo.
 
@@ -717,8 +733,10 @@ def compute_silo_modules(
 
     declared = {n: float(c) for n, c in scenario_obj.goal.items_produced}
     # Partition declared modules: productivity → silo slots, speed-only → beacons.
+    # Strongest-effect modules first (tie-break by name) so they claim the
+    # limited slots in a mixed-tier loadout.
     prod_mods, speed_mods = [], []
-    for name in sorted(declared):
+    for name in declared:
         eff = model.module_effects.get(name)
         if eff is None:
             continue
@@ -726,16 +744,25 @@ def compute_silo_modules(
             prod_mods.append(name)
         elif eff.speed != 0:
             speed_mods.append(name)
+    prod_mods.sort(key=lambda n: (-model.module_effects[n].productivity, n))
+    speed_mods.sort(key=lambda n: (-model.module_effects[n].speed, n))
 
     beacon = model.beacon
-    beacon_count = int(declared.get("beacon", 0))
+    beacon_count = int(
+        _clean_silo_count(declared.get("beacon", 0.0), "beacon", warnings)
+    )
     beacon_capacity = beacon_count * beacon.module_slots
 
     speed_bonus = prod_bonus = cons_bonus = 0.0
     detail: list[str] = []
     silo_used = 0
     for name in prod_mods:
-        take = int(min(declared[name], silo.module_slots - silo_used))
+        take = int(
+            min(
+                _clean_silo_count(declared[name], name, warnings),
+                silo.module_slots - silo_used,
+            )
+        )
         if take <= 0:
             break
         eff = model.module_effects[name]
@@ -747,7 +774,12 @@ def compute_silo_modules(
 
     beacon_used = 0
     for name in speed_mods:
-        take = int(min(declared[name], beacon_capacity - beacon_used))
+        take = int(
+            min(
+                _clean_silo_count(declared[name], name, warnings),
+                beacon_capacity - beacon_used,
+            )
+        )
         if take <= 0:
             break
         eff = model.module_effects[name]
@@ -761,7 +793,19 @@ def compute_silo_modules(
 
     speed_mult = 1.0 + speed_bonus
     productivity = 1.0 + prod_bonus
-    power_w = silo.base_power_w * (1.0 + cons_bonus) + beacon_count * beacon.power_w
+    # Factorio clamps a machine's draw to ≥20% of base; with prod+speed modules
+    # the consumption bonus is positive so this never binds, but keep it honest.
+    power_w = (
+        silo.base_power_w * max(0.2, 1.0 + cons_bonus) + beacon_count * beacon.power_w
+    )
+    if not all(math.isfinite(x) for x in (speed_mult, productivity, power_w)):
+        # Degenerate (huge) declared counts overflowed to inf — never feed the LP
+        # non-finite coefficients; skip the hack cleanly.
+        if warnings is not None:
+            warnings.append(
+                "silo modules: degenerate counts produced non-finite factors; ignored"
+            )
+        return off
     note = (
         f"rocket-silo modules: {', '.join(detail)} → speed ×{speed_mult:.2f}, "
         f"rocket-part output ×{productivity:.2f}, power {power_w / 1e6:.2f}MW"
@@ -959,7 +1003,7 @@ def build_instance(
     md = apply_patch_selection(md, patch_selection_path, warnings)
 
     # Rocket-silo module hack: apply the modules/beacons the scenario declares.
-    silo = compute_silo_modules(scenario_obj, model, cfg.silo_modules_enabled)
+    silo = compute_silo_modules(scenario_obj, model, cfg.silo_modules_enabled, warnings)
 
     return L2Instance(
         scenario=scenario_obj,

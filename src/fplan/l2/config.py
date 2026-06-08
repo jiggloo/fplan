@@ -156,7 +156,10 @@ def _from_dict(d: dict) -> L2Config:
                 (d.get("silo_modules") or {}).get("enabled", True)
             ),
         )
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        # AttributeError: a scalar where a mapping is expected (e.g.
+        # `silo_modules: true` → "true".get(...)) — a malformed config must
+        # surface as a clean error, never a raw traceback (invariant #1).
         raise ValueError(f"invalid L2 config: {exc}") from exc
 
 

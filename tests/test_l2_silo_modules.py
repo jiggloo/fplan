@@ -15,12 +15,18 @@ from pathlib import Path
 
 import pytest
 import yaml
+from typer.testing import CliRunner
 
+from fplan import run as run_mod
 from fplan import scenario as scn
+from fplan.cli import app
+from fplan.cli import main as cli_main
 from fplan.l2 import config as l2config
 from fplan.l2 import instance as l2_instance
 from fplan.l2.solve import _scale_silo_productivity
 from fplan.model import GameModel, build_game_data, load_model
+
+runner = CliRunner()
 
 MODEL_FIXTURE = Path(__file__).parent / "fixtures" / "model_raw_subset.json"
 
@@ -136,3 +142,106 @@ def test_scale_silo_productivity_identity_is_noop() -> None:
     net = {"rocket-part": [("rocket-part", 1.0)]}
     _scale_silo_productivity(net, 1.0)
     assert net["rocket-part"] == [("rocket-part", 1.0)]
+
+
+# --------------------------------------------------------------------------- #
+# Untrusted / degenerate input (invariant #1: never a raw traceback)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("nan"), -5.0])
+def test_silo_modules_non_finite_count_is_clean(model: GameModel, bad: float) -> None:
+    # A degenerate hand-edited count (inf/NaN/negative) must skip-with-warning,
+    # never crash int() with an OverflowError/ValueError.
+    s = _scenario(beacon=bad, **{"speed-module": 40, "productivity-module-3": 4})
+    warns: list[str] = []
+    r = l2_instance.compute_silo_modules(s, model, enabled=True, warnings=warns)
+    assert r.note is not None  # the silo prod modules still apply; beacons skipped
+    assert any("non-finite" in w for w in warns)
+
+
+def test_silo_modules_mixed_tier_prefers_strongest(model: GameModel) -> None:
+    # 4 prod-1 + 4 prod-3 declared, only 4 silo slots → the stronger prod-3 fills
+    # them (productivity 1.40, not the prod-1 1.16).
+    s = _scenario(**{"productivity-module": 4, "productivity-module-3": 4})
+    r = l2_instance.compute_silo_modules(s, model, enabled=True)
+    assert r.productivity == pytest.approx(1.40)
+
+
+# --------------------------------------------------------------------------- #
+# Bundled default-victory loadout + config YAML round-trip
+# --------------------------------------------------------------------------- #
+
+
+def test_default_victory_ships_prod3_loadout() -> None:
+    s = scn.load(Path("examples/scenarios/default-victory.yaml"))
+    produced = dict(s.goal.items_produced)
+    assert produced.get("productivity-module-3") == 4
+    assert produced.get("speed-module") == 40 and produced.get("beacon") == 20
+    # the before_recipe(rocket-part) checkpoint requires the same module set
+    reqs = [dict(c.requires.items) for c in s.checkpoints]
+    cp = next(r for r in reqs if r.get("rocket-silo"))
+    assert cp.get("productivity-module-3") == 4
+    assert "productivity-module" not in cp  # not the old prod-1
+
+
+def test_config_silo_modules_yaml_toggle(tmp_path: Path) -> None:
+    f = tmp_path / "cfg.yaml"
+    f.write_text("silo_modules:\n  enabled: false\n")
+    assert l2config.load_config(f).silo_modules_enabled is False
+    # an absent block defaults to enabled (deep-merged over the packaged default)
+    assert l2config.load_config(None).silo_modules_enabled is True
+
+
+def test_config_silo_modules_scalar_raises(tmp_path: Path) -> None:
+    # A malformed scalar where a mapping is expected → clean error, not a crash.
+    f = tmp_path / "cfg.yaml"
+    f.write_text("silo_modules: oops\n")
+    with pytest.raises(ValueError, match="invalid L2 config"):
+        l2config.load_config(f)
+
+
+# --------------------------------------------------------------------------- #
+# CLI: the ⚙ silo-modules note is printed when the hack fires
+# --------------------------------------------------------------------------- #
+
+
+def test_solve_prints_silo_module_note(tmp_path: Path, monkeypatch, model) -> None:
+    import types
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "scn.yaml").write_text(
+        "name: t\nitems_produced: {beacon: 20, speed-module: 40, "
+        "productivity-module-3: 4}\nrocket_launches: 1\n"
+    )
+    (tmp_path / "order.yaml").write_text(
+        yaml.safe_dump({"method": "forward", "layers": [["automation"]]})
+    )
+    (tmp_path / "map.yaml").write_text("patches: []\n")
+    run_mod.save(
+        run_mod.run_dir("r"),
+        run_mod.Manifest.new(
+            "r",
+            scenario="scn.yaml",
+            tech_order="order.yaml",
+            map_path="map.yaml",
+            created="t0",
+        ),
+    )
+    monkeypatch.setattr(cli_main, "load_model_or_exit", lambda config_file: model)
+    from fplan.l2 import solve as l2_solve
+
+    def _fake_solve(inst, model, **kw):
+        return (
+            types.SimpleNamespace(
+                objective=245.0, status="optimal", solve_time_s=1.0, seed=None
+            ),
+            None,
+            None,
+        )
+
+    monkeypatch.setattr(l2_solve, "solve", _fake_solve)
+    monkeypatch.setattr(l2_solve, "write_solution", lambda *a, **k: None)
+    r = runner.invoke(app, ["rates", "solve", "r", "--seed", "1"])
+    assert r.exit_code == 0, r.output
+    assert "rocket-silo modules:" in r.output and "speed ×4.40" in r.output

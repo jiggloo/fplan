@@ -55,9 +55,9 @@ initial_state:
 # closing the LP-relaxation cheat where the silo was fractionalized
 # to ~0.37 units amortized across the build step.
 #
-# Beacons are foundation for future speed-module boosting of the
-# silo; the constraint exists so the layout plan has them already
-# placed before modules become operational.
+# The beacons (with their speed modules) drive the silo's rocket-part
+# speedup via the L2 silo-modules hack; the constraint exists so the
+# layout plan has them placed before rocket-part production begins.
 #
 # The 50-of-each science-pack floor is a slack buffer: in-game science
 # consumption is never perfectly just-in-time (labs hold partial stacks,
