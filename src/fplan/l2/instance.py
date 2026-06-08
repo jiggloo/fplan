@@ -580,6 +580,81 @@ def load_tile_pool(path: Path | str | None) -> dict[str, float]:
     return load_map_data(path, 0.0).tile_pool
 
 
+def apply_patch_selection(
+    md: MapData, path: Path | str | None, warnings: list[str]
+) -> MapData:
+    """Restrict map availability to a hand-picked patch set and return the
+    overridden `MapData`.
+
+    The selection file is the supply-curve viz's exported YAML (an **optional**
+    L2 feedback input): per resource, which patches to commit miners to plus the
+    derived totals. We trust those resolved totals and do **not** re-resolve
+    patch ids against the probe, so the file stays self-contained and
+    order-independent. The override needs no new LP constraint — it reuses the
+    existing tile-pool path:
+
+      - drill resources → replace that resource's `tile_pool` with `total_tiles`
+        (the per-ore drill cap is already `tile_pool / footprint`, so this *is*
+        the miner cap),
+      - crude-oil (`unit: pumpjacks`) → replace `oil_spot_count` with `spots`.
+
+    Resources absent from the file keep their full probe availability. `path`
+    None / missing → `md` unchanged.
+
+    The file is **untrusted** user feedback: a non-mapping file (or unreadable
+    YAML) is a clean ``ValueError`` (the caller maps it to an exit code), while
+    a single malformed per-resource entry is skipped with a warning rather than
+    aborting the whole solve.
+    """
+    if path is None:
+        return md
+    p = Path(path)
+    if not p.exists():
+        warnings.append(f"patch-selection {p} not found; ignored")
+        return md
+    try:
+        data = yaml.safe_load(p.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError(f"could not read patch-selection {p}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"patch-selection {p}: expected a mapping")
+    resources = data.get("resources")
+    if resources is None:
+        warnings.append(f"patch-selection {p} has no `resources:`; ignored")
+        return md
+    if not isinstance(resources, dict):
+        raise ValueError(f"patch-selection {p}: `resources` must be a mapping")
+
+    tile_pool = dict(md.tile_pool)
+    oil_spots = md.oil_spot_count
+    for res, spec in resources.items():
+        if not isinstance(spec, dict):
+            warnings.append(
+                f"patch-selection {p}: resource {res!r} is not a mapping; skipped"
+            )
+            continue
+        unit = str(spec.get("unit", "drills"))
+        field_name = "spots" if unit == "pumpjacks" else "total_tiles"
+        raw = spec.get(field_name)
+        if raw is None:
+            warnings.append(
+                f"patch-selection {p}: resource {res!r} lacks `{field_name}`; skipped"
+            )
+            continue
+        try:
+            if unit == "pumpjacks":
+                oil_spots = int(raw)
+            else:
+                tile_pool[str(res)] = float(raw)
+        except (TypeError, ValueError):
+            warnings.append(
+                f"patch-selection {p}: resource {res!r} has a non-numeric "
+                f"`{field_name}`; skipped"
+            )
+            continue
+    return replace(md, tile_pool=tile_pool, oil_spot_count=oil_spots)
+
+
 def _load_l1_output(path: Path) -> dict:
     with path.open() as f:
         data = yaml.safe_load(f) or {}
@@ -598,6 +673,7 @@ def build_instance(
     player_time_enabled: bool = True,
     max_area_fraction: float | None = None,
     l2_config: L2Config | None = None,
+    patch_selection_path: str | Path | None = None,
 ) -> L2Instance:
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
@@ -770,6 +846,11 @@ def build_instance(
             f"map probe at {map_probe_path} lacks map_gen_settings; "
             "total-area cap disabled"
         )
+
+    # Optional patch-selection feedback (the supply-curve viz's export):
+    # restrict per-resource miner availability to a chosen patch set. Reuses the
+    # tile-pool / oil-spot path above — no new constraint. Absent → unchanged.
+    md = apply_patch_selection(md, patch_selection_path, warnings)
 
     return L2Instance(
         scenario=scenario_obj,

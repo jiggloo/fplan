@@ -109,6 +109,15 @@ MaxAreaOpt = Annotated[
         "--max-area-fraction", help="Override the config's max building area fraction."
     ),
 ]
+PatchSelectionOpt = Annotated[
+    Path | None,
+    typer.Option(
+        "--patch-selection",
+        help="Restrict per-resource miner availability to a chosen patch set "
+        "(the supply-curve viz's export). Overrides a patch-selection bound on "
+        "the run via `rates add-selection`.",
+    ),
+]
 NoDeploymentOpt = Annotated[
     bool,
     typer.Option(
@@ -209,6 +218,7 @@ def solve(
     max_area_fraction: MaxAreaOpt = None,
     no_deployment: NoDeploymentOpt = False,
     no_player_time: NoPlayerTimeOpt = False,
+    patch_selection: PatchSelectionOpt = None,
     out: OutOpt = None,
     jobs: JobsOpt = None,
     quiet_solver: QuietSolverOpt = False,
@@ -293,6 +303,18 @@ def solve(
         typer.echo(f"error: map not found: {map_path}", err=True)
         raise typer.Exit(code=1)
 
+    # Optional patch-selection feedback: an explicit --patch-selection wins;
+    # otherwise the one bound on the run (via `rates add-selection`); otherwise
+    # none. A named-but-missing file is an error (like the other inputs).
+    sel_path = (
+        patch_selection
+        if patch_selection is not None
+        else _input_path(manifest, "patch-selection")
+    )
+    if sel_path is not None and not sel_path.exists():
+        typer.echo(f"error: patch-selection not found: {sel_path}", err=True)
+        raise typer.Exit(code=1)
+
     if mode not in l2_instance.MODES:
         choices = ", ".join(l2_instance.MODES)
         typer.echo(f"error: unknown mode {mode!r}; choose from {choices}.", err=True)
@@ -318,6 +340,7 @@ def solve(
             player_time_enabled=not no_player_time,
             max_area_fraction=max_area_fraction,
             l2_config=cfg,
+            patch_selection_path=sel_path,
         )
     except (OSError, ValueError, yaml.YAMLError) as exc:
         typer.echo(f"error: {exc}", err=True)
@@ -385,6 +408,11 @@ def solve(
             effective_lp if effective_lp is not None else "scip-default",
             not lp_from_cli,
         ),
+        (
+            "patch-selection",
+            sel_path.name if sel_path is not None else "none",
+            sel_path is None,
+        ),
     ]
     # Advanced knobs: list only when set (their default is "unset").
     for name, val in (
@@ -406,6 +434,7 @@ def solve(
             seeds=chosen_seeds,
             solver_kwargs=solver_kwargs,
             config_ref=config_ref,
+            patch_selection=sel_path,
             jobs=jobs,
             quiet_solver=quiet_solver,
             force=force,
@@ -426,6 +455,7 @@ def solve(
         out=out,
         solver_kwargs=solver_kwargs,
         config_ref=config_ref,
+        patch_selection=sel_path,
         force=force,
         run_mod=run_mod,
         l2_solve=l2_solve,
@@ -444,6 +474,7 @@ def _run_single(
     out,
     solver_kwargs,
     config_ref,
+    patch_selection,
     force,
     run_mod,
     l2_solve,
@@ -497,6 +528,8 @@ def _run_single(
             "solve_time_s": float(sol.solve_time_s),
             "config": config_ref,
         }
+        if patch_selection is not None:
+            manifest.extra["l2"]["patch_selection"] = str(patch_selection)
         run_mod.save(run_dir, manifest)
     else:
         typer.echo("(--out export; manifest not updated)")
@@ -514,6 +547,7 @@ def _run_search(
     seeds,
     solver_kwargs,
     config_ref,
+    patch_selection,
     jobs,
     quiet_solver,
     force,
@@ -644,6 +678,7 @@ def _run_search(
         seeds=seeds,
         jobs=n_jobs,
         config_ref=config_ref,
+        patch_selection=patch_selection,
         force=force,
         run_mod=run_mod,
         cli_main=cli_main,
@@ -677,6 +712,7 @@ def _promote(
     seeds,
     jobs,
     config_ref,
+    patch_selection,
     force,
     run_mod,
     cli_main,
@@ -728,6 +764,11 @@ def _promote(
         "status": best["status"],
         "solve_time_s": best["solve_time_s"],
         "config": config_ref,
+        **(
+            {"patch_selection": str(patch_selection)}
+            if patch_selection is not None
+            else {}
+        ),
         "search": {
             "seeds": list(seeds),
             "jobs": jobs,
@@ -954,6 +995,14 @@ NoHeatmapOpt = Annotated[
         "--no-heatmap", help="Skip the companion capacity-saturation heatmap."
     ),
 ]
+NoSupplyCurveOpt = Annotated[
+    bool,
+    typer.Option(
+        "--no-supply-curve",
+        help="Skip the companion ore-patch supply-curve view (needs the run's "
+        "bound map).",
+    ),
+]
 OpenVizOpt = Annotated[
     bool,
     typer.Option(
@@ -1026,14 +1075,17 @@ def viz(
     run: VizRunArg,
     from_path: FromOpt = None,
     no_heatmap: NoHeatmapOpt = False,
+    no_supply_curve: NoSupplyCurveOpt = False,
     open_browser: OpenVizOpt = False,
     dry_run: DryRun = False,
 ) -> None:
-    """Render a run's rates.yaml as interactive HTML (timeline + heatmap).
+    """Render a run's rates.yaml as interactive HTML (timeline + heatmap +
+    ore-patch supply curve).
 
     Writes self-contained HTML under runs/<run>/viz/. The game model is loaded
     best-effort (to enrich the legend with facility counts) — viz works without
-    a Factorio install, just without that breakdown.
+    a Factorio install, just without that breakdown. The supply-curve view
+    additionally needs the run's bound map (skipped with a note if absent).
     """
     from fplan import config as cfg
     from fplan import run as run_mod
@@ -1083,9 +1135,26 @@ def viz(
     stem = src.stem  # rates.yaml → "rates", rates-post.yaml → "rates-post"
     timeline_path = viz_dir / f"{stem}-timeline.html"
     heatmap_path = viz_dir / f"{stem}-heatmap.html"
+    supply_curve_path = viz_dir / f"{stem}-supply-curve.html"
     # The flatten diff view has no companion heatmap (capacity is unchanged by
-    # flattening); --no-heatmap is moot there.
+    # flattening) or supply curve (a timeline-only spatial lens); --no-* moot.
     want_heatmap = not no_heatmap and not is_flatten_diff
+
+    # The supply curve needs the run's bound map (geometry). Resolve it from the
+    # manifest; absence just drops the view. A --from candidate still uses the
+    # run's map (the map is a run-level input, orthogonal to which rates file).
+    map_path: Path | None = None
+    if not is_flatten_diff and not no_supply_curve:
+        try:
+            map_path = _input_path(run_mod.load(run_dir), "map")
+        except (OSError, ValueError, yaml.YAMLError):
+            map_path = None
+    want_supply = (
+        not no_supply_curve
+        and not is_flatten_diff
+        and map_path is not None
+        and map_path.exists()
+    )
 
     if dry_run:
         view = "flatten diff view" if is_flatten_diff else "timeline"
@@ -1093,6 +1162,8 @@ def viz(
         typer.echo(f"  {timeline_path}")
         if want_heatmap:
             typer.echo(f"  {heatmap_path}")
+        if want_supply:
+            typer.echo(f"  {supply_curve_path}")
         return
 
     settings: list[tuple[str, str, bool]] = [
@@ -1101,6 +1172,9 @@ def viz(
     ]
     if not is_flatten_diff:
         settings.append(("heatmap", "off" if no_heatmap else "on", not no_heatmap))
+        settings.append(
+            ("supply-curve", "off" if no_supply_curve else "on", not no_supply_curve)
+        )
     echo_settings(settings)
 
     # Best-effort model load: enrich the legend with facility counts if a valid
@@ -1136,6 +1210,37 @@ def viz(
         typer.echo(f"error: could not write viz: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
+    # Companion ore-patch supply curve (best-effort: it depends on an external
+    # map artifact + the solve's spatial block, so a miss is a note, not fatal).
+    if want_supply:
+        from fplan.map import artifact as map_artifact
+
+        assert map_path is not None  # guaranteed by want_supply
+        try:
+            map_probe = map_artifact.load_artifact(map_path)
+            sc_ds = l2_viz.build_supply_curve_dataset(l2, map_probe)
+            if sc_ds is None:
+                typer.echo("note: supply-curve skipped — map carries no patches")
+            else:
+                supply_curve_path.write_text(l2_viz.render_supply_curve_html(sc_ds))
+                outputs.append(supply_curve_path)
+                if not sc_ds.get("has_footprint"):
+                    typer.echo(
+                        "note: supply-curve patch capacities omitted — this "
+                        "rates.yaml predates the spatial: block; re-solve to populate"
+                    )
+        except map_artifact.ArtifactError as exc:
+            typer.echo(f"warning: supply-curve skipped — {exc}", err=True)
+        except (KeyError, ValueError, TypeError, AttributeError) as exc:
+            typer.echo(f"warning: could not render supply-curve: {exc}", err=True)
+        except OSError as exc:
+            typer.echo(f"warning: could not write supply-curve: {exc}", err=True)
+    elif not is_flatten_diff and not no_supply_curve:
+        # The view was wanted but the run's map isn't available — say so rather
+        # than silently dropping it (timeline + heatmap still render fine).
+        where = f" at {map_path}" if map_path is not None else " (none bound)"
+        typer.echo(f"note: supply-curve skipped — run's map not found{where}")
+
     for p in outputs:
         typer.echo(f"✓ wrote {p}")
     if is_flatten_diff and not dataset.get("has_orig"):
@@ -1147,3 +1252,87 @@ def viz(
         typer.echo("note: model not loaded — legend omits the facility-count breakdown")
     if open_browser:
         _open_in_browser(timeline_path)
+
+
+AddSelRunArg = Annotated[
+    str, typer.Argument(help="Run (under runs/) to bind the selection onto.")
+]
+SelFileArg = Annotated[
+    Path | None,
+    typer.Argument(
+        help="Patch-selection YAML (the supply-curve viz's export). Omit with "
+        "--remove to unbind."
+    ),
+]
+RemoveSelOpt = Annotated[
+    bool,
+    typer.Option("--remove", help="Unbind the run's patch-selection input instead."),
+]
+
+
+@group.command(name="add-selection")
+def add_selection(
+    ctx: typer.Context,
+    run: AddSelRunArg,
+    file: SelFileArg = None,
+    remove: RemoveSelOpt = False,
+    dry_run: DryRun = False,
+) -> None:
+    """Bind a patch-selection file to a run as an optional L2-feedback input.
+
+    The supply-curve viz (`rates viz`) exports a patch-selection YAML — which
+    ore patches to commit miners to. Binding it here records it under the
+    manifest's `inputs:` (with a content hash, like the other inputs); the next
+    `rates solve` then restricts per-resource miner availability to that patch
+    set. Re-running replaces a prior binding; `--remove` unbinds it.
+    """
+    from fplan import run as run_mod
+
+    if remove and file is not None:
+        typer.echo("error: --remove takes no FILE argument.", err=True)
+        raise typer.Exit(code=2)
+    if not remove and file is None:
+        typer.echo(
+            "error: a patch-selection FILE is required (or pass --remove).", err=True
+        )
+        raise typer.Exit(code=2)
+
+    try:
+        run_dir = run_mod.run_dir(run)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if not run_mod.manifest_path(run_dir).exists():
+        typer.echo(f"error: run {run!r} not found at {run_dir}", err=True)
+        raise typer.Exit(code=1)
+    if not remove and not file.exists():  # type: ignore[union-attr]
+        typer.echo(f"error: patch-selection file not found: {file}", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        manifest = run_mod.load(run_dir)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if dry_run:
+        if remove:
+            typer.echo(f"(dry run) would unbind patch-selection from run {run!r}.")
+        else:
+            typer.echo(f"(dry run) would bind {file} as run {run!r}'s patch-selection.")
+        return
+
+    if remove:
+        if manifest.inputs.pop("patch-selection", None) is None:
+            typer.echo(f"run {run!r} has no patch-selection input; nothing to remove.")
+            return
+        run_mod.save(run_dir, manifest)
+        typer.echo(f"✓ unbound patch-selection from {run!r}")
+        return
+
+    from fplan import refs
+
+    assert file is not None  # guaranteed: required unless --remove (handled above)
+    manifest.inputs["patch-selection"] = refs.file_ref(file)
+    run_mod.save(run_dir, manifest)
+    typer.echo(f"✓ bound patch-selection {file} → run {run!r}")

@@ -58,8 +58,10 @@ After [installing](#install), from the repository root:
 .venv/bin/fplan rates viz steelaxe --open
 ```
 
-`viz` opens a zoomable timeline and a capacity-saturation heatmap (written under
-`runs/steelaxe/viz/`).
+`viz` opens a zoomable timeline, a capacity-saturation heatmap, and an
+interactive [ore-patch supply curve](docs/L2-patch-selection.md) (written under
+`runs/steelaxe/viz/`) — the last lets you pick which patches to mine and feed
+that choice back into the next solve.
 
 To understand the result — and how the solve produced it — see
 [L2 rates — the solve](docs/L2-rates-solve.md). Ready to plan a goal of your own?
@@ -189,6 +191,8 @@ obvious without reading the docs.
   L2 deployment) enriches downward and never lives in the base model layer
 - [L2 rate-flattening](docs/L2-rate-flattening.md) — the `rates post` design:
   the causal-tube flattening methods and the diff visualization
+- [Patch selection](docs/L2-patch-selection.md) — the ore-patch supply-curve view
+  and the patch-selection input it feeds back into the next solve
 
 ## License
 

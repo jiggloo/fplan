@@ -377,9 +377,13 @@ For how the solve works and how to read its output, see
   the current working directory (matching `run show`).
 - Writes the per-step plan to `runs/<run>/rates.yaml` (durations, per-recipe
   activity, energy, item flows with per-second rates + buffer seconds, capacity
-  utilization, mining/smelting assignments, fuel burn) and **grows the manifest**
-  with an `l2:` block: `mode`, `seed`, `objective_s`, `status`, `solve_time_s`,
-  and the config reference.
+  utilization, mining/smelting assignments, per-ore burner-drill extraction, fuel
+  burn) plus a top-level **`spatial:`** block recording the map-derived caps the
+  solve used (the deployed drill footprint + base speed, per-resource tile pool /
+  drill cap, oil-spot count, map area) — single-sourced so the supply-curve view
+  reads the exact caps the LP enforced. **Grows the manifest** with an `l2:`
+  block: `mode`, `seed`, `objective_s`, `status`, `solve_time_s`, the config
+  reference (and the patch-selection source, when one applied).
 - `--mode lower-bound|experimental|trapezoidal` (default `experimental`).
 - `--seed N` sets SCIP's randomization for a single solve (a random seed is
   picked and printed if omitted, so a good run replays exactly). Primal
@@ -394,6 +398,10 @@ For how the solve works and how to read its output, see
 - Solver controls: `--time-limit-s`, `--gap-limit`, `--stall-nodes`,
   `--node-limit`. Modeling A/B: `--max-area-fraction`, `--no-deployment`,
   `--no-player-time`.
+- `--patch-selection PATH` restricts per-resource miner availability to a chosen
+  patch set (the supply-curve view's export). It **overrides** a patch-selection
+  bound on the run via [`rates add-selection`](#rates-add-selection); omit both
+  for full map availability. See [patch selection](L2-patch-selection.md).
 - `--lp-algorithm barrier|simplex` picks the LP method, overriding the config's
   detected [`solver.lp_algorithm`](#configuration). Barrier needs a HiGHS-linked
   SCIP; omit it to use the config (or SCIP's default if unset).
@@ -490,13 +498,18 @@ written under `runs/<run>/viz/`:
 For the charts, the step detail table, and every interaction, see the
 [visualizer reference](L2-rates-solve.md#6-the-visualizer-reference-rates-viz).
 
-Two views:
+Three views:
 - **`<stem>-timeline.html`** — three stacked panels (raw production rate, net
   rate, surplus count) on one zoomable x-axis, with a tree-grouped click-to-toggle
   legend (science packs + electric-mining-drill visible by default).
 - **`<stem>-heatmap.html`** — capacity-saturation heatmap (rows =
   capacity-constrained buildings, columns = tech-order steps; black = saturated,
   the L2→L3 bottleneck signal). Suppress with `--no-heatmap`.
+- **`<stem>-supply-curve.html`** — interactive ore-patch map: click which patches
+  to commit miners to against per-resource demand over time, then **Export YAML**
+  a patch-selection file to feed back into the next solve. Needs the run's bound
+  map (skipped with a note if it's unavailable); suppress with
+  `--no-supply-curve`. See [patch selection](L2-patch-selection.md).
 
 Options:
 - `--from PATH` visualizes any rates-shaped YAML instead of the run's
@@ -514,8 +527,30 @@ Options:
 The game model is loaded **best-effort** (from the configured `data_dir`, to
 enrich the legend with per-recipe facility counts); if it's unset or unavailable,
 viz renders from the YAML alone with a one-line notice — **no Factorio install is
-required**. The HTML is self-contained (no external assets) and overwritten
-freely (it's regenerated from `rates.yaml`); the manifest is not modified.
+required** (the supply-curve view never loads the model — it reads the caps from
+the solve's `spatial:` block). The HTML is self-contained (no external assets)
+and overwritten freely (it's regenerated from `rates.yaml`); the manifest is not
+modified.
+
+#### `rates add-selection`
+
+Bind a patch-selection file (the supply-curve view's **Export YAML**) to a run as
+an optional L2-feedback input:
+
+```bash
+.venv/bin/fplan rates add-selection steelaxe-exp steelaxe_patch-selection.yaml
+.venv/bin/fplan rates add-selection steelaxe-exp --remove   # unbind
+```
+
+- Records the file under the manifest's `inputs:` (with a content hash, like the
+  other inputs, so `run show` reports its freshness). The next `rates solve` then
+  restricts per-resource miner availability to that patch set.
+- Re-running **replaces** a prior binding; `--remove` unbinds it. A one-off
+  [`rates solve --patch-selection PATH`](#rates-solve) overrides the bound input
+  without changing the manifest.
+
+The file format, the L2 override it drives, and the supply-curve view that
+produces it are documented in [patch selection](L2-patch-selection.md).
 
 #### `rates post`
 

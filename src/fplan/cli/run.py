@@ -159,7 +159,9 @@ def show(ctx: typer.Context, name: NameArg) -> None:
         typer.echo(f"fplan: {manifest.fplan_version}")
     typer.echo("inputs:")
     status_label = {True: "✓ current", False: "⚠ changed", None: "✗ missing"}
-    for label in ("scenario", "tech-order", "map"):
+    # patch-selection is an optional L2-feedback input (bound by
+    # `fplan rates add-selection`); shown only when present.
+    for label in ("scenario", "tech-order", "map", "patch-selection"):
         ref = manifest.inputs.get(label)
         if not ref:
             continue
