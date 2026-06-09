@@ -1,0 +1,53 @@
+level: 1
+produced_by: fplan tech-order build
+method: forward
+scenario:
+  name: default-victory
+  path: examples/scenarios/default-victory.yaml
+  sha256: a5f63cabdd9d4dd50e35e29b554106042e54ba87461b776396f701338effe75c
+tech_count: 43
+layer_count: 15
+layers:
+- - automation
+  - logistic-science-pack
+  - logistics
+  - steel-processing
+- - advanced-material-processing
+  - electronics
+  - engine
+  - logistics-2
+  - steel-axe
+- - automation-2
+  - fast-inserter
+  - railway
+- - concrete
+  - fluid-handling
+  - research-speed-1
+- - oil-processing
+  - research-speed-2
+- - flammables
+  - plastics
+  - sulfur-processing
+- - advanced-electronics
+  - battery
+- - chemical-science-pack
+  - modules
+- - advanced-electronics-2
+  - advanced-material-processing-2
+  - advanced-oil-processing
+  - low-density-structure
+  - productivity-module
+  - speed-module
+- - lubricant
+  - production-science-pack
+  - productivity-module-2
+  - rocket-fuel
+  - speed-module-2
+- - effect-transmission
+  - electric-engine
+  - productivity-module-3
+  - speed-module-3
+- - robotics
+- - utility-science-pack
+- - rocket-control-unit
+- - rocket-silo

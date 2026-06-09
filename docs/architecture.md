@@ -213,8 +213,6 @@ User-facing reference:
 
 - [Usage reference](usage.md) — the full CLI: every command, configuration, exit
   codes.
-- [Reading your results](reading-results.md) — interpret a solved run: the
-  `rates.yaml`, the three views, and the `post` diff, as one reading workflow.
 - [Repository structure & conventions](structure.md) — the tracked-vs-generated
   rule and the versioning scheme.
 - [Manual integration tests](integration_tests.md) — the checks that need a real
