@@ -743,8 +743,9 @@ Adding a constraint is the gentle first step. The deeper levers:
 
 [§2](#2-what-a-result-looks-like-the-visualization) introduced the viz at a
 glance; this is the reference — the charts it draws, the step detail table, and
-every interaction. `fplan rates viz` writes two views: the **timeline** (the
-default, below) and a **facility-area view** ([§6.4](#64-the-facility-area-view)).
+every interaction. `fplan rates viz` writes the **timeline** (the default, below)
+and a **facility-area view** ([§6.4](#64-the-facility-area-view)); a map-dependent
+ore-patch supply curve is the third (see [usage.md](usage.md#rates-viz)).
 
 ### 6.1 The timeline charts
 

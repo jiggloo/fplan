@@ -1658,11 +1658,16 @@ def _area_step_detail(
 
     def fp(b: str) -> float:
         e = facilities.get(b)
-        return float(e["footprint"]) if e else 0.0
+        v = float(e["footprint"]) if e else 0.0
+        # A non-finite footprint (a crafted `.nan` in an untrusted facilities
+        # map) passes a bare `> 0` / `<= 0` guard, so reject it here → treated as
+        # no footprint, never propagated into counts / the embedded JSON.
+        return v if math.isfinite(v) else 0.0
 
     def speed(b: str) -> float:
         e = facilities.get(b)
-        return float(e["base_speed"]) if e else 0.0
+        v = float(e["base_speed"]) if e else 0.0
+        return v if math.isfinite(v) else 0.0
 
     out: list[dict[str, dict[str, dict]]] = []
     for s in steps:

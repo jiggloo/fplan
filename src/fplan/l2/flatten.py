@@ -35,6 +35,7 @@ graph) and emits a flattened ``rates``-shaped dict plus the diagnostics. The CLI
 from __future__ import annotations
 
 import copy
+import math
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -649,7 +650,11 @@ def compute_area_split(steps: list, facilities: dict, model) -> list[dict]:
 
     def footprint(b: str) -> float:
         e = facilities.get(b)
-        return float(e["footprint"]) if e else 0.0
+        v = float(e["footprint"]) if e else 0.0
+        # Reject a non-finite footprint (a crafted `.nan` in an untrusted
+        # facilities map) — it passes a bare `<= 0` guard and would render as
+        # `nan` rows; treat it as no footprint.
+        return v if math.isfinite(v) else 0.0
 
     per_step: list[dict] = []
     for s in steps:

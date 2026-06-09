@@ -148,6 +148,47 @@ def test_compute_area_split_penalized_flexible_static(model) -> None:
     assert "iron-plate" not in per
 
 
+def test_compute_area_split_rejects_nonfinite_footprint(model) -> None:
+    # A crafted non-finite footprint passes a bare `<= 0` guard (nan compares
+    # false both ways); it must be treated as no footprint, never propagated as
+    # a `nan` row.
+    steps = [
+        {
+            "label": "s0",
+            "items": [{"name": "electric-mining-drill", "count_end": 5.0}],
+        }
+    ]
+    facilities = {"electric-mining-drill": {"footprint": float("nan")}}
+    area = l2_flatten.compute_area_split(steps, facilities, model)
+    assert area[0]["total"] == 0.0 and area[0]["per_building"] == {}
+
+
+def test_area_series_rejects_nonfinite_footprint() -> None:
+    from fplan.l2 import viz as l2_viz
+
+    steps = [
+        {
+            "duration_s": 10.0,
+            "activity": [
+                {
+                    "recipe": "iron-ore",
+                    "building": "electric-mining-drill",
+                    "recipe_sec_used": 20.0,
+                }
+            ],
+        }
+    ]
+    facilities = {
+        "electric-mining-drill": {"footprint": float("nan"), "base_speed": 0.5}
+    }
+    _items, alloc, util = l2_viz.compute_area_series(
+        steps, facilities, {"iron-ore": "iron-ore"}
+    )
+    # No finite footprint → no area, and crucially no NaN in the series.
+    assert alloc.get("iron-ore", [0.0])[0] == 0.0
+    assert util.get("iron-ore", [0.0])[0] == 0.0
+
+
 def test_compute_area_split_empty_without_facilities(model) -> None:
     # A pre-emission rates.yaml carries no facilities → every footprint is 0 →
     # no per-building area recorded.
