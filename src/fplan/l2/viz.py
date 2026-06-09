@@ -1343,8 +1343,15 @@ window.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("legend-all").addEventListener("click", () => setAllVisibility(() => true));
   document.getElementById("legend-none").addEventListener("click", () => setAllVisibility(() => false));
-  document.getElementById("legend-top10").addEventListener("click", () =>
-    setAllVisibility(item => DATA.visible_default.includes(item)));
+  // "Top 10" selects the 10 largest-area items in the area view (items_all is
+  // ranked by peak allocated area there); elsewhere it resets to the curated
+  // default-visible set.
+  document.getElementById("legend-top10").addEventListener("click", () => {
+    const top = (DATA.view === "facility_area")
+      ? (DATA.items_all || []).slice(0, 10)
+      : DATA.visible_default;
+    setAllVisibility(item => top.includes(item));
+  });
   // Render initial.
   renderAllCharts();
   // The flatten view's bottom panel (unmet inputs) is global, and the area
@@ -1668,7 +1675,12 @@ def _area_step_detail(
             )
 
         # Penalized assignment buckets → allocated count; remember (building,
-        # item) so the matching pooled activity below isn't double-counted.
+        # item) so the matching pooled activity below isn't double-counted. The
+        # de-dup relies on an assignment block's item-key (`ore` / `output`, or
+        # the assembler recipe's principal output) being the SAME string the
+        # activity loop derives via recipe_outputs[recipe] for that building —
+        # true for every block today (ore == iron-ore, output == iron-plate, …);
+        # a future block whose key diverges from outputs[0] would break the guard.
         pen_keys: set[tuple[str, str]] = set()
         for block, item_key in (
             ("mining_assignment", "ore"),
@@ -1771,8 +1783,11 @@ def build_area_dataset(l2: dict, *, data_dir: Path | None = None) -> dict:
             r["alloc"] = alloc[it][k]
             r["util"] = util[it][k]
         # Per-item facility breakdown for the click-through popup: the machines
-        # of each building allocated (assigned) vs running for that item. Rounded
-        # to trim float dust from the embedded JSON.
+        # of each building allocated (assigned) vs running for that item. Counts
+        # are rounded only to trim float dust from the embedded JSON — the popup
+        # recomputes area from them, so it may differ from the bottom table's
+        # series (summed unrounded above) in sub-0.001-tile dust, invisible at
+        # the 2-decimal display.
         st["area_detail"] = {
             it: {
                 b: {

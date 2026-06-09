@@ -961,18 +961,24 @@ def post(
     # Base-area split (the spatial companion to #revisits): how much of the base
     # is statically placeable (penalized) vs still flexible/pooled. Reads the
     # solve's emitted `facilities:` footprints; a pre-emission rates.yaml carries
-    # none, so say that rather than print an all-zero table.
-    if l2.get("facilities"):
-        area = l2_flatten.compute_area_split(
-            l2.get("steps", []) or [], l2["facilities"], model
-        )
-        for line in l2_flatten.format_area_split(area):
-            typer.echo(line)
-    else:
-        typer.echo(
-            "  note: base-area split omitted — this rates.yaml predates the "
-            "facilities: block; re-solve to populate"
-        )
+    # none, so say that rather than print an all-zero table. `l2` is untrusted
+    # (--from any file), so a degenerate facilities/steps shape must degrade to a
+    # warning, not a raw traceback (invariant #1) — and the post output above is
+    # already written, so this is non-fatal.
+    try:
+        if l2.get("facilities"):
+            area = l2_flatten.compute_area_split(
+                l2.get("steps", []) or [], l2["facilities"], model
+            )
+            for line in l2_flatten.format_area_split(area):
+                typer.echo(line)
+        else:
+            typer.echo(
+                "  note: base-area split omitted — this rates.yaml predates the "
+                "facilities: block; re-solve to populate"
+            )
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
+        typer.echo(f"warning: could not compute base-area split: {exc}", err=True)
 
     if no_viz:
         if open_browser:

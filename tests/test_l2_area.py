@@ -240,3 +240,30 @@ def test_post_notes_missing_facilities(
     assert r.exit_code == 0, r.stdout + (r.stderr or "")
     assert "predates the facilities: block" in r.stdout
     assert "repurpose-penalized vs flexible base area" not in r.stdout
+
+
+@pytest.mark.parametrize(
+    "facilities",
+    [
+        {"electric-mining-drill": "not-a-dict"},  # entry is a string → TypeError
+        {"electric-mining-drill": {"base_speed": 1.0}},  # no footprint → KeyError
+        ["electric-mining-drill"],  # facilities is a list, not a map → AttributeError
+    ],
+)
+def test_post_malformed_facilities_no_traceback(
+    tmp_path, monkeypatch, use_fixture_model, facilities
+) -> None:
+    # `--from`/rates.yaml is untrusted: a degenerate facilities: shape must
+    # degrade the base-area split to a stderr warning, never a raw traceback
+    # (invariant #1). The post output is already written, so the command still
+    # succeeds.
+    monkeypatch.chdir(tmp_path)
+    run_mod.run_dir("r").mkdir(parents=True)
+    rd = run_mod.run_dir("r")
+    (rd / run_mod.MANIFEST_NAME).write_text("run: r\ninputs: {}\n")
+    bad = {**_POST_RATES_WITH_AREA, "facilities": facilities}
+    (rd / "rates.yaml").write_text(yaml.safe_dump(bad))
+    r = runner.invoke(app, ["rates", "post", "r", "--no-viz", "--force"])
+    assert r.exit_code == 0, r.stdout + (r.stderr or "")
+    assert r.exception is None or isinstance(r.exception, SystemExit)
+    assert "could not compute base-area split" in (r.stdout + (r.stderr or ""))

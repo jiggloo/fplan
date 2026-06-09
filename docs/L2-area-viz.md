@@ -87,3 +87,7 @@ re-solve to populate it.
   footprint in the `facilities:` map, so their area is omitted (consistent with
   the prototype). The labs consume rather than produce an item, so this is a gap
   only for the rare module-loadout area, not for normal production.
+- **Hand-craft (`character`) area** is likewise omitted from both the view and
+  the base-area split — the character isn't in `model.buildings`, so it has no
+  footprint. The view's allocated totals and the split's `total` both drop it,
+  so the two stay internally consistent.
