@@ -794,6 +794,10 @@ total. (It reads "facility data unavailable" when the game model wasn't loaded �
   cursor; **scroll** to zoom the time axis at the cursor; **drag** to pan;
   **hover a line** to thicken it. The indicator in the top bar shows the current
   time range and zoom level.
+- **Hand-crafting.** The **Hand-crafting** button in the top bar toggles a side
+  panel listing, per step, what the character hand-crafts (recipe and count), or
+  *— none —* for steps with none. Close it with × or `Esc`. (The facility-area
+  view ([§6.4](#64-the-facility-area-view)) carries the same panel.)
 
 ### 6.4 The facility-area view
 

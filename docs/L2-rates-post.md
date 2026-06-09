@@ -74,10 +74,9 @@ a Factorio install** — they read the emitted data, never the game model.
 
 ### The facility-area view
 
-> 📷 **Screenshot needed** — `docs/images/03_l2_facility_area.png`: the
-> facility-area view with a few items visible (coal / iron-ore / iron-plate),
-> showing the solid *allocated* vs faint *utilized* bands and the bottom
-> breakdown table.
+![The facility-area view: allocated (solid) vs utilized (faint) facility area per item over time, with a per-step breakdown table below.](images/03_l2_facility_area.png)
+
+*Facility area per item: solid = allocated (committed machines × footprint), faint = utilized (running machines × footprint); the gap is built-but-not-running area L3 must place. The table breaks the selected step down per item.*
 
 Per item over time, two curves of footprint × machine-count: **allocated**
 (solid — machines *committed* to producing that item: the assignment buckets
@@ -91,12 +90,20 @@ band sits flat and fully utilized, the closer it already is to a static block.
 
 `rates viz` writes it as `runs/<run>/viz/<stem>-area.html` by default (`--no-area`
 to skip). It reuses the timeline's template, legend, nav, and zoom (one overlay
-panel, solid + faint). The bottom table breaks the selected step (the peak-area
-step by default) into each visible item's allocated / utilized / idle area;
-**clicking an item** pops a per-facility breakdown — how many of each facility are
-*assigned* (built) vs *running* for that item (e.g. `coal` at the `electronics`
-step → some electric-mining-drills, mostly assigned-but-idle, plus
-fully-utilized burner-mining-drills).
+panel, solid + faint), and the bottom table breaks the selected step (the
+peak-area step by default) into each visible item's allocated / utilized / idle
+area.
+
+**Interactions.** The view reuses the timeline's controls — the right-bar legend
+(check an item to plot its allocated + utilized bands; **All** / **None** /
+**Top 10**, here ranked by area; click a group header to collapse it), chart
+hover / zoom / pan, and the **Hand-crafting** side panel — all documented in
+[solve § 6.3](L2-rates-solve.md#63-interactions). Checking items refreshes the
+bottom table; **clicking an item there** pops a per-facility breakdown — facility
+· *assigned* (built) · *running* · area tiles — for the selected step (the
+peak-area step until you select another). For example, `coal` at the
+`electronics` step → some electric-mining-drills (mostly assigned-but-idle) plus
+fully-utilized burner-mining-drills.
 
 **What it reads — emitted, not recomputed.** Because the view can't load the
 model, the solve emits the two reference maps it needs, single-sourced where they
@@ -127,10 +134,9 @@ omitted; hand-craft (`character`) area is omitted from both the view and the
 
 ### The supply-curve view & patch selection
 
-> 📷 **Screenshot needed** — `docs/images/04_l2_supply_curve.png`: the
-> supply-curve view — the patch map with a couple of patches selected, the
-> grouped per-resource table, and the demand-vs-capacity chart with the
-> distance-stacked capacity horizontals.
+![The supply-curve view: the ore/oil patch map, the grouped per-resource patch table, and the miner demand-vs-capacity chart.](images/04_l2_supply_curve.png)
+
+*The supply-curve view: the patch map (left), the per-resource patch table (right), and miner demand vs the distance-stacked capacity of the selected patches (chart).*
 
 L2 is **geometry-blind**: it pools all patches of a resource into one tile budget
 and caps drills at `tile_pool / footprint`, so its `drill@<ore>` lock is an
@@ -157,6 +163,14 @@ comes from the solve output (`mining_assignment`, `capacity`, `burner_mining`) a
 the tiles→drills footprint from the `spatial:` block, so the lines match the caps
 the solve enforced. A `rates.yaml` predating the `spatial:` block renders with
 patch capacities blank and a re-solve note.
+
+**Interactions.** Choose the charted resource from the **Resource** dropdown.
+**Click a patch on the map — or its row in the table — to select/deselect it**;
+the selected set drives the distance-stacked capacity horizontals and the export.
+Collapse a resource group via its table header; toggle the patch labels and the
+spawn-origin lines with the checkboxes; **scroll / drag** to zoom and pan the map,
+or **Reset view** to recenter. **Export YAML** downloads the current selection as
+the patch-selection file below.
 
 **The patch-selection file (the contract).** *Export YAML* downloads the current
 selection, computed client-side, carrying *resolved totals* (not just patch ids)
