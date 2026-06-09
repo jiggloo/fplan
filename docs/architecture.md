@@ -7,6 +7,19 @@ user-facing definitions of the nouns below — **scenario**, **tech-order**,
 **map**, **run** — see the README [Concepts](../README.md#concepts); they aren't
 restated here.
 
+## Contents
+
+- [The pipeline at a glance](#the-pipeline-at-a-glance)
+- [Why this shape — three forces in balance](#why-this-shape--three-forces-in-balance)
+  - [Each stage owns one hard substructure](#each-stage-owns-one-hard-substructure)
+  - [Time, deferred — the part that feels backwards](#time-deferred--the-part-that-feels-backwards)
+  - [Commit the minimum now, restore it from data later](#commit-the-minimum-now-restore-it-from-data-later)
+  - [Why this particular order](#why-this-particular-order)
+- [Stage contracts](#stage-contracts-what-each-hands-the-next)
+- [How knowledge attaches to the model](#how-knowledge-attaches-to-the-model)
+- [A chosen balance, not the only one](#a-chosen-balance-not-the-only-one)
+- [Design-doc index](#design-doc-index)
+
 ## The pipeline at a glance
 
 ```
@@ -104,7 +117,7 @@ data; back-propagate the informed value when there is**
 ([L2 § 4.6](L2-rates-solve.md#46-downstream-feedback-back-propagation)). The
 restraint there — feedback is *scalars flowing up, not L3 re-deriving L2's model*
 — is what lets stages solved by very different methods integrate through a thin
-numeric interface. It's the seam the next section's feedback runs through.
+numeric interface.
 
 ### Why this *particular* order
 
@@ -138,7 +151,17 @@ Three contract notes worth holding onto:
   design](L2-rate-flattening.md#provisional-by-design).
 - **The L2↔L3 edge is genuinely bidirectional.** Placement needs L2's counts, but
   good rates need spatial reality (which patches, routing cost) — a back-edge the
-  feed-forward order can't carry. That tension is the subject of the next section.
+  feed-forward order can't carry. That tension is taken up in
+  [*A chosen balance*](#a-chosen-balance-not-the-only-one).
+
+## How knowledge attaches to the model
+
+One shared `GameModel` (techs, recipes, items) flows through every stage, and
+each stage **enriches downward and never reaches up**: the model layer is
+base-pure (L1's minimal view), and L2 owns its own increments — deployment
+packings, spatial caps, energy assumptions — as the `L2Instance` the solver
+consumes. L3/L4 follow the same shape. The rationale (a dependency-inversion
+rule) is in [Stage enrichment](stage-enrichment.md).
 
 ## A chosen balance, not the only one
 
@@ -183,15 +206,6 @@ as temporal abstraction + goal decomposition). None of these were benchmarked he
 the point is that any good method must balance the same three forces, because the
 *problem* hands them to you — fplan's choice is to make that balance **explicit and
 engineered**, one force per stage boundary.
-
-## How knowledge attaches to the model
-
-One shared `GameModel` (techs, recipes, items) flows through every stage, and
-each stage **enriches downward and never reaches up**: the model layer is
-base-pure (L1's minimal view), and L2 owns its own increments — deployment
-packings, spatial caps, energy assumptions — as the `L2Instance` the solver
-consumes. L3/L4 follow the same shape. The rationale (a dependency-inversion
-rule) is in [Stage enrichment](stage-enrichment.md).
 
 ## Design-doc index
 
