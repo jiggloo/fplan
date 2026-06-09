@@ -5,6 +5,10 @@
 
 Factorio production and placement planner.
 
+Today it targets a **rocket-launch TAS for Factorio 1.1** — a full victory run.
+Its solver is tuned for that scale, so on much smaller goals (like the `steelaxe`
+speedrun category) its results are **often suboptimal**.
+
 > **Status: early — and tested only on macOS so far.** The CLI surface is
 > complete and navigable, and the front of the pipeline runs end-to-end today:
 > **L1** (`tech-order`) and **L2** (`rates` — solve, viz, post). **L3**
@@ -14,8 +18,7 @@ Factorio production and placement planner.
 > you confirm the paths yourself.
 
 fplan is **clone-first**: the documentation and example/reference material live
-in the repository and come with a `git clone`. Start with this README, then see
-[`docs/`](docs/).
+in the repository and come with a `git clone`.
 
 ## Install
 
@@ -80,10 +83,12 @@ invocation, configuration, exit codes, and per-command examples.
 
 ## Concepts
 
-fplan plans a factory in four stages, each feeding the next:
+fplan plans a factory in four stages, each feeding the next — the whole pipeline
+is laid out in [Architecture](docs/architecture.md):
 
 - **L1** (`tech-order`) — the order to research technologies in.
-- **L2** (`rates`) — how much of each item to produce, over time.
+- **L2** (`rates`) — how much of each item to produce, over time —
+  [the solve](docs/L2-rates-solve.md) and [post-processing](docs/L2-rates-post.md).
 - **L3** (`layout`) — where to place the machines.
 - **L4** (`execution`) — the action steps a TAS generator replays.
 
