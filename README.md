@@ -181,6 +181,8 @@ obvious without reading the docs.
 
 ## Documentation
 
+- [Architecture](docs/architecture.md) — the L1→L4 pipeline, the stage contracts,
+  where the solver fits, and the design-doc index (the contributor front door)
 - [Usage reference](docs/usage.md) — the full CLI reference
 - [Integration tests](docs/integration_tests.md) — manual checks that need a real
   Factorio install (model load, map extraction, L2 solve/viz/post)

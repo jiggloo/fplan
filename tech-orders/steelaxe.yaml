@@ -1,0 +1,13 @@
+level: 1
+produced_by: fplan tech-order build
+method: forward
+scenario:
+  name: steelaxe
+  path: examples/scenarios/steelaxe.yaml
+  sha256: e0ac1baefd1e6401b97673f9cd17bbf12793b1a1c3d2837cc3e0d885dd1279a9
+tech_count: 3
+layer_count: 2
+layers:
+- - automation
+  - steel-processing
+- - steel-axe
