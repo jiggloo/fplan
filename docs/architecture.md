@@ -91,6 +91,21 @@ commitments have collapsed the branching factor that made it intractable. The
 ladder is **precedence → budget → static → schedule**, each stage committing less
 about time than the one below it.
 
+### Commit the minimum now, restore it from data later
+
+The two deferrals above are instances of one recurring discipline: **commit the
+least you can now, leave a typed slot, and restore the real value once a
+downstream stage can supply it.** Exact time is restored at L4; integer counts,
+relaxed to floats, are restored when L3/L4 place whole entities. It extends to the
+model's **coefficients** too — a handful of L2 scalars (the capacity end-weight;
+a planned player-time movement fraction) start as deliberate human guesses but
+are *designed* as single numbers a later stage can drive: **guess when there's no
+data; back-propagate the informed value when there is**
+([L2 § 4.6](L2-rates-solve.md#46-downstream-feedback-back-propagation)). The
+restraint there — feedback is *scalars flowing up, not L3 re-deriving L2's model*
+— is what lets stages solved by very different methods integrate through a thin
+numeric interface. It's the seam the next section's feedback runs through.
+
 ### Why this *particular* order
 
 These three rationales are independent — separability, information dependency,
@@ -139,13 +154,25 @@ is that the upstream surrogates capture *enough* of the long-range coupling that
 late problem rarely needs an early fix.
 
 **The hedge.** Where the bet leaks, fplan re-admits the deferred coupling
-deliberately rather than dissolving the stage boundary: the [supply-curve
-feedback](L2-patch-selection.md) and the [facility-area lens](L2-area-viz.md) feed
-spatial reality back into the next L2 solve, and a [temporal-decomposition
-exploration](https://github.com/jiggloo/fplan/issues/56) would selectively
-re-introduce causal time *inside* L2 once the cheaper dimensions have made it
-affordable. The arc is coherent: **defer temporal-causal reasoning by default;
-re-admit it, locally and on purpose, only where the surrogate proves insufficient.**
+deliberately rather than dissolving the stage boundary — through feedback channels
+of increasing bandwidth:
+
+- **Narrowest — back-propagated coefficients.** A few L2 scalars (the capacity
+  end-weight; a planned movement fraction) are designed to be *informed* by L3's
+  placement data rather than guessed forever — numbers flowing up, machine to
+  machine ([L2 § 4.6](L2-rates-solve.md#46-downstream-feedback-back-propagation)).
+- **Wider — human-in-the-loop selection.** The [supply-curve
+  view](L2-patch-selection.md) and [facility-area lens](L2-area-viz.md) let you
+  feed spatial reality back into the next L2 solve by judgment, by hand.
+- **Widest — structural re-coupling.** The [temporal-decomposition
+  exploration](https://github.com/jiggloo/fplan/issues/56) would re-introduce
+  causal time *inside* L2 once the cheaper dimensions have made it affordable.
+
+All three are the same act — *re-solve L2 with refined inputs* — at different
+automation and bandwidth, and all are fixed-point iterations whose convergence on
+a nonconvex L2 is assumed, not guaranteed. The arc is coherent: **defer
+temporal-causal reasoning by default; re-admit it, locally and on purpose, only
+where the surrogate proves insufficient.**
 
 **Not the only balance.** This is *a* well-chosen balance, not a proven optimum.
 Other TAS-generation methods would re-strike it — a monolithic joint solve (exact
