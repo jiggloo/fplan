@@ -177,7 +177,8 @@ regenerable artifacts are not.** The fully-ephemeral directories (`maps/`,
 `runs/`) keep a tracked `.gitkeep` so they're visible in a fresh clone;
 `examples/runs/` is kept present by its committed example `manifest.yaml` (its
 generated stage artifacts stay ignored). Either way the intended layout is
-obvious without reading the docs.
+obvious without reading the docs. The bundled examples — `steelaxe`, `fishminer`,
+and `default-victory` — are described in [examples/README.md](examples/README.md).
 
 ## Documentation
 
