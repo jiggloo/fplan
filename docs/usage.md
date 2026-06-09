@@ -401,7 +401,7 @@ For how the solve works and how to read its output, see
 - `--patch-selection PATH` restricts per-resource miner availability to a chosen
   patch set (the supply-curve view's export). It **overrides** a patch-selection
   bound on the run via [`rates add-selection`](#rates-add-selection); omit both
-  for full map availability. See [patch selection](L2-patch-selection.md).
+  for full map availability. See [patch selection](L2-rates-post.md#the-supply-curve-view--patch-selection).
 - `--lp-algorithm barrier|simplex` picks the LP method, overriding the config's
   detected [`solver.lp_algorithm`](#configuration). Barrier needs a HiGHS-linked
   SCIP; omit it to use the config (or SCIP's default if unset).
@@ -567,7 +567,7 @@ The plan emits `mining_assignment` / `smelting_assignment` / `assembler_assignme
 records (`<building>@<ore|output|recipe>`) per step for L3. Design rationale —
 the three mechanics, the consumable-furnace teardown, the burner↔stone-furnace
 bootstrap coupling, and the tractability trade-off — is in
-[the assignment design doc](L2-assignment.md).
+[facility assignment (§4.7)](L2-rates-solve.md#47-facility-assignment).
 
 Configure it with an `assignment` block in the same
 [L2 tuning config](#l2-tuning-config). Set a class's `buildings: []` to disable
@@ -595,7 +595,7 @@ assignment:
 researched — by then plans have upgraded to a higher tier (AM1→AM2/AM3 by
 low-density-structure), so those variables are pure overhead. It's realism-free
 pruning that shrinks the curated split (its tractability impact is quantified in
-[the assignment design doc](L2-assignment.md)). The map deep-merges per building;
+[facility assignment (§4.7)](L2-rates-solve.md#47-facility-assignment)). The map deep-merges per building;
 to keep a building usable for the whole campaign, give it an empty tech
 (`assembling-machine-1: ""`).
 
@@ -620,12 +620,12 @@ Three views:
   allocated facility area (footprint × committed machines), faint = utilized
   (footprint × running machines); the gap is built-but-not-running area L3 must
   place. The spatial L2→L3 handoff lens. Suppress with `--no-area`. See the
-  [facility-area design doc](L2-area-viz.md).
+  [facility-area design doc](L2-rates-post.md#the-facility-area-view).
 - **`<stem>-supply-curve.html`** — interactive ore-patch map: click which patches
   to commit miners to against per-resource demand over time, then **Export YAML**
   a patch-selection file to feed back into the next solve. Needs the run's bound
   map (skipped with a note if it's unavailable); suppress with
-  `--no-supply-curve`. See [patch selection](L2-patch-selection.md).
+  `--no-supply-curve`. See [patch selection](L2-rates-post.md#the-supply-curve-view--patch-selection).
 
 Options:
 - `--from PATH` visualizes any rates-shaped YAML instead of the run's
@@ -666,7 +666,7 @@ an optional L2-feedback input:
   without changing the manifest.
 
 The file format, the L2 override it drives, and the supply-curve view that
-produces it are documented in [patch selection](L2-patch-selection.md).
+produces it are documented in [patch selection](L2-rates-post.md#the-supply-curve-view--patch-selection).
 
 #### `rates post`
 
@@ -723,7 +723,7 @@ Other options:
 
 Unlike `rates viz`, `post` **requires** the game model (a configured `data_dir`):
 the unmet-input diagnostics and the `mrp` dependency graph both need the
-recipe→ingredient map. See [L2 rate-flattening](L2-rate-flattening.md) for the
+recipe→ingredient map. See [L2 rates post-processing](L2-rates-post.md) for the
 formulation.
 
 The diff visualization (original vs flattened production, faint vs solid, plus

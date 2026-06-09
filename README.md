@@ -58,9 +58,9 @@ After [installing](#install), from the repository root:
 .venv/bin/fplan rates viz steelaxe --open
 ```
 
-`viz` writes a zoomable timeline, a [facility-area view](docs/L2-area-viz.md)
+`viz` writes a zoomable timeline, a [facility-area view](docs/L2-rates-post.md#the-facility-area-view)
 (allocated vs utilized area — the spatial L2→L3 lens), and an interactive
-[ore-patch supply curve](docs/L2-patch-selection.md) under `runs/steelaxe/viz/`
+[ore-patch supply curve](docs/L2-rates-post.md#the-supply-curve-view--patch-selection) under `runs/steelaxe/viz/`
 (and opens the timeline) — the supply curve lets you pick which patches to mine
 and feed that choice back into the next solve.
 
@@ -188,20 +188,13 @@ obvious without reading the docs.
   Factorio install (model load, map extraction, L2 solve/viz/post)
 - [Repository structure & conventions](docs/structure.md)
 - [L2 rates — the solve](docs/L2-rates-solve.md) — how `rates solve` works and how
-  to read its output: the model, the `rates.yaml` fields, the solver choices, and
-  the visualizer reference
+  to read its output: the model, the `rates.yaml` fields, facility assignment, the
+  solver choices, and the timeline visualizer reference
+- [L2 rates — post-processing](docs/L2-rates-post.md) — the `rates post` design:
+  block-prep for L3 (flattening, combining, lane-splitting), the facility-area and
+  supply-curve views, and the base-area split
 - [Stage enrichment](docs/stage-enrichment.md) — why per-stage knowledge (e.g.
   L2 deployment) enriches downward and never lives in the base model layer
-- [L2 rate-flattening](docs/L2-rate-flattening.md) — the `rates post` design:
-  the causal-tube flattening methods and the diff visualization
-- [Facility assignment](docs/L2-assignment.md) — committing drills, furnaces, and
-  assemblers to a job so L3 gets static blocks: the three mechanics and the
-  tractability trade-off
-- [Facility area](docs/L2-area-viz.md) — the allocated-vs-utilized facility-area
-  view and the base-area split (penalized / flexible / static), the spatial L2→L3
-  handoff lens
-- [Patch selection](docs/L2-patch-selection.md) — the ore-patch supply-curve view
-  and the patch-selection input it feeds back into the next solve
 
 ## License
 

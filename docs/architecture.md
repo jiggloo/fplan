@@ -134,7 +134,7 @@ one clever idea — is the evidence the structure is near-natural for the proble
 |---|---|---|---|
 | **L1** `tech-order build` | a scenario (the goal) | a `tech-order` (layered research order; carries only a `scenario:` *reference*, no goal content) | [usage: tech-order](usage.md#tech-order) |
 | **L2** `rates solve` | scenario + tech-order + optional map | `rates.yaml` — the per-step schedule and `t_FINAL` | [L2 rates — the solve](L2-rates-solve.md) |
-| **L2** `rates post` | `rates.yaml` | `rates-post.yaml` — the flattened schedule, the **provisional** L3 input | [L2 rate-flattening](L2-rate-flattening.md) |
+| **L2** `rates post` | `rates.yaml` | `rates-post.yaml` — the block-prepped schedule, the **provisional** L3 input | [L2 rates — post-processing](L2-rates-post.md) |
 | **L3** `layout` | `rates-post.yaml` | machine placement *(stub)* | — |
 | **L4** `execution` | a layout | TAS action steps *(stub)* | — |
 
@@ -147,8 +147,8 @@ Three contract notes worth holding onto:
 - **The L2→L3 handoff is deliberately unsettled.** `rates-post.yaml` mirrors the
   `rates.yaml` schema only because L3's preferred input format isn't decided yet;
   it's tagged `schema: provisional-rates-mirror` and nothing downstream should
-  assume it's stable. See [L2 rate-flattening § Provisional by
-  design](L2-rate-flattening.md#provisional-by-design).
+  assume it's stable. See [L2 rates — post-processing § Provisional by
+  design](L2-rates-post.md#provisional-by-design).
 - **The L2↔L3 edge is genuinely bidirectional.** Placement needs L2's counts, but
   good rates need spatial reality (which patches, routing cost) — a back-edge the
   feed-forward order can't carry. That tension is taken up in
@@ -185,8 +185,9 @@ of increasing bandwidth:
   placement data rather than guessed forever — numbers flowing up, machine to
   machine ([L2 § 4.6](L2-rates-solve.md#46-downstream-feedback-back-propagation)).
 - **Wider — human-in-the-loop selection.** The [supply-curve
-  view](L2-patch-selection.md) and [facility-area lens](L2-area-viz.md) let you
-  feed spatial reality back into the next L2 solve by judgment, by hand.
+  view](L2-rates-post.md#the-supply-curve-view--patch-selection) and
+  [facility-area lens](L2-rates-post.md#the-facility-area-view) let you feed
+  spatial reality back into the next L2 solve by judgment, by hand.
 - **Widest — structural re-coupling.** The [temporal-decomposition
   exploration](https://github.com/jiggloo/fplan/issues/56) would re-introduce
   causal time *inside* L2 once the cheaper dimensions have made it affordable.
@@ -222,11 +223,8 @@ Design / contributor-facing, by stage:
 
 | Topic | Doc |
 |---|---|
-| **L2** — the solve (the NLP: model, variables, constraints, solver hacks, extending) | [L2-rates-solve.md](L2-rates-solve.md) |
-| **L2** — `rates post` rate-flattening (the flattening methods + diff viz) | [L2-rate-flattening.md](L2-rate-flattening.md) |
-| **L2** — facility assignment (committing drills / furnaces / assemblers to a job) | [L2-assignment.md](L2-assignment.md) |
-| **L2** — the facility-area view + base-area split (the spatial L2→L3 lens) | [L2-area-viz.md](L2-area-viz.md) |
-| **L2** — patch selection (the supply-curve view + the feedback input) | [L2-patch-selection.md](L2-patch-selection.md) |
+| **L2** — the solve (the NLP: model, variables, constraints, facility assignment, solver hacks, extending, the timeline viz) | [L2-rates-solve.md](L2-rates-solve.md) |
+| **L2** — post-processing (block-prep for L3: flatten / combine / lane-split; the facility-area, supply-curve & diff views; the base-area split) | [L2-rates-post.md](L2-rates-post.md) |
 | **Cross-cutting** — stage enrichment (model base-pure, enrich downward) | [stage-enrichment.md](stage-enrichment.md) |
 
 L1 has no standalone design doc yet (the ordering is covered in

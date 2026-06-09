@@ -24,9 +24,11 @@ is already documented, link it here instead of restating it.
   doc: how `rates solve` works and how to read its output (the model, the
   `rates.yaml` fields, the solver-specific hacks, downstream-feedback
   coefficients, extending the model, and the visualizer reference).
-- **[docs/stage-enrichment.md](docs/stage-enrichment.md)**,
-  **[docs/L2-rate-flattening.md](docs/L2-rate-flattening.md)** — design rationale
-  for the model layering and the `rates post` flattening.
+- **[docs/L2-rates-post.md](docs/L2-rates-post.md)** — the L2→L3 post-processing
+  design: block-prep (flatten / combine / lane-split), the facility-area,
+  supply-curve & diff views, and the base-area split.
+- **[docs/stage-enrichment.md](docs/stage-enrichment.md)** — design rationale for
+  the model layering (each stage enriches the layer below).
 
 ## What fplan is (for orientation)
 
@@ -97,6 +99,14 @@ helped, so this is high-value.
 
 - **README is the hub / starting point**; reference material that grows with the
   tool lives in `docs/`.
+- **Organize L2 docs by phase, not feature.** Two L2 docs —
+  `L2-rates-solve.md` (the solve) and `L2-rates-post.md` (post-processing);
+  document each visualization in the phase whose work it serves (timeline → solve;
+  facility-area / supply-curve / diff → post). Separate stable explanation from
+  volatile **reference**, and fence content that tracks the still-fluid L3 contract
+  in a section marked **Provisional** (*stable / provisional / planned*). Doc
+  dependencies point toward stability: the solve doc stays L3-agnostic; the post
+  doc holds the L3-facing volatility.
 - **Write directly.** State what a thing *is* in one declarative sentence before
   why it matters. Cut the three reflexes that bloat prose: a framing device
   ("Imagine pointing at a save…"), define-by-negation ("not a blueprint, but…"),
