@@ -10,6 +10,13 @@ is already documented, link it here instead of restating it.
 - **[README.md](README.md)** — what fplan is, install, the Quickstart, the
   Concepts (the L1→L4 pipeline + scenario/tech-order/map/run), the repo layout,
   and the **Status** (what works today vs. stubs). Start here.
+- **[docs/architecture.md](docs/architecture.md)** — the contributor front door:
+  the L1→L4 data flow, the stage contracts, where the solver sits, and the
+  **design-doc index** (every doc below, keyed by stage). Add a new design doc to
+  this index.
+- **[docs/reading-results.md](docs/reading-results.md)** — the user-facing reading
+  hub across a solved run (the `rates.yaml`, the three views, the `post` diff); it
+  links into the deep docs rather than restating them.
 - **[docs/usage.md](docs/usage.md)** — the full CLI reference: every command,
   configuration, and the reserved **exit codes**.
 - **[docs/structure.md](docs/structure.md)** — the tracked-vs-gitignored rule

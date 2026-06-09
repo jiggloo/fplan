@@ -64,9 +64,11 @@ After [installing](#install), from the repository root:
 (and opens the timeline) — the supply curve lets you pick which patches to mine
 and feed that choice back into the next solve.
 
-To understand the result — and how the solve produced it — see
-[L2 rates — the solve](docs/L2-rates-solve.md). Ready to plan a goal of your own?
-Follow [Plan your own factory](docs/usage.md#plan-your-own-factory).
+To understand the result, see [Reading your results](docs/reading-results.md) —
+the map of the `rates.yaml`, the three views, and the `post` diff; for how the
+solve produced it, [L2 rates — the solve](docs/L2-rates-solve.md). Ready to plan
+a goal of your own? Follow
+[Plan your own factory](docs/usage.md#plan-your-own-factory).
 
 Orient yourself any time with:
 
@@ -181,6 +183,10 @@ obvious without reading the docs.
 
 ## Documentation
 
+- [Architecture](docs/architecture.md) — the L1→L4 pipeline, the stage contracts,
+  where the solver fits, and the design-doc index (the contributor front door)
+- [Reading your results](docs/reading-results.md) — interpret a solved run: the
+  `rates.yaml`, the three views, and the `post` diff, as one reading workflow
 - [Usage reference](docs/usage.md) — the full CLI reference
 - [Integration tests](docs/integration_tests.md) — manual checks that need a real
   Factorio install (model load, map extraction, L2 solve/viz/post)
