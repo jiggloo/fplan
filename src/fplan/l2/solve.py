@@ -1203,11 +1203,10 @@ def build_lp(
             )
 
         # Recipes eating this furnace as an ingredient (stone-furnace → boiler /
-        # burner-drill); empty for steel → strict monotonicity.
+        # burner-drill); empty for steel → strict monotonicity. Steps index the
+        # n_steps tier-to-tier transitions (n_tiers == n_steps + 1).
         consumers = _building_consumers(model, b_name)
         for i in range(n_steps):
-            if i + 1 >= n_tiers:
-                break
             if not consumers:
                 for out in out_recipes:
                     m.addCons(

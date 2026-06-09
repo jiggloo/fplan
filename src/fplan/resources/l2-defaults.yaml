@@ -171,8 +171,8 @@ assignment:
     # Retire an assembler — drop its recipe/step vars — once the named tech is
     # researched, since by then plans have upgraded to a higher tier (AM1→AM2/AM3
     # by low-density-structure). Realism-free var pruning that shrinks the split.
-    # This map deep-merges per building: override a building's tech, or add one;
-    # to keep a building usable campaign-long, point it at a tech it never
-    # researches (e.g. `assembling-machine-1: ""`).
+    # This map deep-merges per building: override a building's tech, or add one.
+    # An empty tech is the explicit "never retire" escape hatch — keep a building
+    # usable campaign-long with `assembling-machine-1: ""`.
     retire_after:
       assembling-machine-1: low-density-structure

@@ -594,9 +594,10 @@ assignment:
 `retire_after` drops an assembler's recipe/step variables once the named tech is
 researched — by then plans have upgraded to a higher tier (AM1→AM2/AM3 by
 low-density-structure), so those variables are pure overhead. It's realism-free
-pruning that shrinks the curated split (on default-victory it removes ~11% of the
-bilinear terms). The map deep-merges per building; to keep a building usable for
-the whole campaign, point it at a tech it never researches (`assembling-machine-1: ""`).
+pruning that shrinks the curated split (its tractability impact is quantified in
+[the assignment design doc](L2-assignment.md)). The map deep-merges per building;
+to keep a building usable for the whole campaign, give it an empty tech
+(`assembling-machine-1: ""`).
 
 #### `rates viz`
 

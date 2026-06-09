@@ -21,6 +21,7 @@ reproducibility.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
@@ -197,6 +198,15 @@ def _assignment_fields(d: dict) -> dict:
     split_items = crafting.get("split_items", _DEFAULT_CRAFTING_SPLIT_ITEMS)
     retire = crafting.get("retire_after", _DEFAULT_CRAFTING_RETIRE_AFTER)
     retire = {} if retire is None else retire
+    # The unassign cost enters the player-time objective as a real cost; a
+    # negative or non-finite value would flip the repurpose incentive (or wreck
+    # the LP), so reject it cleanly rather than letting it reach the solver.
+    unassign_cost = float(crafting.get("unassign_cost_s", 1.0))
+    if not math.isfinite(unassign_cost) or unassign_cost < 0:
+        raise ValueError(
+            f"assignment.crafting.unassign_cost_s must be finite and >= 0, "
+            f"got {unassign_cost}"
+        )
     return {
         "mining_assignment_buildings": tuple(str(b) for b in mining_b),
         "smelting_assignment_buildings": tuple(str(b) for b in smelting_b),
@@ -204,7 +214,7 @@ def _assignment_fields(d: dict) -> dict:
         "crafting_assignment_buildings": tuple(str(b) for b in crafting_b),
         "crafting_split_science_packs": bool(crafting.get("split_science_packs", True)),
         "crafting_split_items": frozenset(str(i) for i in split_items),
-        "crafting_unassign_cost_s": float(crafting.get("unassign_cost_s", 1.0)),
+        "crafting_unassign_cost_s": unassign_cost,
         "crafting_retire_after": {str(b): str(t) for b, t in retire.items()},
     }
 

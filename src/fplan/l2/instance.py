@@ -1008,10 +1008,13 @@ def resolve_assignment(
                 "this scenario; assemblers stay pooled"
             )
     # Retirement is a building-availability prune (drop AM1 vars after LDS),
-    # independent of whether the crafting split is active; keep only reachable
-    # buildings so an irrelevant entry is a clean no-op.
+    # independent of whether the crafting split is active. Keep only reachable
+    # buildings (an irrelevant entry is a clean no-op); a falsy/empty tech is the
+    # explicit "never retire" escape hatch (it survives the dict deep-merge).
     retire_after = {
-        b: t for b, t in cfg.crafting_retire_after.items() if b in reachable_buildings
+        b: t
+        for b, t in cfg.crafting_retire_after.items()
+        if b in reachable_buildings and t
     }
     note = _assignment_note(mining, smelting, crafting, cfg)
     return Assignment(

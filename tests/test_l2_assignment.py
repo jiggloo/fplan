@@ -475,6 +475,29 @@ def test_lp_retires_am1_after_tech(model: GameModel, tmp_path: Path) -> None:
     assert am2_post
 
 
+def test_resolve_retire_empty_tech_disables(model: GameModel) -> None:
+    # An empty tech is the explicit "never retire" escape hatch — the entry is
+    # dropped, so the building is never pruned.
+    cfg = replace(
+        l2config.load_config(None),
+        crafting_retire_after={"assembling-machine-1": ""},
+    )
+    a = l2_instance.resolve_assignment(
+        model, cfg, frozenset({"assembling-machine-1"}), True
+    )
+    assert a.retire_after == {}
+
+
+@pytest.mark.parametrize("bad", ["-1.0", ".inf", ".nan"])
+def test_config_unassign_cost_invalid_raises(tmp_path: Path, bad: str) -> None:
+    # A negative/non-finite unassign cost would flip the repurpose incentive or
+    # wreck the LP — reject it cleanly (invariant #1), never reach the solver.
+    f = tmp_path / "cfg.yaml"
+    f.write_text(f"assignment:\n  crafting:\n    unassign_cost_s: {bad}\n")
+    with pytest.raises(ValueError, match="invalid L2 config"):
+        l2config.load_config(f)
+
+
 def test_lp_no_retirement_when_disabled(model: GameModel, tmp_path: Path) -> None:
     cfg = replace(l2config.load_config(None), crafting_retire_after={})
     layers = _LAYERS + [["advanced-material-processing-2"], ["low-density-structure"]]

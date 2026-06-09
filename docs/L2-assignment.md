@@ -102,8 +102,8 @@ low-density-structure is researched, plans have upgraded AM1 → AM2/AM3 (observ
 directly), so AM1's recipe/step variables only ever sit at zero. `crafting.retire_after`
 (building → tech) drops them once the tech is researched — realism-free var/bucket
 pruning that shrinks the curated split where it's largest. On default-victory it
-removes the **~228 post-LDS AM1 buckets (~11% of all bilinear)**, taking the model
-from ~2,018 to ~1,783. It's applied in the solver's `x_real` construction,
+takes the model from **2,018 to 1,783 bilinear (−235, ~11%)** by removing the
+post-LDS AM1 buckets. It's applied in the solver's `x_real` construction,
 independently of whether the crafting split is active.
 
 ## Tractability
