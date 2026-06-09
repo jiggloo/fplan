@@ -13,7 +13,7 @@ config, then calls `build_instance`.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import yaml
@@ -235,6 +235,11 @@ class L2Instance:
     lab_module_item: str | None = None
     lab_modules_per: int = 0
     lab_module_note: str | None = None
+    # Facility assignment (config-driven; see resolve_assignment): mining drills
+    # per ore, furnaces per output, assemblers per recipe — committing each
+    # facility to one job so L3 gets static blocks. Empty (no class active) ⇒ the
+    # affected facilities keep a single pooled capacity.
+    assignment: Assignment = field(default_factory=lambda: Assignment())
 
     def capacity_end_weight(self, building_name: str = "") -> float:
         """End-of-step weight in the capacity-constraint interpolation, per
@@ -909,6 +914,141 @@ def compute_lab_modules(
     return LabModules(prod_bonus, speed_frac, power_factor, module_name, slots, note)
 
 
+@dataclass(frozen=True)
+class CraftingAssignmentSpec:
+    """The crafting class of facility assignment (see resolve_assignment): each
+    listed assembler is committed to ONE recipe at a time via per-recipe
+    "assigned" buckets plus an "unassigned" pool, charging player time on the
+    transitions. Present only when active."""
+
+    buildings: tuple[str, ...]  # configured ∩ reachable, in config order
+    split_items: frozenset[str]  # output items whose recipe gets its own bucket
+    split_science_packs: bool  # also split every *-science-pack recipe
+    assign_cost_s: float  # set-a-recipe player time (one game tick)
+    unassign_cost_s: float  # walk-back-and-clear player time
+
+    def splits_output(self, output_name: str) -> bool:
+        """Whether a recipe producing ``output_name`` gets its own per-recipe
+        bucket (+ repurpose penalty), vs. staying in the shared pool. Curated to
+        keep the bilinear-term count tractable (see the config block)."""
+        if self.split_science_packs and output_name.endswith("-science-pack"):
+            return True
+        return output_name in self.split_items
+
+
+@dataclass(frozen=True)
+class Assignment:
+    """Resolved facility assignment across the three classes (see
+    resolve_assignment). One concept — a facility committed to a specific job so
+    L3 receives static blocks — across mining drills (per ore), furnaces (per
+    output), and assemblers (per recipe); the classes differ only in the LP
+    mechanics the solver applies. Building lists are filtered to the reachable
+    set; an empty list (or None crafting) means that class is off."""
+
+    mining_buildings: tuple[str, ...] = ()  # per-ore, strict non-decreasing
+    smelting_buildings: tuple[str, ...] = ()  # per-output, +destroy if consumable
+    crafting: CraftingAssignmentSpec | None = None  # per-recipe, full repurpose
+    # building -> tech: drop that building's recipe/step vars once the tech is
+    # researched (e.g. assembling-machine-1 after low-density-structure). Applied
+    # in the solver's x_real construction independently of the crafting split.
+    retire_after: dict[str, str] = field(default_factory=dict)
+    note: str | None = None  # one-line human summary when any class is active
+
+    @property
+    def active(self) -> bool:
+        return bool(self.mining_buildings or self.smelting_buildings or self.crafting)
+
+    @property
+    def split_capacity_buildings(self) -> frozenset[str]:
+        """Buildings whose pooled capacity is replaced by a per-key assignment
+        split, so the generic pooled-capacity loop must skip them."""
+        crafting = self.crafting.buildings if self.crafting else ()
+        return frozenset((*self.mining_buildings, *self.smelting_buildings, *crafting))
+
+
+def resolve_assignment(
+    model: GameModel,
+    cfg: L2Config,
+    reachable_buildings: frozenset[str],
+    player_time_enabled: bool,
+    warnings: list[str] | None = None,
+) -> Assignment:
+    """Resolve the facility-assignment config against this scenario.
+
+    Mining and smelting assignment are unconditional capacity structure (no
+    player-time cost), so they are on whenever their configured buildings are
+    reachable. Crafting assignment additionally requires player-time to be
+    modeled — its assign/unassign costs are what make a dedicated recipe
+    meaningful; without them the repurpose would be free. Building lists are
+    filtered to the reachable set (a non-reachable building contributes nothing).
+    """
+    mining = tuple(
+        b for b in cfg.mining_assignment_buildings if b in reachable_buildings
+    )
+    smelting = tuple(
+        b for b in cfg.smelting_assignment_buildings if b in reachable_buildings
+    )
+    crafting: CraftingAssignmentSpec | None = None
+    if cfg.crafting_assignment_enabled and player_time_enabled:
+        c_buildings = tuple(
+            b for b in cfg.crafting_assignment_buildings if b in reachable_buildings
+        )
+        if c_buildings:
+            crafting = CraftingAssignmentSpec(
+                buildings=c_buildings,
+                split_items=cfg.crafting_split_items,
+                split_science_packs=cfg.crafting_split_science_packs,
+                assign_cost_s=cfg.placement_tick_s,
+                unassign_cost_s=cfg.crafting_unassign_cost_s,
+            )
+        elif warnings is not None and cfg.crafting_assignment_buildings:
+            configured = ", ".join(cfg.crafting_assignment_buildings)
+            warnings.append(
+                f"crafting assignment: none of [{configured}] are reachable in "
+                "this scenario; assemblers stay pooled"
+            )
+    # Retirement is a building-availability prune (drop AM1 vars after LDS),
+    # independent of whether the crafting split is active. Keep only reachable
+    # buildings (an irrelevant entry is a clean no-op); a falsy/empty tech is the
+    # explicit "never retire" escape hatch (it survives the dict deep-merge).
+    retire_after = {
+        b: t
+        for b, t in cfg.crafting_retire_after.items()
+        if b in reachable_buildings and t
+    }
+    note = _assignment_note(mining, smelting, crafting, cfg)
+    return Assignment(
+        mining_buildings=mining,
+        smelting_buildings=smelting,
+        crafting=crafting,
+        retire_after=retire_after,
+        note=note,
+    )
+
+
+def _assignment_note(
+    mining: tuple[str, ...],
+    smelting: tuple[str, ...],
+    crafting: CraftingAssignmentSpec | None,
+    cfg: L2Config,
+) -> str | None:
+    """One-line human summary of the active assignment classes (None if none)."""
+    parts: list[str] = []
+    if mining:
+        parts.append(f"mining per-ore on {', '.join(mining)}")
+    if smelting:
+        parts.append(f"smelting per-output on {', '.join(smelting)}")
+    if crafting:
+        extra = f" + {len(crafting.split_items)} items" if crafting.split_items else ""
+        parts.append(
+            f"crafting per-recipe on {', '.join(crafting.buildings)} "
+            f"(science packs{extra}, unassign {crafting.unassign_cost_s:g}s)"
+        )
+    if not parts:
+        return None
+    return "facility assignment: " + "; ".join(parts)
+
+
 def build_instance(
     scenario_obj: scenario_mod.Scenario,
     l1_output_path: str | Path,
@@ -1105,6 +1245,11 @@ def build_instance(
     lab = compute_lab_modules(
         model, cfg.lab_modules_enabled, cfg.lab_modules_item, warnings
     )
+    # Facility assignment (mining / smelting / crafting): commit each facility to
+    # one job so L3 receives static blocks.
+    assignment = resolve_assignment(
+        model, cfg, reachable_buildings, player_time_enabled, warnings
+    )
 
     return L2Instance(
         scenario=scenario_obj,
@@ -1141,6 +1286,7 @@ def build_instance(
         lab_module_item=lab.module_item,
         lab_modules_per=lab.modules_per,
         lab_module_note=lab.note,
+        assignment=assignment,
     )
 
 
@@ -1184,6 +1330,8 @@ def _print_summary(inst: L2Instance, model: GameModel) -> None:
         print(f"\n{inst.silo_module_note}")
     if inst.lab_module_note:
         print(f"\n{inst.lab_module_note}")
+    if inst.assignment.note:
+        print(f"\n{inst.assignment.note}")
     if inst.warnings:
         print(f"\nWarnings ({len(inst.warnings)}):")
         for w in inst.warnings:

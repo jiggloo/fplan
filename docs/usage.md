@@ -540,6 +540,65 @@ lab_modules:
   # module: productivity-module-3   # or keep it enabled and pick a higher tier
 ```
 
+#### Facility assignment
+
+By default a facility is **committed to one job** — a mining drill to one ore, a
+furnace to one product, an assembler to one recipe — so the solver produces
+**static blocks** for L3 placement instead of a pool that swaps job step to step
+(which rarely happens in real runs and can't be placed by a VLSI layout). One
+concept, three classes that differ only in the underlying mechanics:
+
+- **Mining** drills, per ore: a drill sits on a patch and can't switch ore, so
+  each ore gets its own non-decreasing drill count.
+- **Smelting** furnaces, per output: a furnace smelts whatever its input belt
+  feeds. A furnace that gets consumed (a stone furnace is eaten by boilers and
+  burner drills) may be torn down — detected from the recipe data — but never
+  repurposed; steel furnaces stay strictly non-decreasing.
+- **Crafting** assemblers, per recipe: switching a real assembler's recipe is a
+  player action, so the solver pays player time to **assign** (set a recipe) and
+  **unassign** (walk back and clear) — repurposing only where it's worth the cost.
+  Consuming an assembler (AM1→AM2→AM3) is a free teardown, again from the recipe
+  data. The split is **curated** (every science pack plus a list of higher-value
+  intermediates) because the bilinear-term count, not the variable count, drives
+  solve time; a full split is intractable.
+
+When any class is active, `rates solve` prints a `⚙ facility assignment: …` line.
+The plan emits `mining_assignment` / `smelting_assignment` / `assembler_assignment`
+records (`<building>@<ore|output|recipe>`) per step for L3. Design rationale —
+the three mechanics, the consumable-furnace teardown, the burner↔stone-furnace
+bootstrap coupling, and the tractability trade-off — is in
+[the assignment design doc](L2-assignment.md).
+
+Configure it with an `assignment` block in the same
+[L2 tuning config](#l2-tuning-config). Set a class's `buildings: []` to disable
+it (the facility reverts to a single pooled capacity):
+
+```yaml
+# my-tuning.yaml — passed with: rates solve <run> --l2-config my-tuning.yaml
+assignment:
+  mining:
+    buildings: [electric-mining-drill, burner-mining-drill]
+  smelting:
+    buildings: [stone-furnace, steel-furnace]
+  crafting:
+    enabled: true
+    buildings: [assembling-machine-1, assembling-machine-2]
+    unassign_cost_s: 1.0          # player-time to clear a recipe (assign = 1 tick)
+    split_science_packs: true     # every *-science-pack recipe gets its own block
+    split_items: [engine-unit, inserter, transport-belt, pipe, boiler,
+                  steam-engine, steel-furnace, electric-mining-drill]
+    retire_after:                 # drop a building's vars once a tech is researched
+      assembling-machine-1: low-density-structure
+```
+
+`retire_after` drops an assembler's recipe/step variables once the named tech is
+researched — by then plans have upgraded to a higher tier (AM1→AM2/AM3 by
+low-density-structure), so those variables are pure overhead. It's realism-free
+pruning that shrinks the curated split (its tractability impact is quantified in
+[the assignment design doc](L2-assignment.md)). The map deep-merges per building;
+to keep a building usable for the whole campaign, give it an empty tech
+(`assembling-machine-1: ""`).
+
 #### `rates viz`
 
 Render a solved run's `rates.yaml` as **self-contained interactive HTML** —

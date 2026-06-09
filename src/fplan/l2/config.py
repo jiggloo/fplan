@@ -21,7 +21,8 @@ reproducibility.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 
@@ -29,9 +30,34 @@ import yaml
 
 # Bump on any schema change (new key, renamed key, semantic change). A user
 # config declaring an older `version` loads but warns.
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 _DEFAULTS_RESOURCE = "l2-defaults.yaml"
+
+# Facility-assignment fallbacks for a directly-constructed L2Config (the live
+# values come from l2-defaults.yaml; these only apply when a key is absent).
+# Three classes of the one concept "commit a facility to a job": mining drills
+# per ore, furnaces per output, assemblers per recipe.
+_DEFAULT_MINING_ASSIGN_BUILDINGS = ("electric-mining-drill", "burner-mining-drill")
+_DEFAULT_SMELTING_ASSIGN_BUILDINGS = ("stone-furnace", "steel-furnace")
+_DEFAULT_CRAFTING_ASSIGN_BUILDINGS = ("assembling-machine-1", "assembling-machine-2")
+# Retire an assembler (drop its recipe/step vars) once the named tech is
+# researched — by then plans have upgraded to a higher tier. Realism-free var
+# pruning that shrinks the crafting split. Empty to keep every assembler usable
+# for the whole campaign.
+_DEFAULT_CRAFTING_RETIRE_AFTER = {"assembling-machine-1": "low-density-structure"}
+_DEFAULT_CRAFTING_SPLIT_ITEMS = frozenset(
+    {
+        "engine-unit",
+        "electric-mining-drill",
+        "steel-furnace",
+        "boiler",
+        "steam-engine",
+        "pipe",
+        "inserter",
+        "transport-belt",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -83,6 +109,28 @@ class L2Config:
     # choice, with the modules reserved as infrastructure (no fixed declaration).
     lab_modules_enabled: bool = True
     lab_modules_item: str = "productivity-module"
+    # Facility assignment — commit each facility to one job so L3 receives static
+    # blocks (vs. a pool that swaps job step to step). One concept, three classes
+    # that differ only in the LP mechanics (see fplan.l2.instance.resolve_assignment):
+    #   mining   — drills per ore (a drill sits on a patch; strict non-decreasing)
+    #   smelting — furnaces per output (set by the input belt; non-decreasing,
+    #              but a consumable furnace like stone-furnace can be torn down)
+    #   crafting — assemblers per recipe, repurposable at a player-time cost; the
+    #              split is curated (science packs + ``crafting_split_items``) since
+    #              the bilinear-term count, not the variable count, drives solve cost
+    # An empty building list disables that class.
+    mining_assignment_buildings: tuple[str, ...] = _DEFAULT_MINING_ASSIGN_BUILDINGS
+    smelting_assignment_buildings: tuple[str, ...] = _DEFAULT_SMELTING_ASSIGN_BUILDINGS
+    crafting_assignment_enabled: bool = True
+    crafting_assignment_buildings: tuple[str, ...] = _DEFAULT_CRAFTING_ASSIGN_BUILDINGS
+    crafting_split_science_packs: bool = True
+    crafting_split_items: frozenset[str] = _DEFAULT_CRAFTING_SPLIT_ITEMS
+    crafting_unassign_cost_s: float = 1.0
+    # building -> tech: drop that building's recipe/step vars once the tech is
+    # researched (e.g. assembling-machine-1 after low-density-structure).
+    crafting_retire_after: dict[str, str] = field(
+        default_factory=lambda: dict(_DEFAULT_CRAFTING_RETIRE_AFTER)
+    )
 
     def deployment_for(self, building_name: str) -> DeploymentPattern:
         """The deployment pattern for a building, or an empty one (no infra,
@@ -125,6 +173,49 @@ def _lab_modules_fields(d: dict) -> dict:
     return {
         "lab_modules_enabled": bool(block.get("enabled", True)),
         "lab_modules_item": str(block.get("module", "productivity-module")),
+    }
+
+
+def _assignment_fields(d: dict) -> dict:
+    """Parse the optional ``assignment`` block (mining / smelting / crafting
+    facility assignment) into :class:`L2Config` kwargs. Same non-dict-safe
+    contract as :func:`_lab_modules_fields`: a scalar where a mapping is expected
+    (e.g. ``assignment: true`` or ``assignment: {crafting: false}``) makes
+    ``.get`` raise ``AttributeError``, which the caller maps to a clean error
+    (invariant #1). Disable a class with an empty ``buildings`` list (mining /
+    smelting) or ``crafting: {enabled: false}``."""
+    block = d.get("assignment")
+    block = {} if block is None else block
+    mining = block.get("mining")
+    mining = {} if mining is None else mining
+    smelting = block.get("smelting")
+    smelting = {} if smelting is None else smelting
+    crafting = block.get("crafting")
+    crafting = {} if crafting is None else crafting
+    mining_b = mining.get("buildings", _DEFAULT_MINING_ASSIGN_BUILDINGS)
+    smelting_b = smelting.get("buildings", _DEFAULT_SMELTING_ASSIGN_BUILDINGS)
+    crafting_b = crafting.get("buildings", _DEFAULT_CRAFTING_ASSIGN_BUILDINGS)
+    split_items = crafting.get("split_items", _DEFAULT_CRAFTING_SPLIT_ITEMS)
+    retire = crafting.get("retire_after", _DEFAULT_CRAFTING_RETIRE_AFTER)
+    retire = {} if retire is None else retire
+    # The unassign cost enters the player-time objective as a real cost; a
+    # negative or non-finite value would flip the repurpose incentive (or wreck
+    # the LP), so reject it cleanly rather than letting it reach the solver.
+    unassign_cost = float(crafting.get("unassign_cost_s", 1.0))
+    if not math.isfinite(unassign_cost) or unassign_cost < 0:
+        raise ValueError(
+            f"assignment.crafting.unassign_cost_s must be finite and >= 0, "
+            f"got {unassign_cost}"
+        )
+    return {
+        "mining_assignment_buildings": tuple(str(b) for b in mining_b),
+        "smelting_assignment_buildings": tuple(str(b) for b in smelting_b),
+        "crafting_assignment_enabled": bool(crafting.get("enabled", True)),
+        "crafting_assignment_buildings": tuple(str(b) for b in crafting_b),
+        "crafting_split_science_packs": bool(crafting.get("split_science_packs", True)),
+        "crafting_split_items": frozenset(str(i) for i in split_items),
+        "crafting_unassign_cost_s": unassign_cost,
+        "crafting_retire_after": {str(b): str(t) for b, t in retire.items()},
     }
 
 
@@ -179,6 +270,7 @@ def _from_dict(d: dict) -> L2Config:
                 (d.get("silo_modules") or {}).get("enabled", True)
             ),
             **_lab_modules_fields(d),
+            **_assignment_fields(d),
         )
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         # AttributeError: a scalar where a mapping is expected (e.g.

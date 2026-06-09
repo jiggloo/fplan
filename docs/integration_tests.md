@@ -109,6 +109,18 @@ objective only adopts the slower productive labs when science is worth saving �
 check the promoted `rates.yaml` for `productivity-module` production feeding the
 research steps (the lab productivity-module variant being used, not just offered).
 
+It also exercises **facility assignment** end-to-end. Confirm the solve log prints
+`⚙ facility assignment: mining … smelting … crafting …` and a
+`[constraint-stats] … nonlinear=` count in the ~1,800 range (the curated split is
+tractable — the barrier backend finds a primal; AM1 retirement is on by default,
+see [L2 assignment](L2-assignment.md)). In the promoted `rates.yaml`, check that
+steps carry `mining_assignment` / `smelting_assignment` / `assembler_assignment`
+records (`<building>@<key>`), that the per-recipe assembler blocks typically ramp
+and **hold** (they're repurposable, but the optimizer rarely pays to repurpose),
+and that an `assembling-machine-2@…` block **repurposes** from a science pack to a
+rocket-part material once research ends (the end-game reassignment the player-time
+cost is meant to allow only when it pays off).
+
 ### L2 viz
 
 Render a solved run's `rates.yaml` as interactive HTML (timeline +
