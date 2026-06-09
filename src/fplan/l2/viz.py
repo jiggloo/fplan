@@ -1,4 +1,4 @@
-"""L2 visualization — interactive timeline + capacity-saturation heatmap.
+"""L2 visualization — interactive timeline + facility-area view.
 
 Pure consumer of a run's ``rates.yaml`` (the L2 solver output); the CLI
 (``fplan rates viz``) handles run resolution, file output, and ``--open``.
@@ -14,16 +14,17 @@ Per-item lines are rendered as step functions (panels 1 + 2) or linear-connect
 A tree-grouped legend toggles per-item visibility (science packs +
 electric-mining-drill visible by default).
 
-``build_heatmap_html`` emits the companion **capacity-saturation heatmap** from
-the per-step ``capacity`` field: rows = capacity-constrained buildings, columns
-= steps in tech order, a cell black when that building is saturated (on the
-critical surface, relevant to t_FINAL — L2→L3 handoff Theme 2).
+``render_area_html`` emits the companion **facility-area view** (the spatial
+L2→L3 handoff lens, successor to the retired capacity-saturation heatmap): one
+overlay panel per item, solid = allocated facility area (footprint × committed
+machines), faint = utilized (footprint × running machines). The gap is the
+built-but-not-running area L3 must still place. See ``AREA_CHARTS``.
 
 The renderer is deliberately **parameterized** (chart spec + heading/title/meta
 as arguments, with ``build_dataset`` / ``categorize`` / ``color_for_item`` /
-``default_meta_parts`` as reusable functions) so a later flatten-viz can compose it with
-a different chart spec + an augmented dataset, rather than string-surgery on the
-template. See ``DEFAULT_CHARTS``.
+``default_meta_parts`` as reusable functions) so the flatten and area views
+compose it with a different chart spec + an augmented dataset, rather than
+string-surgery on the template. See ``DEFAULT_CHARTS``.
 """
 
 from __future__ import annotations
@@ -715,9 +716,12 @@ function dataYRange(spec) {
         yMin = Math.min(yMin, a, b);
         yMax = Math.max(yMax, a, b);
       } else {
-        v = (spec.key === "prod") ? (step.rates[item]?.prod ?? 0)
-            : (spec.key === "net") ? ((step.rates[item]?.prod ?? 0) - (step.rates[item]?.cons ?? 0))
-            : 0;
+        // "net" is computed (prod − cons); every other key (prod, alloc, util,
+        // …) is a direct rates lookup, so new single-series charts need no
+        // special-casing here.
+        v = (spec.key === "net")
+            ? ((step.rates[item]?.prod ?? 0) - (step.rates[item]?.cons ?? 0))
+            : (step.rates[item]?.[spec.key] ?? 0);
         yMin = Math.min(yMin, v);
         yMax = Math.max(yMax, v);
         // A diff chart (flatten view) overlays a second series per item;
@@ -906,8 +910,8 @@ function renderChart(spec) {
       // Step function: flat through each step at its rate value.
       for (const step of DATA.steps) {
         let v;
-        if (spec.key === "prod") v = step.rates[item]?.prod ?? null;
-        else v = (step.rates[item]?.prod ?? 0) - (step.rates[item]?.cons ?? 0);
+        if (spec.key === "net") v = (step.rates[item]?.prod ?? 0) - (step.rates[item]?.cons ?? 0);
+        else v = step.rates[item]?.[spec.key] ?? null;  // prod / alloc / util / …
         if (v === null) continue;
         pts.push([step.t0, v]);
         pts.push([step.t1, v]);
@@ -994,6 +998,52 @@ function renderDeficits(t, title) {
   t.appendChild(body);
 }
 
+// --- bottom panel: allocated / utilized / idle area (facility-area view) ---
+// Replaces the per-step detail table when DATA.view === "facility_area". For the
+// selected step (or the peak-area step on load) it lists each VISIBLE item's
+// allocated area (solid line — committed facilities), utilized area (faint line
+// — running machines), and the idle gap between them. All data-derived text is
+// esc()-escaped; the only un-escaped interpolations are server color strings.
+function renderAreaDetails(t, title) {
+  const k = (selectedStepIdx != null) ? selectedStepIdx : (DATA.peak_area_step ?? 0);
+  const step = DATA.steps[k];
+  title.textContent = `Facility area @ step ${k}: ${esc(step.label)}`
+    + `  (tiles — idle = allocated − utilized)`;
+  const head = document.createElement("thead");
+  head.innerHTML = "<tr><th style='text-align:left'>item</th>"
+    + "<th>allocated</th><th>utilized</th><th>idle</th><th>idle %</th></tr>";
+  t.appendChild(head);
+  const rows = [];
+  for (const it of DATA.items_all || []) {
+    if (!visible.has(it)) continue;        // match the timeline: selected items only
+    const r = step.rates[it]; if (!r) continue;
+    const al = r.alloc ?? 0, ut = r.util ?? 0;
+    if (al < 0.05 && ut < 0.05) continue;
+    rows.push([it, al, ut, al - ut]);
+  }
+  rows.sort((a, b) => b[1] - a[1]);
+  const body = document.createElement("tbody");
+  // Sub-0.05-tile idle is noise (float dust for penalized items, exact 0 for
+  // pooled, where allocated == utilized) — render it as a flat "0".
+  const fmtIdle = (v) => (v < 0.05 ? "0" : fmt(v));
+  for (const [it, al, ut, idle] of rows) {
+    const tr = document.createElement("tr");
+    const sw = DATA.colors[it] || "#9ca3af";
+    const pct = al > 1e-6 ? (100 * idle / al) : 0;
+    tr.innerHTML = `<td class="item-cell" data-item="${esc(it)}" style="text-align:left" title="click for the per-facility breakdown"><span class="swatch" style="background:${sw}"></span>${esc(it)}</td>`
+      + `<td>${fmt(al)}</td><td>${fmt(ut)}</td>`
+      + `<td${idle >= 0.05 ? ' style="color:#b45309"' : ''}>${fmtIdle(idle)}</td>`
+      + `<td>${pct >= 0.5 ? pct.toFixed(0) + "%" : "—"}</td>`;
+    body.appendChild(tr);
+  }
+  if (rows.length === 0) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="5" style="text-align:center;color:#6b7280;padding:8px">no selected items with facility area this step</td>`;
+    body.appendChild(tr);
+  }
+  t.appendChild(body);
+}
+
 // --- details table ---
 function renderDetails() {
   highlightNav();
@@ -1001,6 +1051,7 @@ function renderDetails() {
   const title = document.getElementById("details-title");
   t.innerHTML = "";
   if (DATA.view === "flatten") { renderDeficits(t, title); return; }
+  if (DATA.view === "facility_area") { renderAreaDetails(t, title); return; }
   if (selectedStepIdx === null) {
     title.textContent = "Click a chart to select a step";
     return;
@@ -1096,9 +1147,15 @@ function showCellPopup(item, ev) {
     }
     html += `</tbody></table>`;
   }
+  placeCellPopup(pop, html, ev);
+}
+
+// Render `html` into the shared popup and clamp it to the viewport near the
+// click. Used by both the timeline production-facility popup and the area-view
+// per-facility popup so positioning / close-button wiring stay identical.
+function placeCellPopup(pop, html, ev) {
   pop.innerHTML = html;
   pop.style.display = "block";
-  // Position near the click, clamped to the viewport.
   const pad = 12;
   const rect = pop.getBoundingClientRect();
   let x = ev.clientX + pad, y = ev.clientY + pad;
@@ -1108,6 +1165,43 @@ function showCellPopup(item, ev) {
   pop.style.top = y + "px";
   const x_btn = pop.querySelector(".cp-x");
   if (x_btn) x_btn.addEventListener("click", closeCellPopup);
+}
+
+// --- area view: per-facility breakdown for one item at the selected step ---
+// Click an item in the area table to see how many of each facility are
+// *assigned* (committed/built) vs *running* for that item, and the tiles each
+// contributes — e.g. coal → N electric-mining-drill + M burner-mining-drill.
+// Reads the dataset's per-step `area_detail`; all names are esc()-escaped.
+function showAreaPopup(item, ev) {
+  const k = (selectedStepIdx != null) ? selectedStepIdx : (DATA.peak_area_step ?? 0);
+  const step = DATA.steps[k];
+  const detail = (step.area_detail && step.area_detail[item]) || {};
+  const pop = document.getElementById("cell-popup");
+  const sw = DATA.colors[item] || "#9ca3af";
+  let html = `<div class="cp-head"><span class="swatch" style="background:${sw}"></span>`
+    + `<span class="cp-title">${esc(item)}</span><span class="cp-x" title="close">×</span></div>`
+    + `<div class="cp-sub">step ${k}: ${esc(step.label)} — facilities (count · area tiles)</div>`;
+  const area = (b) => detail[b].alloc * detail[b].footprint;
+  const builds = Object.keys(detail).sort((a, b) => area(b) - area(a));
+  if (builds.length === 0) {
+    html += `<div class="cp-empty">no facility area for this item this step</div>`;
+  } else {
+    html += `<table class="cp-table"><thead><tr>`
+      + `<th>facility</th><th>assigned</th><th>running</th><th>area</th></tr></thead><tbody>`;
+    let tA = 0, tU = 0, tAr = 0;
+    for (const b of builds) {
+      const e = detail[b], ar = e.alloc * e.footprint;
+      tA += e.alloc; tU += e.util; tAr += ar;
+      html += `<tr><td>${esc(b)}</td><td>${fmt(e.alloc)}</td>`
+        + `<td>${fmt(e.util)}</td><td>${fmt(ar)}</td></tr>`;
+    }
+    if (builds.length > 1) {
+      html += `<tr class="cp-total"><td>total</td><td>${fmt(tA)}</td>`
+        + `<td>${fmt(tU)}</td><td>${fmt(tAr)}</td></tr>`;
+    }
+    html += `</tbody></table>`;
+  }
+  placeCellPopup(pop, html, ev);
 }
 
 // --- interactions ---
@@ -1193,20 +1287,17 @@ function setupZoomPan(svgEl) {
     for (const s of DATA.steps) if (tCursor >= s.t0 && tCursor < s.t1) { step = s; break; }
     if (!step) { tt.style.display = "none"; return; }
     const spec = CHARTS.find(c => c.id === svgEl.id);
+    // count → end stockpile, net → prod−cons, else the named key (prod / alloc).
+    const tipVal = (r) => spec.key === "count" ? (r.count_end ?? 0)
+        : spec.key === "net" ? (r.prod - r.cons)
+        : (r[spec.key] ?? 0);
     const items = [...visible].filter(it => step.rates[it] !== undefined);
-    items.sort((a, b) => {
-      const va = spec.key === "count" ? step.rates[a].count_end :
-                 spec.key === "prod"  ? step.rates[a].prod :
-                                        step.rates[a].prod - step.rates[a].cons;
-      const vb = spec.key === "count" ? step.rates[b].count_end :
-                 spec.key === "prod"  ? step.rates[b].prod :
-                                        step.rates[b].prod - step.rates[b].cons;
-      return Math.abs(vb) - Math.abs(va);
-    });
+    items.sort((a, b) =>
+      Math.abs(tipVal(step.rates[b])) - Math.abs(tipVal(step.rates[a])));
     let html = `<b>step ${step.i}: ${esc(step.label)}</b> @ ${fmtTime(tCursor)}<br>`;
     for (const it of items.slice(0, 6)) {
       const r = step.rates[it];
-      let v = spec.key === "count" ? r.count_end : spec.key === "prod" ? r.prod : (r.prod - r.cons);
+      let v = tipVal(r);
       html += `<span style="display:inline-block;width:8px;height:8px;background:${DATA.colors[it]};margin-right:4px"></span>${esc(it)}: ${fmt(v)}<br>`;
     }
     tt.innerHTML = html;
@@ -1227,11 +1318,14 @@ window.addEventListener("DOMContentLoaded", () => {
     const svg = document.getElementById(spec.id);
     setupZoomPan(svg);
   }
-  // Inline production-facility popup: click an item cell in the step table.
+  // Inline facility popup: click an item cell in the bottom table. The area
+  // view shows the per-facility assigned/running breakdown; the timeline shows
+  // the production-facility breakdown.
   document.getElementById("details-table").addEventListener("click", (e) => {
     const cell = e.target.closest(".item-cell");
     if (!cell) return;
-    showCellPopup(cell.dataset.item, e);
+    if (DATA.view === "facility_area") showAreaPopup(cell.dataset.item, e);
+    else showCellPopup(cell.dataset.item, e);
   });
   // Dismiss the popup on outside-click or Escape.
   document.addEventListener("click", (e) => {
@@ -1249,13 +1343,21 @@ window.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("legend-all").addEventListener("click", () => setAllVisibility(() => true));
   document.getElementById("legend-none").addEventListener("click", () => setAllVisibility(() => false));
-  document.getElementById("legend-top10").addEventListener("click", () =>
-    setAllVisibility(item => DATA.visible_default.includes(item)));
+  // "Top 10" selects the 10 largest-area items in the area view (items_all is
+  // ranked by peak allocated area there); elsewhere it resets to the curated
+  // default-visible set.
+  document.getElementById("legend-top10").addEventListener("click", () => {
+    const top = (DATA.view === "facility_area")
+      ? (DATA.items_all || []).slice(0, 10)
+      : DATA.visible_default;
+    setAllVisibility(item => top.includes(item));
+  });
   // Render initial.
   renderAllCharts();
-  // The flatten view's bottom panel (unmet inputs) is global, not
-  // step-scoped, so populate it on load rather than waiting for a click.
-  if (DATA.view === "flatten") renderDetails();
+  // The flatten view's bottom panel (unmet inputs) is global, and the area
+  // view's table defaults to the peak-area step — both populate on load rather
+  // than waiting for a click.
+  if (DATA.view === "flatten" || DATA.view === "facility_area") renderDetails();
   // Re-render on resize.
   window.addEventListener("resize", () => { renderAllCharts(); });
 });
@@ -1494,210 +1596,277 @@ def render_flatten_html(dataset: dict, *, method: str | None = None) -> str:
     )
 
 
-# -- CLI -----------------------------------------------------------------
+# -- Facility-area view --------------------------------------------------
+#
+# Per-item facility AREA over time: solid = ALLOCATED area (footprint × the
+# machines committed to producing that item — the penalized assignment buckets,
+# plus any pooled machines running its recipe), faint = UTILIZED area (footprint
+# × the machines actually running its recipe this step). For repurpose-penalized
+# items (drills@ore, furnaces@product, assemblers@recipe) the gap is idle
+# committed area L3 must still place; for pooled items the two lines coincide.
+# The successor to the retired capacity-saturation heatmap — the spatial
+# companion to the flatten view, making the L2→L3 static-vs-dynamic area legible.
+#
+# A PURE consumer of the solve output: footprints + base speeds come from the
+# emitted `facilities:` map and recipe→item from `recipe_outputs:` (both
+# single-sourced from the solve — see _facilities_dict / _recipe_outputs_dict in
+# l2.solve), so this needs NO game-model load and never drifts from the LP.
+
+# Default-visible items in the area view: the raw-extraction + smelting baseline
+# — the four mined ores and the three smelted plates, the most fundamental
+# facility-area consumers. Curated (not top-N) so the view opens on a stable,
+# legible baseline; everything else is one legend click away.
+_AREA_DEFAULT_VISIBLE = (
+    "coal",
+    "copper-ore",
+    "iron-ore",
+    "stone",
+    "copper-plate",
+    "iron-plate",
+    "steel-plate",
+)
+
+# Single overlay panel composed through render_html: solid = allocated (key),
+# faint = utilized (overlay). Same template / legend / nav / zoom as the timeline.
+AREA_CHARTS = [
+    {
+        "id": "chart-prod",
+        "key": "alloc",
+        "label": "allocated area",
+        "step_fn": True,
+        "overlay_key": "util",
+        "pane_title": "Facility area (tiles) — solid = allocated, faint = utilized",
+    },
+]
 
 
-def _fmt_clock(t: float) -> str:
-    """m:ss.s in-game time, matching the timeline view's left-column times."""
-    m = int(t // 60)
-    s = t - m * 60
-    return f"{m}:{s:04.1f}"
+def _area_step_detail(
+    steps: list[dict], facilities: dict, recipe_outputs: dict
+) -> list[dict[str, dict[str, dict]]]:
+    """Per-step, per-item, per-building **machine counts** (not tiles) — the
+    shared core the area series and the click-through facility breakdown both
+    derive from (area = count · footprint). For each step returns
+    ``{item: {building: {"alloc": count, "util": count, "footprint": fp}}}``:
 
+    - ``alloc`` (penalized buckets) = ``max(count_start, count_end)`` — the most
+      machines on the ground that step, what L3 must place; pooled = ``util``.
+    - ``util`` = running machines, ``recipe_sec_used / (base_speed · duration)``.
 
-_HEATMAP_CSS = """
-<style>
-  html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#222;}
-  body{display:flex;flex-direction:column;height:100vh;}
-  header{padding:6px 12px;background:#1f2937;color:#fff;display:flex;gap:12px;align-items:baseline;flex:0 0 auto;}
-  header h1{font-size:14px;margin:0;font-weight:600;}
-  header .sub{color:#cbd5e1;font-size:12px;}
-  .key{padding:4px 12px;font-size:11px;color:#6b7280;display:flex;gap:16px;align-items:center;border-bottom:1px solid #e5e7eb;flex:0 0 auto;}
-  .key b{display:inline-block;width:11px;height:11px;vertical-align:middle;margin-right:4px;border:1px solid #cbd5e1;}
-  .wrap{display:flex;flex:1 1 auto;min-height:0;}
-  .legend{flex:0 0 250px;overflow:auto;height:100%;border-right:2px solid #e5e7eb;padding:4px 0;}
-  .lg-row{display:flex;gap:6px;align-items:baseline;padding:2px 8px;font-size:11px;white-space:nowrap;}
-  .lg-row:hover{background:#dbeafe;}
-  .lg-idx{flex:0 0 22px;text-align:right;color:#6b7280;font-variant-numeric:tabular-nums;}
-  .lg-tech{flex:1;overflow:hidden;text-overflow:ellipsis;}
-  .lg-time{color:#9ca3af;font-variant-numeric:tabular-nums;}
-  .grid{flex:1 1 auto;overflow:auto;padding:4px;}
-  table{border-collapse:collapse;}
-  th.row-h{position:sticky;left:0;background:#fff;text-align:right;padding:0 6px;font-weight:500;font-size:11px;white-space:nowrap;z-index:2;}
-  th.col-h{position:sticky;top:0;background:#fff;font-size:9px;color:#6b7280;font-weight:500;height:18px;width:14px;font-variant-numeric:tabular-nums;z-index:1;}
-  td{width:14px;height:14px;border:1px solid #f1f5f9;padding:0;}
-  td.c-sat{background:#111827;}
-  td.c-slack{background:#e5e7eb;}
-  td.c-absent{background:#fff;}
-  .col-hi{outline:2px solid #2563eb;outline-offset:-2px;}
-  .threshold-bar{flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:8px 12px;border-top:2px solid #e5e7eb;background:#f9fafb;}
-  .threshold-bar label{font-size:12px;color:#374151;white-space:nowrap;font-weight:500;}
-  .threshold-bar select{font-size:12px;padding:2px 4px;}
-  .threshold-bar .sep{width:1px;height:18px;background:#d1d5db;}
-  .threshold-bar input[type=range]{flex:1 1 auto;cursor:pointer;}
-  .threshold-bar .tval{font-variant-numeric:tabular-nums;font-weight:600;min-width:52px;text-align:right;}
-  .threshold-bar .tcount{font-size:11px;color:#6b7280;white-space:nowrap;min-width:150px;text-align:right;}
-</style>
-"""
-
-
-def build_heatmap_html(l2: dict) -> str:
-    """Binary capacity-saturation heatmap (handoff Theme 2 utilization
-    filter). Rows = capacity-constrained buildings; columns = steps in
-    tech-tree order. A cell is BLACK when that building is *saturated*
-    (utilization ≈ 1) at that step — i.e. it is on the critical surface and
-    relevant to t_FINAL. Light grey = present but slack; blank = not active
-    that step. Rows are ordered by first saturation so the bottleneck
-    "baton-pass" reads as a staircase, and a left legend maps each column
-    index to its tech + in-game timestamp (the same techs/times as the
-    timeline view). The binary fill is deliberately the v0 — a colorscale
-    (utilization, or the duration/count magnitude proxy) drops into the same
-    cell later; for now black is the honest answer to "is this a bottleneck."
+    ``facilities`` is the solve's ``{building: {footprint, base_speed}}`` map;
+    ``recipe_outputs`` its ``{recipe: principal_output_item}`` map.
     """
-    steps = l2.get("steps", []) or []
-    clock = float(l2.get("initial_time_s", 0.0) or 0.0)
-    cols: list[tuple[int, str, float]] = []
-    cells: dict[str, dict[int, dict]] = defaultdict(dict)
-    for i, s in enumerate(steps):
-        dur = float(s.get("duration_s", 0.0) or 0.0)
-        cols.append((i, s.get("label") or f"step-{i}", clock))
-        clock += dur
-        for c in s.get("capacity", []) or []:
-            b = c.get("building")
-            if not b:
+
+    def fp(b: str) -> float:
+        e = facilities.get(b)
+        v = float(e["footprint"]) if e else 0.0
+        # A non-finite footprint (a crafted `.nan` in an untrusted facilities
+        # map) passes a bare `> 0` / `<= 0` guard, so reject it here → treated as
+        # no footprint, never propagated into counts / the embedded JSON.
+        return v if math.isfinite(v) else 0.0
+
+    def speed(b: str) -> float:
+        e = facilities.get(b)
+        v = float(e["base_speed"]) if e else 0.0
+        return v if math.isfinite(v) else 0.0
+
+    out: list[dict[str, dict[str, dict]]] = []
+    for s in steps:
+        dur = float(s.get("duration_s") or 0.0)
+        detail: dict[str, dict[str, dict]] = {}
+
+        def entry(item: str, b: str, _detail: dict = detail) -> dict:
+            return _detail.setdefault(item, {}).setdefault(
+                b, {"alloc": 0.0, "util": 0.0, "footprint": fp(b)}
+            )
+
+        # Penalized assignment buckets → allocated count; remember (building,
+        # item) so the matching pooled activity below isn't double-counted. The
+        # de-dup relies on an assignment block's item-key (`ore` / `output`, or
+        # the assembler recipe's principal output) being the SAME string the
+        # activity loop derives via recipe_outputs[recipe] for that building —
+        # true for every block today (ore == iron-ore, output == iron-plate, …);
+        # a future block whose key diverges from outputs[0] would break the guard.
+        pen_keys: set[tuple[str, str]] = set()
+        for block, item_key in (
+            ("mining_assignment", "ore"),
+            ("smelting_assignment", "output"),
+            ("assembler_assignment", None),  # keyed by recipe → principal output
+        ):
+            for e in s.get(block, []) or []:
+                b = (e.get("building") or "").split("@", 1)[0]
+                item = (
+                    recipe_outputs.get(e.get("recipe"))
+                    if item_key is None
+                    else e.get(item_key)
+                )
+                if item and fp(b) > 0:
+                    built = max(
+                        float(e.get("count_start") or 0.0),
+                        float(e.get("count_end") or 0.0),
+                    )
+                    entry(item, b)["alloc"] += built
+                    pen_keys.add((b, item))
+
+        # Activity → utilized count; pooled (non-penalized) also == allocated.
+        for a in s.get("activity", []) or []:
+            b = a.get("building") or ""
+            item = recipe_outputs.get(a.get("recipe"))
+            if not item or fp(b) <= 0 or speed(b) <= 0 or dur <= 0:
                 continue
-            cells[b][i] = {
-                "sat": bool(c.get("saturated")),
-                "util": c.get("utilization"),
-                "rs": c.get("recipe_seconds_used"),
-                "cap": c.get("capacity_seconds"),
+            machines = float(a.get("recipe_sec_used") or 0.0) / (speed(b) * dur)
+            ent = entry(item, b)
+            ent["util"] += machines
+            if (b, item) not in pen_keys:
+                ent["alloc"] += machines  # pooled: allocation == utilization
+
+        out.append(detail)
+    return out
+
+
+def _area_totals(
+    detail: list[dict[str, dict[str, dict]]], n: int
+) -> tuple[list[str], dict[str, list[float]], dict[str, list[float]]]:
+    """Sum the per-building counts in ``detail`` into per-item area series
+    (tiles) — ``area = count · footprint`` over the buildings of each item."""
+    alloc: defaultdict[str, list[float]] = defaultdict(lambda: [0.0] * n)
+    util: defaultdict[str, list[float]] = defaultdict(lambda: [0.0] * n)
+    for k, d in enumerate(detail):
+        for item, bmap in d.items():
+            for ent in bmap.values():
+                alloc[item][k] += ent["alloc"] * ent["footprint"]
+                util[item][k] += ent["util"] * ent["footprint"]
+    items = sorted(set(alloc) | set(util))
+    for it in items:  # materialize zeros so both maps cover every item
+        alloc[it]
+        util[it]
+    return items, dict(alloc), dict(util)
+
+
+def compute_area_series(
+    steps: list[dict], facilities: dict, recipe_outputs: dict
+) -> tuple[list[str], dict[str, list[float]], dict[str, list[float]]]:
+    """Per-item, per-step allocated and utilized facility area (tiles).
+
+    allocated (penalized items) = the most machines physically present at either
+    boundary of the step, ``max(count_start, count_end) × footprint`` — what was
+    on the ground that step, i.e. what L3 must place. For pooled (non-penalized)
+    production allocated = utilized.
+
+    utilized = running machines · footprint, with ``machines = recipe_sec_used /
+    (base_speed · duration)`` — the step-averaged count actually producing.
+
+    Since ``running ≤ max(count_start, count_end)`` for a penalized bucket, idle
+    = allocated − utilized ≥ 0 reads directly as built-but-not-running area.
+
+    ``facilities`` is the solve's emitted ``{building: {footprint, base_speed}}``
+    map; ``recipe_outputs`` its ``{recipe: principal_output_item}`` map. Returns
+    (items, alloc, util) with alloc/util as ``{item: [per-step tiles]}``.
+    """
+    return _area_totals(
+        _area_step_detail(steps, facilities, recipe_outputs), len(steps)
+    )
+
+
+def build_area_dataset(l2: dict, *, data_dir: Path | None = None) -> dict:
+    """Timeline dataset with per-item ``alloc``/``util`` injected into each
+    step's rates and the legend pruned to area-bearing output items (instead of
+    the timeline's synthetic assignment-split items). Reuses ``build_dataset``
+    for everything else — colors, nav, zoom, step clock — so the view matches
+    the timeline's look and interactions."""
+    ds = build_dataset(l2, data_dir=data_dir)
+    steps_yaml = l2.get("steps", []) or []
+    facilities = l2.get("facilities") or {}
+    recipe_outputs = l2.get("recipe_outputs") or {}
+    detail = _area_step_detail(steps_yaml, facilities, recipe_outputs)
+    items, alloc, util = _area_totals(detail, len(steps_yaml))
+    area_items = set(items)
+
+    for k, st in enumerate(ds["steps"]):
+        rates = st["rates"]
+        for it in area_items:
+            r = rates.setdefault(it, {})
+            r["alloc"] = alloc[it][k]
+            r["util"] = util[it][k]
+        # Per-item facility breakdown for the click-through popup: the machines
+        # of each building allocated (assigned) vs running for that item. Counts
+        # are rounded only to trim float dust from the embedded JSON — the popup
+        # recomputes area from them, so it may differ from the bottom table's
+        # series (summed unrounded above) in sub-0.001-tile dust, invisible at
+        # the 2-decimal display.
+        st["area_detail"] = {
+            it: {
+                b: {
+                    "alloc": round(e["alloc"], 3),
+                    "util": round(e["util"], 3),
+                    "footprint": e["footprint"],
+                }
+                for b, e in bmap.items()
             }
-    n = len(cols)
+            for it, bmap in (detail[k] if k < len(detail) else {}).items()
+        }
 
-    def first_sat(b: str) -> int:
-        for i in range(n):
-            v = cells[b].get(i)
-            if v and v["sat"]:
-                return i
-        return n + 1
+    # Legend over area items only, same category grouping/sort as the timeline.
+    by_cat: dict[str, list[str]] = defaultdict(list)
+    for it in sorted(area_items):
+        by_cat[categorize(it)].append(it)
+    for cat, its in by_cat.items():
+        if cat != "Science packs":
+            its.sort()
+    ds["categories"] = [
+        {"name": cat, "items": by_cat.get(cat, [])} for cat in CATEGORY_ORDER
+    ]
+    for it in area_items:
+        ds["colors"].setdefault(it, color_for_item(it))
 
-    rows = sorted(
-        cells,
-        key=lambda b: (first_sat(b), -sum(1 for v in cells[b].values() if v["sat"]), b),
+    # Peak-area step (largest total allocated area) anchors the default-visible
+    # set and the bottom table's default selection.
+    n = len(steps_yaml)
+    peak = (
+        max(range(n), key=lambda k: sum(alloc[it][k] for it in area_items))
+        if n and area_items
+        else 0
     )
+    ranked = sorted(area_items, key=lambda it: -alloc[it][peak])
+    # Open on the ore + plate baseline; if a scenario has none of them (a tiny
+    # fixture), fall back to the largest-area items so the view isn't blank.
+    default_vis = [it for it in _AREA_DEFAULT_VISIBLE if it in area_items]
+    ds["view"] = "facility_area"
+    ds["items_all"] = ranked
+    ds["visible_default"] = default_vis or sorted(ranked[:6])
+    ds["peak_area_step"] = peak
+    return ds
 
-    legend = "".join(
-        f'<div class="lg-row" data-col="{i}">'
-        f'<span class="lg-idx">{i}</span>'
-        f'<span class="lg-tech">{escape(label)}</span>'
-        f'<span class="lg-time">{_fmt_clock(t0)}</span></div>'
-        for i, label, t0 in cols
-    )
-    head = "".join(
-        f'<th class="col-h" data-col="{i}" title="{escape(label)} · {_fmt_clock(t0)}">{i}</th>'
-        for i, label, t0 in cols
-    )
-    body_rows = []
-    for b in rows:
-        tds = []
-        for i in range(n):
-            v = cells[b].get(i)
-            if v is None:
-                tds.append(f'<td class="c-absent" data-col="{i}"></td>')
-                continue
-            util = v["util"]
-            us = f"{util:.2f}" if util is not None else "—"
-            du = f"{util:.4f}" if util is not None else ""
-            tip = (
-                f"{escape(b)} · col {i} · util={us} · "
-                f"used {(v['rs'] or 0):.1f}s / cap {(v['cap'] or 0):.1f}s"
-            )
-            cls = "c-sat" if v["sat"] else "c-slack"
-            # Server class = the solver's `saturated` bool (also the fallback when
-            # JS can't recompute from data-util); the slider then drives c-sat by
-            # utilization threshold for cells that have a number.
-            tds.append(
-                f'<td class="cell {cls}" data-col="{i}" '
-                f'data-util="{du}" title="{tip}"></td>'
-            )
-        fs = first_sat(b)
-        ts = sum(1 for v in cells[b].values() if v["sat"])
-        body_rows.append(
-            f'<tr data-name="{escape(b)}" data-firstsat="{fs}" data-totalsat="{ts}">'
-            f'<th class="row-h" title="{escape(b)}">{escape(b)}</th>{"".join(tds)}</tr>'
-        )
 
-    obj = (l2.get("solver", {}) or {}).get("objective_s")
-    seed = (l2.get("solver", {}) or {}).get("seed")
-    sub = f"{len(rows)} buildings × {n} steps (tech order)"
-    if obj is not None:
-        sub += f" · t_FINAL {_fmt_clock(float(obj))}"
-    if seed is not None:
-        sub += f" · seed {escape(str(seed))}"
+def _area_meta_parts(ds: dict) -> list[str]:
+    """Meta line for the area view: peak-area step + its allocated/utilized/idle
+    totals (the spatial headline complementing the timeline's solver line)."""
+    peak = ds.get("peak_area_step", 0)
+    steps = ds.get("steps") or []
+    items = ds.get("items_all") or []
+    rates = steps[peak]["rates"] if steps else {}
+    tot_alloc = sum(rates.get(it, {}).get("alloc", 0.0) for it in items)
+    tot_util = sum(rates.get(it, {}).get("util", 0.0) for it in items)
+    peak_label = steps[peak]["label"] if steps else "—"
+    return [
+        f"scenario={ds['scenario']}",
+        f"mode={ds['mode']}",
+        f"peak-area step={peak_label}",
+        f"allocated={tot_alloc:.0f} tiles",
+        f"utilized={tot_util:.0f} tiles",
+        f"idle={tot_alloc - tot_util:.0f}",
+        f"total={ds['total_time']:.1f}s",
+    ]
 
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        "<title>L2 capacity-saturation heatmap</title>" + _HEATMAP_CSS + "</head><body>"
-        f"<header><h1>L2 capacity-saturation heatmap</h1>"
-        f"<span class='sub'>{sub}</span></header>"
-        "<div class='key'>"
-        "<span><b style='background:#111827'></b>saturated — on the critical "
-        "surface (relevant to t_FINAL)</span>"
-        "<span><b style='background:#e5e7eb'></b>present but slack</span>"
-        "<span><b style='background:#fff'></b>not active this step</span>"
-        "<span>hover a tech (left) to highlight its column</span></div>"
-        "<div class='wrap'>"
-        f"<div class='legend'>{legend}</div>"
-        "<div class='grid'><table>"
-        f"<thead><tr><th class='row-h'></th>{head}</tr></thead>"
-        f"<tbody>{''.join(body_rows)}</tbody>"
-        "</table></div></div>"
-        "<div class='threshold-bar'>"
-        "<label>Rows</label>"
-        "<select id='sort'>"
-        "<option value='stair'>by first saturation</option>"
-        "<option value='alpha'>alphabetical</option>"
-        "</select>"
-        "<span class='sep'></span>"
-        "<label>Saturation threshold</label>"
-        "<input type='range' id='thresh' min='95' max='100' step='0.1' value='98'>"
-        "<span class='tval' id='thresh-val'>98.0%</span>"
-        "<span class='tcount' id='thresh-count'></span></div>"
-        "<script>"
-        "document.querySelectorAll('.lg-row').forEach(function(r){"
-        "var c=r.getAttribute('data-col');"
-        "function hi(on){document.querySelectorAll('[data-col=\"'+c+'\"]')"
-        ".forEach(function(e){e.classList.toggle('col-hi',on);});}"
-        "r.addEventListener('mouseenter',function(){hi(true);});"
-        "r.addEventListener('mouseleave',function(){hi(false);});});"
-        "var slider=document.getElementById('thresh');"
-        "var tval=document.getElementById('thresh-val');"
-        "var tcount=document.getElementById('thresh-count');"
-        "var cells=document.querySelectorAll('td.cell');"
-        "function applyThreshold(){"
-        "var t=parseFloat(slider.value)/100,nsat=0;"
-        "cells.forEach(function(c){"
-        "var u=parseFloat(c.getAttribute('data-util'));"
-        # No utilization number → keep the server-computed saturated state
-        # (c-sat) instead of forcing the cell to slack.
-        "var sat=isNaN(u)?c.classList.contains('c-sat'):(u>=t);if(sat)nsat++;"
-        "c.classList.toggle('c-sat',sat);c.classList.toggle('c-slack',!sat);});"
-        "tval.textContent=parseFloat(slider.value).toFixed(1)+'%';"
-        "tcount.textContent=nsat+' / '+cells.length+' cells saturated';}"
-        "slider.addEventListener('input',applyThreshold);applyThreshold();"
-        "var sortSel=document.getElementById('sort');"
-        "var tbody=document.querySelector('tbody');"
-        "function applySort(){"
-        "var rows=Array.prototype.slice.call(tbody.querySelectorAll('tr'));"
-        "rows.sort(function(a,b){"
-        "var na=a.getAttribute('data-name'),nb=b.getAttribute('data-name');"
-        "if(sortSel.value==='alpha')return na.localeCompare(nb);"
-        "var fa=+a.getAttribute('data-firstsat'),fb=+b.getAttribute('data-firstsat');"
-        "if(fa!==fb)return fa-fb;"
-        "var ta=+a.getAttribute('data-totalsat'),tb=+b.getAttribute('data-totalsat');"
-        "if(ta!==tb)return tb-ta;return na.localeCompare(nb);});"
-        "rows.forEach(function(r){tbody.appendChild(r);});}"
-        "sortSel.addEventListener('change',applySort);"
-        "</script></body></html>"
+
+def render_area_html(l2: dict, *, data_dir: Path | None = None) -> str:
+    """Render the facility-area view HTML for a solved ``rates.yaml`` dict."""
+    ds = build_area_dataset(l2, data_dir=data_dir)
+    return render_html(
+        ds,
+        charts=AREA_CHARTS,
+        heading="L2 facility area",
+        title=f"{ds['scenario']} — facility area",
+        meta=" · ".join(_area_meta_parts(ds)),
     )
 
 

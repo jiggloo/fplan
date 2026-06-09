@@ -431,7 +431,7 @@ def test_viz_emits_supply_curve(tmp_path: Path, monkeypatch) -> None:
     (rd / "rates.yaml").write_text(yaml.safe_dump(_solved_l2()))
     # No model needed for viz; force the best-effort load to a no-op.
     monkeypatch.setattr(cli_main, "load_model_or_exit", lambda config_file: None)
-    res = runner.invoke(app, ["rates", "viz", "r", "--no-heatmap"])
+    res = runner.invoke(app, ["rates", "viz", "r", "--no-area"])
     assert res.exit_code == 0, res.output
     assert (rd / "viz" / "rates-supply-curve.html").exists()
 
@@ -441,7 +441,7 @@ def test_viz_notes_missing_map(tmp_path: Path, monkeypatch) -> None:
     rd = _make_run(tmp_path)
     (tmp_path / "map.yaml").unlink()  # bound but gone
     (rd / "rates.yaml").write_text(yaml.safe_dump(_solved_l2()))
-    res = runner.invoke(app, ["rates", "viz", "r", "--no-heatmap"])
+    res = runner.invoke(app, ["rates", "viz", "r", "--no-area"])
     assert res.exit_code == 0, res.output
     assert "supply-curve skipped" in res.output
     assert (rd / "viz" / "rates-timeline.html").exists()  # timeline still renders
@@ -451,7 +451,7 @@ def test_viz_no_supply_curve_flag(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     rd = _make_run(tmp_path)
     (rd / "rates.yaml").write_text(yaml.safe_dump(_solved_l2()))
-    res = runner.invoke(app, ["rates", "viz", "r", "--no-heatmap", "--no-supply-curve"])
+    res = runner.invoke(app, ["rates", "viz", "r", "--no-area", "--no-supply-curve"])
     assert res.exit_code == 0, res.output
     assert not (rd / "viz" / "rates-supply-curve.html").exists()
 
@@ -465,7 +465,7 @@ def test_viz_notes_pre_spatial_rates(tmp_path: Path, monkeypatch) -> None:
     del l2["spatial"]
     (rd / "rates.yaml").write_text(yaml.safe_dump(l2))
     monkeypatch.setattr(cli_main, "load_model_or_exit", lambda config_file: None)
-    res = runner.invoke(app, ["rates", "viz", "r", "--no-heatmap"])
+    res = runner.invoke(app, ["rates", "viz", "r", "--no-area"])
     assert res.exit_code == 0, res.output
     assert "predates the spatial: block" in res.output
     assert (rd / "viz" / "rates-supply-curve.html").exists()

@@ -3133,6 +3133,60 @@ def _spatial_dict(inst: L2Instance, model: GameModel) -> dict | None:
     return spatial
 
 
+def _facilities_dict(inst: L2Instance, model: GameModel, steps: list[dict]) -> dict:
+    """Deployed footprint (tiles) and base crafting speed for every building the
+    solve placed — collected from the per-step activity / assignment / item
+    records. Persisted so the facility-area view and the area-split report read
+    the SAME deployed footprints the LP enforced (the deployment-overlaid
+    footprint, infrastructure included), with no model reload and no drift, and
+    so the area view renders even without a Factorio install. Keyed by bare
+    building name (the `@target` of an assignment key is dropped)."""
+    names: set[str] = set()
+    for rec in steps:
+        for a in rec.get("activity", ()):
+            names.add(a["building"])
+        for block in (
+            "mining_assignment",
+            "smelting_assignment",
+            "assembler_assignment",
+        ):
+            for e in rec.get(block, ()):
+                names.add(e["building"].split("@", 1)[0])
+        for it in rec.get("items", ()):
+            names.add(it["name"])
+    out: dict = {}
+    for name in sorted(names):
+        bld = model.buildings.get(name)
+        if bld is None:  # pseudo "+"-joined / "character" / "(productive)" rows
+            continue
+        fp = inst.deployed_facility(model, bld).tile_footprint
+        if fp <= 0:
+            continue
+        out[name] = {"footprint": float(fp), "base_speed": float(bld.base_speed)}
+    return out
+
+
+def _recipe_outputs_dict(model: GameModel, steps: list[dict]) -> dict:
+    """Principal output item (``outputs[0]``) per recipe that appears in the
+    solve's activity or assembler assignment. Lets the facility-area view
+    attribute each running / committed machine's area to the item it makes
+    without reloading the game model. Recipes with no item output (research /
+    launch / power pseudo-rows) are omitted."""
+    names: set[str] = set()
+    for rec in steps:
+        for a in rec.get("activity", ()):
+            names.add(a["recipe"])
+        for e in rec.get("assembler_assignment", ()):
+            names.add(e["recipe"])
+    out: dict = {}
+    for r_name in sorted(names):
+        r = model.recipes.get(r_name)
+        if r is None or not r.outputs:
+            continue
+        out[r_name] = r.outputs[0].name
+    return out
+
+
 def _solution_dict(
     inst: L2Instance,
     sol: Solution,
@@ -3154,6 +3208,7 @@ def _solution_dict(
 
     from fplan.l2 import pseudo_recipes as _pr
 
+    steps = _per_step_records(inst, sol, model)
     out: dict = {
         "scenario": inst.scenario.name,
         "source": inst.scenario.source,
@@ -3179,12 +3234,22 @@ def _solution_dict(
             "constraints": sol.n_constrs,
             "seed": sol.seed,
         },
-        "steps": _per_step_records(inst, sol, model),
+        "steps": steps,
         "final_items": final_items,
         "excluded_consumption_total": {
             n: float(v) for n, v in sorted(sol.excluded_consumed.items())
         },
     }
+    # Reference maps single-sourced from the solve's instance + model, so
+    # downstream views read the SAME deployed footprints / recipe→item mapping
+    # the LP used — no model reload, no drift — and render without a Factorio
+    # install. The facility-area view and the area-split report key off these.
+    facilities = _facilities_dict(inst, model, steps)
+    if facilities:
+        out["facilities"] = facilities
+    recipe_outputs = _recipe_outputs_dict(model, steps)
+    if recipe_outputs:
+        out["recipe_outputs"] = recipe_outputs
     spatial = _spatial_dict(inst, model)
     if spatial is not None:
         out["spatial"] = spatial

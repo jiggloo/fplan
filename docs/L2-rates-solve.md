@@ -40,7 +40,7 @@ the model to answer a question of your own.
   - [6.1 The timeline charts](#61-the-timeline-charts)
   - [6.2 The step detail table](#62-the-step-detail-table)
   - [6.3 Interactions](#63-interactions)
-  - [6.4 The capacity heatmap](#64-the-capacity-heatmap)
+  - [6.4 The facility-area view](#64-the-facility-area-view)
 - [Pointers](#pointers)
 
 ---
@@ -165,9 +165,9 @@ The body of `rates.yaml` is one record per step. Each carries:
 - **`capacity`** — per building, how much of its available machine-time the step
   used: `recipe_seconds_used` against `capacity_seconds`, their ratio as
   `utilization`, and a `saturated` flag when utilization is at the ceiling
-  (≥ 0.98). The viz also shows this as a heatmap. It's a per-building signal you
-  read directly — the model has thousands of coupled constraints, so no single
-  field names "the" bottleneck; high utilization is one place to start looking.
+  (≥ 0.98). It's a per-building signal you read directly — the model has
+  thousands of coupled constraints, so no single field names "the" bottleneck;
+  high utilization is one place to start looking.
 
 ### 3.3 Why results vary
 
@@ -743,8 +743,9 @@ Adding a constraint is the gentle first step. The deeper levers:
 
 [§2](#2-what-a-result-looks-like-the-visualization) introduced the viz at a
 glance; this is the reference — the charts it draws, the step detail table, and
-every interaction. `fplan rates viz` writes two views: the **timeline** (the
-default, below) and a **capacity heatmap** ([§6.4](#64-the-capacity-heatmap)).
+every interaction. `fplan rates viz` writes the **timeline** (the default, below)
+and a **facility-area view** ([§6.4](#64-the-facility-area-view)); a map-dependent
+ore-patch supply curve is the third (see [usage.md](usage.md#rates-viz)).
 
 ### 6.1 The timeline charts
 
@@ -794,16 +795,26 @@ total. (It reads "facility data unavailable" when the game model wasn't loaded �
   **hover a line** to thicken it. The indicator in the top bar shows the current
   time range and zoom level.
 
-### 6.4 The capacity heatmap
+### 6.4 The facility-area view
 
-A second file (`<stem>-heatmap.html`, `rates-heatmap.html` by default) renders the
-per-building capacity `utilization` ([§3.2](#32-the-per-step-records)) as a grid —
-building × step,
-brighter where a building ran closer to saturated. **What to actually read from
-it is still open.** With thousands of coupled constraints a saturated cell isn't
-necessarily *the* bottleneck (§3 deliberately avoids that claim), so the heatmap
-is for now an exploratory view — we haven't yet settled which insights it
-reliably supports.
+A second file (`<stem>-area.html`, `rates-area.html` by default) plots, per item,
+two facility-area curves over time on the same template as the timeline: **solid
+= allocated** area (footprint × the machines committed to producing that item)
+and **faint = utilized** area (footprint × the machines actually running its
+recipe that step). The gap between them is *built-but-not-running* area — placed
+facilities L3 must still reserve even when momentarily idle. For a
+repurpose-penalized item (a committed drill / furnace / assembler bucket) the
+gap is real; for a pooled item the two lines coincide. The bottom table breaks
+the selected step down into allocated / utilized / idle / idle %, and **clicking
+an item** there pops a per-facility breakdown — how many of each facility are
+*assigned* (built) vs *running* for that item, and the tiles each contributes
+(e.g. `coal` → N electric-mining-drill + M burner-mining-drill).
+
+It's the spatial companion to the timeline and the design dial documented in
+[L2 facility area](L2-area-viz.md): footprints and recipe→item come from the
+solve's emitted `facilities:` / `recipe_outputs:` maps, so the view needs no
+game model and never drifts from the LP. (It replaces the earlier
+capacity-saturation heatmap, whose insights never settled.)
 
 ---
 

@@ -14,9 +14,9 @@ exports a selection, and the **patch-selection input** that L2 reads back.
 ## The supply-curve view
 
 `rates viz` writes `runs/<run>/viz/<stem>-supply-curve.html` alongside the
-timeline and heatmap (it needs the run's bound map; it's skipped with a note if
-the map is unavailable, and suppressed with `--no-supply-curve`). Three linked
-regions:
+timeline and facility-area view (it needs the run's bound map; it's skipped with
+a note if the map is unavailable, and suppressed with `--no-supply-curve`). Three
+linked regions:
 
 - **Map** — every patch at its real centroid (ore + oil clusters), water and oil
   as context, clickable to select/deselect. Origin lines from selected patches to
