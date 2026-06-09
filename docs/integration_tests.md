@@ -113,7 +113,7 @@ It also exercises **facility assignment** end-to-end. Confirm the solve log prin
 `⚙ facility assignment: mining … smelting … crafting …` and a
 `[constraint-stats] … nonlinear=` count in the ~1,800 range (the curated split is
 tractable — the barrier backend finds a primal; AM1 retirement is on by default,
-see [L2 assignment](L2-assignment.md)). In the promoted `rates.yaml`, check that
+see [facility assignment](L2-rates-solve.md#47-facility-assignment)). In the promoted `rates.yaml`, check that
 steps carry `mining_assignment` / `smelting_assignment` / `assembler_assignment`
 records (`<building>@<key>`), that the per-recipe assembler blocks typically ramp
 and **hold** (they're repurposable, but the optimizer rarely pays to repurpose),
@@ -153,7 +153,7 @@ from the `post:` block.
 
 > `rates-post.yaml` is the **provisional** L2→L3 input — both its role and its
 > schema are temporary while L2→L3 is explored (see
-> [L2 rate-flattening](L2-rate-flattening.md)); don't build anything downstream
+> [L2 rates post-processing](L2-rates-post.md)); don't build anything downstream
 > that assumes the schema is stable.
 
 ### Cleanup

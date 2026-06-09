@@ -24,7 +24,7 @@ earlier than the solver did). Three rules (``--method``): ``tube`` (the taut
 string through that tube, default), ``chord`` (straight chords between
 surplus-zero deadlines — a cautionary baseline that can self-stockout), and
 ``mrp`` (cross-dependency backward demand explosion). See
-``docs/L2-rate-flattening.md`` for the full formulation.
+``docs/L2-rates-post.md`` for the full formulation.
 
 This module is the solver-neutral *logic*: it consumes the L2 YAML plus the
 game model (needed for the unmet-input diagnostics and the ``mrp`` dependency
@@ -551,7 +551,7 @@ def build_post_yaml(l2: dict, result: FlattenResult, *, source_ref: str) -> dict
 
     PROVISIONAL by design: this is the temporary L2→L3 input, and its schema is
     temporary too — it mirrors the ``rates.yaml`` shape only because L3's
-    preferred format isn't decided yet (see ``docs/L2-rate-flattening.md`` and
+    preferred format isn't decided yet (see ``docs/L2-rates-post.md`` and
     issue #25). The flattening operation rewrites *production* only; consumption /
     inventory columns pass through unchanged from the solve (the divergence
     between flattened production and the solve's inventory is exactly what the

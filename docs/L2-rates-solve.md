@@ -28,6 +28,7 @@ the model to answer a question of your own.
   - [4.4 Modeling assumptions](#44-modeling-assumptions)
   - [4.5 Solver-specific choices and tractability hacks (SCIP)](#45-solver-specific-choices-and-tractability-hacks-scip)
   - [4.6 Downstream feedback (back-propagation)](#46-downstream-feedback-back-propagation)
+  - [4.7 Facility assignment](#47-facility-assignment)
 - [5. Extending the solve (asking your own questions)](#5-extending-the-solve-asking-your-own-questions)
   - [5.1 How the solver code is organized](#51-how-the-solver-code-is-organized)
   - [5.2 Example: capping the number of labs](#52-example-capping-the-number-of-labs)
@@ -156,9 +157,11 @@ The body of `rates.yaml` is one record per step. Each carries:
   - `buffer_seconds` — how long the end inventory would last at the current
     consumption rate, a slack signal (large = comfortably ahead; near zero = the
     item is consumed as fast as it's made).
-- **`mining_assignment` / `smelting_assignment`** — how drills are split across
-  ores and furnaces across products (a machine can't switch mid-run, so each
-  gets a dedicated count).
+- **`mining_assignment` / `smelting_assignment` / `assembler_assignment`** — how
+  drills are split across ores, furnaces across products, and assemblers across
+  recipes, each machine committed to one job ([§4.7](#47-facility-assignment)).
+  The assembler records carry `repurpose_penalized: true` — their commitment can
+  move between steps (drills' and furnaces' can't).
 - **`energy` / `player_time`** — the step's electric demand vs. supply, and the
   single character's walking/placing/tree-felling time. (Hand-crafts are listed
   in `activity` with `building: character`.)
@@ -254,6 +257,7 @@ and the handles you reference when you add a constraint
 | `duration[step]` | step | Length of the step in seconds (0–600). Sums to `t_FINAL`. |
 | `drill_assign[ore, tier]` | ore, tier | Electric mining drills committed to that ore. |
 | `furnace_assign[out, tier]` | smelted item, tier | Steel furnaces committed to that product. |
+| `assembler_assign[b, r, tier]` | building, recipe, tier | Assemblers of `b` committed to recipe `r` — a **repurposable** bucket; the rest sit in a pooled `assembler_unassigned` count ([§4.7](#47-facility-assignment)). |
 | `fuel_burn[fuel, b, step]` | fuel, burner, step | Units of `fuel` burned by burner building `b` in the step. |
 | `x_hand[recipe, step]` | recipe, step | Player hand-crafts of a `crafting`-category recipe that step. The character is a fixed-count, power-free facility. |
 
@@ -458,6 +462,96 @@ This is why the modes shift `t_FINAL` ([§3.3](#33-why-results-vary)) and why
 they're "naive": they're the current, feedback-free settings of a coefficient a
 downstream loop is meant to refine.
 
+### 4.7 Facility assignment
+
+A facility is committed to **one job**: a mining drill to one ore, a furnace to
+one product, an assembler to one recipe. Assignment exists for **L3** — its
+VLSI-style placement needs *static blocks* (a fixed set of machines each dedicated
+to a job), not a pooled capacity that silently swaps what it makes between steps.
+That swapping also rarely happens in real runs (the player isn't standing at the
+machine to re-set it, and few recipes share input ratios that make a swap free),
+so L2 commits facilities up front and hands L3 blocks it can place.
+
+**One concept, three mechanics.** Every class replaces a building's single
+**pooled** capacity (one bilinear `count · duration` term per step) with
+**per-key** capacity buckets that sum to the building's count — `<building>@<key>`,
+keyed on the job. They differ only in how a bucket may change between steps, which
+follows the facility's physics:
+
+| Class | Key | Buildings (default) | Temporal rule |
+| --- | --- | --- | --- |
+| Mining | ore | electric- / burner-mining-drill | strict non-decreasing |
+| Smelting | output | stone- / steel-furnace | non-decreasing, **+ teardown** if consumable |
+| Crafting | recipe | assembling-machine-1 / -2 | **repurposable** at a player-time cost |
+
+The `assignment:` config block (`resources/l2-defaults.yaml`) sets the buildings
+per class; an empty `buildings` list disables a class (see
+[usage: facility assignment](usage.md#facility-assignment)).
+
+- **Mining — strict non-decreasing.** A drill sits on an ore patch and can't
+  change what it mines, so a `drill[b, ore, tier]` bucket only ever grows, capped
+  per ore by how many drills fit on that patch (`tile_pool / footprint`). Neither
+  drill is consumed, so there's no teardown. Applied to both electric and burner
+  drills (splitting burner drills gives L3 real per-ore counts).
+- **Smelting — non-decreasing, with a teardown for consumable furnaces.** A
+  furnace is committed per output the same way, but **stone furnaces are
+  consumed** — a boiler's and a burner drill's recipe each eat one — so a
+  consumable furnace gets per-output `destroy` vars that relax monotonicity by at
+  most the step's real consumption (otherwise the strict rule would forbid
+  bootstrapping smelting on stone furnaces and then cannibalizing them). Whether a
+  furnace is consumable is read from the recipe ingredients (`_building_consumers`
+  in `fplan.l2.solve`), never hard-coded; steel furnaces have no consumer and stay
+  strictly non-decreasing. A **bootstrap 1:1 coupling** ties the two: in the
+  hand-placed starter base each `burner-mining-drill@<ore>` requires at least one
+  `stone-furnace@<plate>` on the product that ore smelts into; it goes slack once
+  burner drills phase out under their cap.
+- **Crafting — repurposable at a player-time cost.** Setting an assembler to a
+  recipe is a player action, and so is changing it — so unlike drills and furnaces
+  an assembler **can** repurpose (late in a run, once research finishes, many move
+  from science-pack crafting to rocket-part materials), but it pays for it. Each
+  listed assembler splits into a pooled `unassigned` count plus per-recipe
+  `assigned[b, r, tier]` buckets (`unassigned + Σ assigned == count`), with
+  per-step transitions charged to the serial player-time budget: **assign**
+  (`unassigned → r`, one game tick), **unassign** (`r → unassigned`,
+  `unassign_cost_s`), and a free **destroy** (`r` consumed in an AM1→AM2→AM3
+  upgrade, capped by the step's real consumption). All transition vars carry the
+  building-count upper bound — without a finite cap, assign and unassign form a
+  free ray that wrecks SCIP's LP relaxation. Because the switch cost is what makes
+  a dedicated recipe meaningful, crafting assignment is withheld when player-time
+  isn't modeled (`--no-player-time`); mining and smelting stay on.
+
+**Why the crafting split is curated.** The bilinear-term count — not the variable
+count — is SCIP's cost driver, and a per-recipe bucket is one bilinear capacity
+term per step. Splitting *every* recipe on the assemblers is intractable, so the
+split is confined to where dedicating a machine actually shapes the production
+curve: every `*-science-pack`, plus a curated `split_items` list of higher-value,
+lumpier intermediates (engine-units, inserters, belts, pipes, boilers,
+steam-engines, and the drill/furnace builds themselves). Everything else stays in
+the pooled `unassigned` capacity (one bilinear term). AM3 is left unsplit — it's
+terminal and carries the rocket-silo module hack.
+
+**Building retirement.** An assembler whose successor is unlocked is dead weight:
+by the time low-density-structure is researched, plans have upgraded AM1 → AM2/AM3,
+so AM1's variables only sit at zero. `crafting.retire_after` (building → tech)
+drops them once the tech is researched — realism-free pruning that shrinks the
+curated split where it's largest (on `default-victory`, **2,018 → 1,783 bilinear**,
+≈ −11%, by removing the post-LDS AM1 buckets).
+
+**Tractability.** On `default-victory` (47 steps) the three classes raise the
+bilinear (nonconvex) count from **844** (mining + smelting on the single electric
+drill / steel furnace) to **~1,783** with burner drills, stone furnaces, and the
+curated crafting split (after AM1 retirement; ~2,018 without) — within the barrier
+backend's range, but **seed-sensitive** at this size
+([§4.5](#45-solver-specific-choices-and-tractability-hacks-scip)). The levers, in
+order: `crafting.retire_after`, then `crafting.split_items`, never the temporal
+rules. The result is a feasible / time-limited primal, not a proven optimum.
+
+> **Not yet migrated.** `factorio_explore` additionally **pins** the tier-0
+> buckets to the hand-placed starter base's recorded breakdown (e.g. 14 burners on
+> iron-ore). That needs a per-building assignment breakdown on the scenario's
+> initial state, which `scenario.InitialState` doesn't yet carry; until it does,
+> t₀ buckets are free.
+
 ---
 
 ## 5. Extending the solve (asking your own questions)
@@ -498,6 +592,7 @@ a callback that hides the context you need.
 # --- single-machine constraint ... ---
 # --- electric-mining-drill: per-ore assignment ... ---
 # --- steel-furnace: per-output assignment ... ---
+# --- assembler: per-recipe assignment with repurpose cost ---
 # --- spatial caps ... + infrastructure reservation ---   (caps, player-time, storage live here)
 # --- energy balance: per-burner-building (fuel) and per-step (electric) ---
 m.setObjective( Σ duration )                          the §4.1 objective
@@ -605,6 +700,7 @@ Where each variable from [§4.2](#42-the-decision-variables) is created in
 | `fuel_burn` | `fuel allocation …` | `burn_` |
 | `drill_assign` | `electric-mining-drill: per-ore …` | `drill_` |
 | `furnace_assign` | `steel-furnace: per-output …` | `furnace_` |
+| `assembler_assign` / `assembler_unassigned` | `assembler: per-recipe assignment …` | `asm_` |
 
 ### 5.5 Constraint reference
 
@@ -633,6 +729,13 @@ Factorio's mechanics, and the `name=` prefix to grep for it in `build_lp`:
   iron-plate aren't smelting copper-plate at the same time. (Electric-furnace
   smelting is disabled and only steel furnaces are split — a tractability hack,
   [§4.5](#45-solver-specific-choices-and-tractability-hacks-scip).)
+- **Assembler assignment** (`asm_link_`, `asm_bal_`, `asm_destroy_`, `asm_pool_`) —
+  Assemblers split into per-recipe buckets plus a pooled `unassigned` count
+  (`unassigned + Σ assigned == count`); unlike drills and furnaces a bucket may
+  **repurpose** between steps at a player-time cost (assign / unassign), or shrink
+  for free when consumed in an upgrade (AM1→AM2). *In game:* once research ends,
+  science-pack assemblers are re-set to craft rocket-part materials — a real
+  player action the time budget pays for. ([§4.7](#47-facility-assignment).)
 - **Goal & checkpoints** (`floor_`, `ckpt_`) — The final tier must meet the
   scenario goal; a checkpoint
   ([§5.3](#53-example-adding-a-checkpoint-a-scenario-change)) forces an
@@ -743,9 +846,9 @@ Adding a constraint is the gentle first step. The deeper levers:
 
 [§2](#2-what-a-result-looks-like-the-visualization) introduced the viz at a
 glance; this is the reference — the charts it draws, the step detail table, and
-every interaction. `fplan rates viz` writes the **timeline** (the default, below)
-and a **facility-area view** ([§6.4](#64-the-facility-area-view)); a map-dependent
-ore-patch supply curve is the third (see [usage.md](usage.md#rates-viz)).
+every interaction of the **timeline** (the default, below). `fplan rates viz` also
+writes the **facility-area** and **supply-curve** views; both are spatial L2→L3
+lenses documented with the post stage ([§6.4](#64-the-facility-area-view)).
 
 ### 6.1 The timeline charts
 
@@ -794,27 +897,19 @@ total. (It reads "facility data unavailable" when the game model wasn't loaded �
   cursor; **scroll** to zoom the time axis at the cursor; **drag** to pan;
   **hover a line** to thicken it. The indicator in the top bar shows the current
   time range and zoom level.
+- **Hand-crafting.** The **Hand-crafting** button in the top bar toggles a side
+  panel listing, per step, what the character hand-crafts (recipe and count), or
+  *— none —* for steps with none. Close it with × or `Esc`. (The facility-area
+  view ([§6.4](#64-the-facility-area-view)) carries the same panel.)
 
-### 6.4 The facility-area view
+### 6.4 The facility-area & supply-curve views
 
-A second file (`<stem>-area.html`, `rates-area.html` by default) plots, per item,
-two facility-area curves over time on the same template as the timeline: **solid
-= allocated** area (footprint × the machines committed to producing that item)
-and **faint = utilized** area (footprint × the machines actually running its
-recipe that step). The gap between them is *built-but-not-running* area — placed
-facilities L3 must still reserve even when momentarily idle. For a
-repurpose-penalized item (a committed drill / furnace / assembler bucket) the
-gap is real; for a pooled item the two lines coincide. The bottom table breaks
-the selected step down into allocated / utilized / idle / idle %, and **clicking
-an item** there pops a per-facility breakdown — how many of each facility are
-*assigned* (built) vs *running* for that item, and the tiles each contributes
-(e.g. `coal` → N electric-mining-drill + M burner-mining-drill).
-
-It's the spatial companion to the timeline and the design dial documented in
-[L2 facility area](L2-area-viz.md): footprints and recipe→item come from the
-solve's emitted `facilities:` / `recipe_outputs:` maps, so the view needs no
-game model and never drifts from the LP. (It replaces the earlier
-capacity-saturation heatmap, whose insights never settled.)
+`rates viz` also writes the **facility-area view** (`<stem>-area.html`) and the
+map-dependent **supply-curve view** (`<stem>-supply-curve.html`). Both are spatial
+L2→L3 lenses — you iterate the post (block-prep) stage with them — so they're
+documented alongside `rates post`, with screenshots and their interactions, in
+[L2 rates — post-processing](L2-rates-post.md#inputs-the-solves-outputs). The
+facility-area view replaces the earlier capacity-saturation heatmap.
 
 ---
 
@@ -823,6 +918,6 @@ capacity-saturation heatmap, whose insights never settled.)
 - **Pseudo-recipes** (research / launch / burn): `src/fplan/l2/pseudo_recipes.py`.
 - **Config knobs** (modes, deployment, caps): see
   [usage.md](usage.md) and `src/fplan/l2/config.py`.
-- **The post stage** (flattening, the L2→L3 hand-off): currently
-  [L2 rate-flattening](L2-rate-flattening.md).
+- **The post stage** (block-prep, the L2→L3 hand-off):
+  [L2 rates — post-processing](L2-rates-post.md).
 - **Authorship rules** (binding invariants for changing the code): `CLAUDE.md`.
