@@ -605,7 +605,7 @@ Render a solved run's `rates.yaml` as **self-contained interactive HTML** —
 written under `runs/<run>/viz/`:
 
 ```bash
-.venv/bin/fplan rates viz steelaxe-exp            # timeline + heatmap
+.venv/bin/fplan rates viz steelaxe-exp            # timeline + facility area
 .venv/bin/fplan rates viz steelaxe-exp --open     # ...and open the timeline
 ```
 
@@ -616,9 +616,11 @@ Three views:
 - **`<stem>-timeline.html`** — three stacked panels (raw production rate, net
   rate, surplus count) on one zoomable x-axis, with a tree-grouped click-to-toggle
   legend (science packs + electric-mining-drill visible by default).
-- **`<stem>-heatmap.html`** — capacity-saturation heatmap (rows =
-  capacity-constrained buildings, columns = tech-order steps; black = saturated,
-  the L2→L3 bottleneck signal). Suppress with `--no-heatmap`.
+- **`<stem>-area.html`** — the **facility-area view**: per item, solid =
+  allocated facility area (footprint × committed machines), faint = utilized
+  (footprint × running machines); the gap is built-but-not-running area L3 must
+  place. The spatial L2→L3 handoff lens. Suppress with `--no-area`. See the
+  [facility-area design doc](L2-area-viz.md).
 - **`<stem>-supply-curve.html`** — interactive ore-patch map: click which patches
   to commit miners to against per-resource demand over time, then **Export YAML**
   a patch-selection file to feed back into the next solve. Needs the run's bound
@@ -689,6 +691,14 @@ the post-processed production characteristics (`production_rate_per_s` /
 source, a summary, and the per-item / unmet-input diagnostics. It's the run's L3
 input; the manifest gains a matching `post:` block.
 
+Alongside the flatten summary, `post` echoes a **base-area split** — the
+per-step base area (tiles) divided into *penalized* (machines an assignment
+block committed to one job, statically placeable), *flexible* (the remainder on
+a repurposable kind L3 may still pool), and *static* (a fixed kind, already a
+block). The penalized fraction is the data-driven dial for how static the base
+is — the spatial companion to #revisits — read from the solve's `facilities:`
+footprints (re-solve an older `rates.yaml` to populate them).
+
 > **Provisional.** `rates-post.yaml` is the *temporary* L3 input and **its
 > schema is temporary too** — it mirrors `rates.yaml` only because L3's
 > preferred format isn't decided yet. Don't build anything downstream that
@@ -728,8 +738,8 @@ This regeneration is a **pure render** — it reads the flattened series and the
 persisted `post:` diagnostics, plus the original series from the referenced
 source `rates.yaml`; **no re-flattening**, and the model is loaded only
 best-effort (to enrich the legend's facility counts), so it works without a
-Factorio install. It has no companion heatmap (capacity is unchanged by
-flattening).
+Factorio install. It has no companion facility-area view (assignment is
+unchanged by flattening).
 
 ### `run`
 

@@ -610,3 +610,139 @@ def build_post_yaml(l2: dict, result: FlattenResult, *, source_ref: str) -> dict
         "deficits": result.deficits,
     }
     return out
+
+
+# --------------------------------------------------------------------------
+# Base-area split — the spatial companion to #revisits.
+#
+# How static is the base? Each building's end-of-step area splits into:
+#   penalized — machines an assignment block committed to one job (drills@ore,
+#               furnaces@product, assemblers@recipe): statically placeable.
+#   flexible  — the remainder on a REPURPOSABLE kind (assembler / furnace /
+#               drill) that L3 may still pool step-to-step.
+#   static    — the remainder on a fixed kind (boilers, labs, …): already a block.
+# The penalized fraction is the data-driven dial: nearer 100% → easier L3
+# placement, traded against t_FINAL (committing machines costs repurpose
+# player-time). Footprints come from the solve's emitted `facilities` map
+# (deployed, no model reload / drift); the model supplies only `kind`.
+# --------------------------------------------------------------------------
+
+# Building kinds L3 can repurpose between recipes/products step-to-step. Their
+# un-committed (non-penalized) area is "flexible"; every other kind is "static".
+_FLEXIBLE_KINDS = {"assembling-machine", "furnace", "mining-drill"}
+
+
+def _assignment_base(entry: dict) -> str:
+    """Base building name from an assignment entry (drops the ``@target``)."""
+    return (entry.get("building") or "").split("@", 1)[0]
+
+
+def compute_area_split(steps: list, facilities: dict, model) -> list[dict]:
+    """Per-step base-area split (tiles) into penalized / flexible / static.
+
+    ``facilities`` is the solve's emitted ``{building: {footprint, ...}}`` map
+    (deployed footprints); ``model`` supplies each building's ``kind``. Area =
+    ``count_end · footprint``; the penalized share is capped at the machines the
+    assignment blocks commit. Returns a per-step list of dicts (totals + a
+    per-building breakdown). Empty when no ``facilities`` map is present (a
+    pre-emission ``rates.yaml``)."""
+
+    def footprint(b: str) -> float:
+        e = facilities.get(b)
+        return float(e["footprint"]) if e else 0.0
+
+    per_step: list[dict] = []
+    for s in steps:
+        penalized_cnt: defaultdict[str, float] = defaultdict(float)
+        for block in (
+            "mining_assignment",
+            "smelting_assignment",
+            "assembler_assignment",
+        ):
+            for e in s.get(block, []) or []:
+                penalized_cnt[_assignment_base(e)] += float(e.get("count_end") or 0.0)
+
+        pen = flex = stat = 0.0
+        per_building: dict[str, dict] = {}
+        for it in s.get("items", []) or []:
+            b = it.get("name")
+            bld = model.buildings.get(b)
+            if bld is None:  # not a building (an item / fluid) → no area
+                continue
+            cnt = float(it.get("count_end") or 0.0)
+            fp = footprint(b)
+            if cnt <= 0.0 or fp <= 0.0:
+                continue
+            committed = min(penalized_cnt.get(b, 0.0), cnt)
+            remainder = max(cnt - committed, 0.0)
+            pen_area = committed * fp
+            rem_area = remainder * fp
+            is_flex = bld.kind in _FLEXIBLE_KINDS
+            pen += pen_area
+            if is_flex:
+                flex += rem_area
+            else:
+                stat += rem_area
+            per_building[b] = {
+                "count": cnt,
+                "footprint": fp,
+                "penalized_area": pen_area,
+                "remainder_area": rem_area,
+                "remainder_class": "flexible" if is_flex else "static",
+            }
+        per_step.append(
+            {
+                "label": s.get("label") or "FINAL",
+                "penalized": pen,
+                "flexible": flex,
+                "static": stat,
+                "total": pen + flex + stat,
+                "per_building": per_building,
+            }
+        )
+    return per_step
+
+
+def format_area_split(area: list[dict]) -> list[str]:
+    """Render :func:`compute_area_split` as console lines (per-step table + a
+    peak-step breakdown). Returns ``[]`` for an empty split so the caller prints
+    nothing. Pure formatting — the CLI echoes the lines."""
+    if not area:
+        return []
+    lines = ["", "repurpose-penalized vs flexible base area (tiles):"]
+    hdr = (
+        f"  {'step':24s}{'penalized':>11s}{'flexible':>10s}{'static':>9s}"
+        f"{'total':>9s}{'pen%tot':>9s}"
+    )
+    lines.append(hdr)
+    for a in area:
+        tot = a["total"] or 1.0
+        lines.append(
+            f"  {a['label'][:24]:24s}{a['penalized']:11.1f}{a['flexible']:10.1f}"
+            f"{a['static']:9.1f}{a['total']:9.1f}{100 * a['penalized'] / tot:8.1f}%"
+        )
+    peak = max(area, key=lambda a: a["total"])
+    repurp = peak["penalized"] + peak["flexible"]
+    lines.append(
+        f"  peak-area step {peak['label']!r}: total {peak['total']:.1f} "
+        f"(penalized {peak['penalized']:.1f} | flexible {peak['flexible']:.1f} "
+        f"| static {peak['static']:.1f})"
+    )
+    if repurp > 0:
+        lines.append(
+            f"  repurposable committed: {100 * peak['penalized'] / repurp:.1f}% "
+            "(dial: raise toward 100% by penalizing more recipes)"
+        )
+    flex_b = sorted(
+        (
+            (b, d["remainder_area"])
+            for b, d in peak["per_building"].items()
+            if d["remainder_class"] == "flexible" and d["remainder_area"] > 1e-6
+        ),
+        key=lambda x: -x[1],
+    )
+    if flex_b:
+        lines.append("  largest flexible (penalization candidates) at peak:")
+        for b, ar in flex_b[:6]:
+            lines.append(f"    {b:30s}{ar:9.1f} tiles")
+    return lines

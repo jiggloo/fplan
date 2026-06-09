@@ -96,9 +96,109 @@ def test_render_html_parameterized_single_panel() -> None:
     assert 'id="chart-net"' not in html and 'id="chart-count"' not in html
 
 
-def test_build_heatmap_html() -> None:
-    hm = viz.build_heatmap_html(RATES)
-    assert "capacity-saturation heatmap" in hm and "lab" in hm
+# A solve output carrying the facility-area inputs: the emitted `facilities`
+# (deployed footprint + base_speed) and `recipe_outputs` maps, plus assignment
+# blocks + activity. iron-ore is mined on penalized drills (built 5, only 4
+# running → idle gap); iron-gear-wheel is crafted on a pooled assembler (no
+# assignment → allocated == utilized).
+AREA: dict = {
+    "scenario": "area",
+    "mode": "experimental",
+    "l1_method": "forward",
+    "initial_time_s": 0.0,
+    "solver": {"status": "optimal", "objective_s": 100.0},
+    "facilities": {
+        "electric-mining-drill": {"footprint": 11.375, "base_speed": 0.5},
+        "assembling-machine-2": {"footprint": 15.0, "base_speed": 0.75},
+    },
+    "recipe_outputs": {
+        "iron-ore": "iron-ore",
+        "iron-gear-wheel": "iron-gear-wheel",
+    },
+    "steps": [
+        {
+            "label": "automation",
+            "duration_s": 10.0,
+            "items": [
+                {"name": "iron-ore", "count_end": 5.0},
+                {"name": "iron-gear-wheel", "count_end": 1.0},
+            ],
+            "activity": [
+                {
+                    "recipe": "iron-ore",
+                    "building": "electric-mining-drill",
+                    "cycles": 10.0,
+                    "recipe_sec_used": 20.0,  # 20/(0.5·10)=4 drills running
+                },
+                {
+                    "recipe": "iron-gear-wheel",
+                    "building": "assembling-machine-2",
+                    "cycles": 2.0,
+                    "recipe_sec_used": 3.0,  # 3/(0.75·10)=0.4 assemblers
+                },
+            ],
+            "mining_assignment": [
+                {
+                    "building": "electric-mining-drill@iron-ore",
+                    "ore": "iron-ore",
+                    "count_start": 3.0,
+                    "count_end": 5.0,
+                },
+            ],
+        }
+    ],
+}
+
+
+def test_compute_area_series_penalized_and_pooled() -> None:
+    items, alloc, util = viz.compute_area_series(
+        AREA["steps"], AREA["facilities"], AREA["recipe_outputs"]
+    )
+    # Penalized drill: allocated = max(3,5)·11.375 = 56.875; utilized = 4·11.375.
+    assert alloc["iron-ore"][0] == 56.875
+    assert util["iron-ore"][0] == 45.5  # idle gap = built-but-not-running area
+    # Pooled assembler (no assignment): allocated == utilized.
+    assert alloc["iron-gear-wheel"][0] == util["iron-gear-wheel"][0] == 6.0
+
+
+def test_render_area_html() -> None:
+    html = viz.render_area_html(AREA)
+    assert "<h1>L2 facility area</h1>" in html
+    assert '"view":"facility_area"' in html
+    assert "renderAreaDetails" in html
+    assert "solid = allocated, faint = utilized" in html
+    # Composed through render_html with one overlay panel (alloc + util).
+    assert '"key": "alloc"' in html and '"overlayKey": "util"' in html
+    assert 'id="chart-net"' not in html  # single panel, not the 3-panel timeline
+    # The per-facility click-through popup is wired in.
+    assert "showAreaPopup" in html and "area_detail" in html
+
+
+def test_build_area_dataset_injects_facility_detail() -> None:
+    # The click-popup breakdown: per item, the assigned (built) vs running
+    # machine count of each facility. iron-ore is mined on a penalized drill
+    # (assigned 5 = max(3,5), running 4); iron-gear-wheel on a pooled assembler.
+    ds = viz.build_area_dataset(AREA)
+    detail = ds["steps"][0]["area_detail"]
+    drill = detail["iron-ore"]["electric-mining-drill"]
+    assert drill["alloc"] == 5.0 and drill["util"] == 4.0  # built-ahead idle gap
+    assert drill["footprint"] == 11.375
+    gear = detail["iron-gear-wheel"]["assembling-machine-2"]
+    assert gear["alloc"] == gear["util"] == 0.4  # pooled: assigned == running
+
+
+def test_build_area_dataset_prunes_legend_and_ranks() -> None:
+    ds = viz.build_area_dataset(AREA)
+    assert ds["view"] == "facility_area"
+    assert ds["peak_area_step"] == 0
+    # Legend/table ranked by peak allocated area: iron-ore (56.9) > gear (6).
+    assert ds["items_all"][0] == "iron-ore"
+    # Default-visible is the curated ore+plate baseline ∩ present items: here
+    # only iron-ore (iron-gear-wheel isn't an ore/plate).
+    assert ds["visible_default"] == ["iron-ore"]
+    # alloc/util injected into the per-step rates the chart reads.
+    assert ds["steps"][0]["rates"]["iron-ore"]["alloc"] == 56.875
+    assert ds["steps"][0]["rates"]["iron-ore"]["util"] == 45.5
 
 
 def test_categorize() -> None:
@@ -147,7 +247,7 @@ def test_viz_writes_both(tmp_path, monkeypatch) -> None:
     r = runner.invoke(app, ["rates", "viz", "r"])
     assert r.exit_code == 0
     assert (rd / "viz" / "rates-timeline.html").exists()
-    assert (rd / "viz" / "rates-heatmap.html").exists()
+    assert (rd / "viz" / "rates-area.html").exists()
     # Best-effort model: absent in CI → notice.
     assert "model not loaded" in r.stdout
 
@@ -158,16 +258,16 @@ def test_viz_surfaces_effective_settings(tmp_path, monkeypatch) -> None:
     r = runner.invoke(app, ["rates", "viz", "r"])
     assert r.exit_code == 0
     assert "settings: source=rates.yaml (default)" in r.stdout
-    assert "view=timeline" in r.stdout and "heatmap=on (default)" in r.stdout
+    assert "view=timeline" in r.stdout and "area=on (default)" in r.stdout
 
 
-def test_viz_no_heatmap(tmp_path, monkeypatch) -> None:
+def test_viz_no_area(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     rd = _make_run(tmp_path)
-    r = runner.invoke(app, ["rates", "viz", "r", "--no-heatmap"])
+    r = runner.invoke(app, ["rates", "viz", "r", "--no-area"])
     assert r.exit_code == 0
     assert (rd / "viz" / "rates-timeline.html").exists()
-    assert not (rd / "viz" / "rates-heatmap.html").exists()
+    assert not (rd / "viz" / "rates-area.html").exists()
 
 
 def test_viz_from_candidate_stem(tmp_path, monkeypatch) -> None:
@@ -259,7 +359,7 @@ def _capture(fn) -> str:
     return buf.getvalue()
 
 
-# --- richer dataset / heatmap branches -------------------------------------
+# --- richer dataset / area-view branches -----------------------------------
 
 RICH = {
     "scenario": "rich",
@@ -348,11 +448,12 @@ def test_build_dataset_rich_fields() -> None:
     assert "<h1>L2 timeline</h1>" in viz.render_html(ds)
 
 
-def test_heatmap_slack_absent_and_multistep() -> None:
-    hm = viz.build_heatmap_html(RICH)
-    # Both capacity-constrained buildings appear as rows; two step columns.
-    assert "lab" in hm and "chemical-plant" in hm
-    assert "s0" in hm and "s1" in hm
+def test_area_view_renders_multistep() -> None:
+    # A two-step solve (s1 has empty items) must render the area view without
+    # crashing; the empty step contributes zero area.
+    html = viz.render_area_html(RICH)
+    assert "<h1>L2 facility area</h1>" in html
+    assert '"view":"facility_area"' in html
 
 
 # --- WF-MAR round-1 fixes: injection, stable colors, error paths, coverage ---
@@ -488,12 +589,18 @@ def test_handcraft_panel_no_script_breakout() -> None:
     assert "<\\/script>" in html  # the payload survives only as script-safe JSON
 
 
-def test_heatmap_escapes_building_label_seed() -> None:
-    hm = viz.build_heatmap_html(INJECT)
-    assert "<script>alert(4)" not in hm  # building name escaped
-    assert "<script>alert(5)" not in hm  # seed escaped
-    assert "onerror=alert(3)" not in hm
-    assert "&lt;script&gt;" in hm  # escaped form present
+def test_area_view_no_script_breakout() -> None:
+    # The area view composes through render_html, so an injected building /
+    # recipe-output name reaches the DOM only as </-escaped JSON.
+    payload = copy.deepcopy(INJECT)
+    payload["facilities"] = {
+        "</script><img src=x onerror=alert(7)>": {"footprint": 9.0, "base_speed": 1.0}
+    }
+    payload["recipe_outputs"] = {"</script><svg onload=alert(8)>": "</script><b>x</b>"}
+    html = viz.render_area_html(payload)
+    assert "</script><img" not in html
+    assert "</script><svg" not in html
+    assert "<\\/script>" in html  # payloads survive only as script-safe JSON
 
 
 def test_color_for_item_is_stable() -> None:
@@ -592,7 +699,7 @@ def test_script_safe_escapes_close_tag_and_separators() -> None:
 
 def test_render_infeasible_stub_no_steps() -> None:
     # write_solution emits a solver block with NO `steps` for infeasible runs;
-    # viz must render both views without crashing.
+    # both views must render without crashing.
     stub = {
         "scenario": "x",
         "mode": "m",
@@ -600,13 +707,7 @@ def test_render_infeasible_stub_no_steps() -> None:
         "solver": {"status": "infeasible", "objective_s": None},
     }
     assert "<h1>L2 timeline</h1>" in viz.render_html(viz.build_dataset(stub))
-    assert "capacity-saturation heatmap" in viz.build_heatmap_html(stub)
-
-
-def test_heatmap_threshold_falls_back_to_server_class() -> None:
-    # The slider JS keeps the server-computed c-sat when a cell has no util number.
-    hm = viz.build_heatmap_html(RATES)
-    assert "isNaN(u)?c.classList.contains('c-sat')" in hm
+    assert "<h1>L2 facility area</h1>" in viz.render_area_html(stub)
 
 
 def test_viz_type_confused_yaml_is_clean_error(tmp_path, monkeypatch) -> None:
@@ -751,8 +852,8 @@ def test_viz_autodetects_post_block(tmp_path, monkeypatch) -> None:
     assert r.exit_code == 0, r.stdout + (r.stderr or "")
     tl = rd / "viz" / "rates-post-timeline.html"
     assert tl.exists()
-    # The flatten view has no companion heatmap.
-    assert not (rd / "viz" / "rates-post-heatmap.html").exists()
+    # The flatten view has no companion facility-area view.
+    assert not (rd / "viz" / "rates-post-area.html").exists()
     html = tl.read_text()
     assert "<h1>L2 rate flattening</h1>" in html and "Unmet inputs" in html
 
@@ -768,7 +869,7 @@ def test_viz_post_dry_run_reports_flatten_view(tmp_path, monkeypatch) -> None:
     assert r.exit_code == 0
     assert "flatten diff view" in r.stdout
     assert "rates-post-timeline.html" in r.stdout
-    assert "heatmap" not in r.stdout  # no heatmap promised for a post file
+    assert "-area.html" not in r.stdout  # no area view promised for a post file
     assert not (rd / "viz").exists()
 
 

@@ -124,14 +124,16 @@ cost is meant to allow only when it pays off).
 ### L2 viz
 
 Render a solved run's `rates.yaml` as interactive HTML (timeline +
-capacity-saturation heatmap) under `runs/<run>/viz/`:
+facility-area view) under `runs/<run>/viz/`:
 
 ```bash
 .venv/bin/fplan rates viz steelaxe --open
 ```
 
-Confirm it writes `viz/rates-timeline.html` + `viz/rates-heatmap.html` and (with
-`--open`) opens the timeline.
+Confirm it writes `viz/rates-timeline.html` + `viz/rates-area.html` and (with
+`--open`) opens the timeline. On the area view, check that a penalized item
+(e.g. a science pack near research end) shows a solid line above its faint one
+(idle committed area) while a pooled item's two lines coincide.
 
 ### L2 post
 

@@ -947,8 +947,8 @@ def test_post_writes_output_viz_and_manifest(
     assert doc["steps"][0]["items"][0]["production_rate_per_s"] == pytest.approx(5.0)
 
     assert (rd / "viz" / "rates-post-timeline.html").exists()
-    # No companion heatmap for the diff view.
-    assert not (rd / "viz" / "rates-post-heatmap.html").exists()
+    # No companion facility-area view for the diff view.
+    assert not (rd / "viz" / "rates-post-area.html").exists()
 
     m = run_mod.load(rd)
     assert m.extra["post"]["method"] == "chord"

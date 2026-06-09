@@ -58,10 +58,11 @@ After [installing](#install), from the repository root:
 .venv/bin/fplan rates viz steelaxe --open
 ```
 
-`viz` writes a zoomable timeline, a capacity-saturation heatmap, and an
-interactive [ore-patch supply curve](docs/L2-patch-selection.md) under
-`runs/steelaxe/viz/` (and opens the timeline) — the supply curve lets you pick
-which patches to mine and feed that choice back into the next solve.
+`viz` writes a zoomable timeline, a [facility-area view](docs/L2-area-viz.md)
+(allocated vs utilized area — the spatial L2→L3 lens), and an interactive
+[ore-patch supply curve](docs/L2-patch-selection.md) under `runs/steelaxe/viz/`
+(and opens the timeline) — the supply curve lets you pick which patches to mine
+and feed that choice back into the next solve.
 
 To understand the result — and how the solve produced it — see
 [L2 rates — the solve](docs/L2-rates-solve.md). Ready to plan a goal of your own?
@@ -194,6 +195,9 @@ obvious without reading the docs.
 - [Facility assignment](docs/L2-assignment.md) — committing drills, furnaces, and
   assemblers to a job so L3 gets static blocks: the three mechanics and the
   tractability trade-off
+- [Facility area](docs/L2-area-viz.md) — the allocated-vs-utilized facility-area
+  view and the base-area split (penalized / flexible / static), the spatial L2→L3
+  handoff lens
 - [Patch selection](docs/L2-patch-selection.md) — the ore-patch supply-curve view
   and the patch-selection input it feeds back into the next solve
 

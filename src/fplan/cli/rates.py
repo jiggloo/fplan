@@ -958,6 +958,22 @@ def post(
         f"unmet-inputs={summary['deficit_lines']}"
     )
 
+    # Base-area split (the spatial companion to #revisits): how much of the base
+    # is statically placeable (penalized) vs still flexible/pooled. Reads the
+    # solve's emitted `facilities:` footprints; a pre-emission rates.yaml carries
+    # none, so say that rather than print an all-zero table.
+    if l2.get("facilities"):
+        area = l2_flatten.compute_area_split(
+            l2.get("steps", []) or [], l2["facilities"], model
+        )
+        for line in l2_flatten.format_area_split(area):
+            typer.echo(line)
+    else:
+        typer.echo(
+            "  note: base-area split omitted — this rates.yaml predates the "
+            "facilities: block; re-solve to populate"
+        )
+
     if no_viz:
         if open_browser:
             typer.echo("note: --open has no effect with --no-viz (nothing to open).")
@@ -995,10 +1011,11 @@ FromOpt = Annotated[
         "(e.g. a search candidate rates-search/seed-N.yaml).",
     ),
 ]
-NoHeatmapOpt = Annotated[
+NoAreaOpt = Annotated[
     bool,
     typer.Option(
-        "--no-heatmap", help="Skip the companion capacity-saturation heatmap."
+        "--no-area",
+        help="Skip the companion facility-area view (allocated vs utilized area).",
     ),
 ]
 NoSupplyCurveOpt = Annotated[
@@ -1080,12 +1097,12 @@ def viz(
     ctx: typer.Context,
     run: VizRunArg,
     from_path: FromOpt = None,
-    no_heatmap: NoHeatmapOpt = False,
+    no_area: NoAreaOpt = False,
     no_supply_curve: NoSupplyCurveOpt = False,
     open_browser: OpenVizOpt = False,
     dry_run: DryRun = False,
 ) -> None:
-    """Render a run's rates.yaml as interactive HTML (timeline + heatmap +
+    """Render a run's rates.yaml as interactive HTML (timeline + facility area +
     ore-patch supply curve).
 
     Writes self-contained HTML under runs/<run>/viz/. The game model is loaded
@@ -1140,11 +1157,12 @@ def viz(
     viz_dir = run_dir / "viz"
     stem = src.stem  # rates.yaml → "rates", rates-post.yaml → "rates-post"
     timeline_path = viz_dir / f"{stem}-timeline.html"
-    heatmap_path = viz_dir / f"{stem}-heatmap.html"
+    area_path = viz_dir / f"{stem}-area.html"
     supply_curve_path = viz_dir / f"{stem}-supply-curve.html"
-    # The flatten diff view has no companion heatmap (capacity is unchanged by
-    # flattening) or supply curve (a timeline-only spatial lens); --no-* moot.
-    want_heatmap = not no_heatmap and not is_flatten_diff
+    # The flatten diff view has no companion facility-area view (assignment is
+    # unchanged by flattening) or supply curve (a timeline-only spatial lens);
+    # --no-* moot.
+    want_area = not no_area and not is_flatten_diff
 
     # The supply curve needs the run's bound map (geometry). Resolve it from the
     # manifest; absence just drops the view. A --from candidate still uses the
@@ -1166,8 +1184,8 @@ def viz(
         view = "flatten diff view" if is_flatten_diff else "timeline"
         typer.echo(f"(dry run) would read {src} ({view}) and write:")
         typer.echo(f"  {timeline_path}")
-        if want_heatmap:
-            typer.echo(f"  {heatmap_path}")
+        if want_area:
+            typer.echo(f"  {area_path}")
         if want_supply:
             typer.echo(f"  {supply_curve_path}")
         return
@@ -1177,7 +1195,7 @@ def viz(
         ("view", "flatten-diff" if is_flatten_diff else "timeline", False),
     ]
     if not is_flatten_diff:
-        settings.append(("heatmap", "off" if no_heatmap else "on", not no_heatmap))
+        settings.append(("area", "off" if no_area else "on", not no_area))
         settings.append(
             ("supply-curve", "off" if no_supply_curve else "on", not no_supply_curve)
         )
@@ -1204,9 +1222,9 @@ def viz(
             dataset = l2_viz.build_dataset(l2, data_dir=data_dir)
             timeline_path.write_text(l2_viz.render_html(dataset))
         outputs = [timeline_path]
-        if want_heatmap:
-            heatmap_path.write_text(l2_viz.build_heatmap_html(l2))
-            outputs.append(heatmap_path)
+        if want_area:
+            area_path.write_text(l2_viz.render_area_html(l2, data_dir=data_dir))
+            outputs.append(area_path)
     except (KeyError, ValueError, TypeError, AttributeError) as exc:
         # Shape mismatches (e.g. a step that's a str → .get on a non-dict raises
         # AttributeError) map to a clean error, not a raw traceback.
@@ -1243,7 +1261,7 @@ def viz(
             typer.echo(f"warning: could not write supply-curve: {exc}", err=True)
     elif not is_flatten_diff and not no_supply_curve:
         # The view was wanted but the run's map isn't available — say so rather
-        # than silently dropping it (timeline + heatmap still render fine).
+        # than silently dropping it (timeline + area view still render fine).
         where = f" at {map_path}" if map_path is not None else " (none bound)"
         typer.echo(f"note: supply-curve skipped — run's map not found{where}")
 
