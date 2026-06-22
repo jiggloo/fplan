@@ -122,10 +122,17 @@ def main():
             f"loaded cached monolith trajectory (obj={traj['obj']:.1f})\n", flush=True
         )
     else:
-        print("solving monolith (≤400s) for a consistent trajectory ...", flush=True)
-        traj, _ = D.solve_monolith(inst, model, time_limit=400)
+        print(
+            "solving monolith for a consistent trajectory (multi-seed) ...", flush=True
+        )
+        traj, _ = D.solve_monolith(
+            inst,
+            model,
+            time_limit=250,
+            seeds=(276989655, 1219118205, 1019815643, 170600372, 1, 2, 3, 4),
+        )
         if traj is None:
-            print("no primal; cannot characterize.")
+            print("no primal on any seed; cannot characterize.")
             return
         cache.write_bytes(pickle.dumps(traj))
         print(f"monolith obj={traj['obj']:.1f} (cached)\n", flush=True)
@@ -171,6 +178,7 @@ def main():
         flush=True,
     )
     union: set = set()
+    detail: dict = {}  # component -> {"stages": set, "feas": bool}
     for i in sample:
         lbl = inst.steps[i].label or inst.steps[i].research_tech or "FINAL"
         asm_keys = [
@@ -200,12 +208,42 @@ def main():
         ]
         feas_crit = [k for k, (kind, _g) in res.items() if kind == "feas"]
         union.update(inv_rel + asm_rel)
+        for k in inv_rel + asm_rel:
+            d_ = detail.setdefault(k, {"stages": set(), "feas": False})
+            d_["stages"].add(i)
+            if res[k][0] == "feas":
+                d_["feas"] = True
         print(
             f"    stage {i:2d} {lbl:24.24}: cut-relevant = "
             f"{len(inv_rel)} inv + {len(asm_rel)} asm "
             f"({len(feas_crit)} feasibility-critical)",
             flush=True,
         )
+
+    # The actual list, categorized: fluid vs solid, raw vs intermediate.
+    def cat(name):
+        it = model.items.get(name)
+        if it is not None and getattr(it, "kind", None) == "fluid":
+            return "fluid"
+        if name in inst.tile_pool or name in ("crude-oil",):
+            return "raw"
+        return "solid"
+
+    inv_comps = [k for k in union if k[0] == "item"]
+    by_cat: dict = {"fluid": [], "raw": [], "solid": []}
+    for k in inv_comps:
+        by_cat[cat(k[1])].append(k[1])
+    print("\n  --- cut-relevant inventory components, by category ---")
+    for c in ("fluid", "raw", "solid"):
+        names = sorted(by_cat[c])
+        nfeas = sum(1 for nm in names if detail[("item", nm)]["feas"])
+        print(
+            f"  {c.upper():6} ({len(names)}, {nfeas} feasibility-critical): "
+            f"{', '.join(names)}"
+        )
+    asm_comps = [k for k in union if k[0] != "item"]
+    if asm_comps:
+        print(f"  ASSIGN ({len(asm_comps)}): {', '.join(str(k[1]) for k in asm_comps)}")
 
     print("\n=== verdict ===")
     print(f"  nominal d ~ {len(items_with_var) + assign_mid}")
