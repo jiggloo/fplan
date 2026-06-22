@@ -66,11 +66,13 @@ def build_run(run_name: str, mode: str):
 # --- monolith solve + full state-trajectory extraction ---
 
 
-def solve_monolith(inst, model, seed=276989655, time_limit=None):
-    # The HiGHS LP can throw a fatal numerical error on some seeds (environment
-    # instability seen on this model); retry a couple of seeds before giving up.
+def solve_monolith(inst, model, seed=276989655, time_limit=None, seeds=None):
+    # fishminer's primal is stochastic and the HiGHS LP can throw a fatal
+    # numerical error on some seeds — retry a few known-good seeds until one
+    # returns a feasible primal.
     h = None
-    for s in (seed, seed + 1, seed + 2):
+    m = None
+    for s in seeds or (276989655, 1219118205, 1019815643):
         m, h = l2_solve.build_lp(
             inst,
             model,
@@ -81,9 +83,14 @@ def solve_monolith(inst, model, seed=276989655, time_limit=None):
         )
         try:
             m.optimize()
-            break
         except Exception as exc:  # SCIP: error in LP solver! (HiGHS numerical)
             print(f"  [monolith seed={s} LP error: {exc}; retrying]", flush=True)
+            continue
+        if m.getNSols() > 0:
+            break
+        print(
+            f"  [monolith seed={s}: no primal in {time_limit}s; retrying]", flush=True
+        )
     if m is None or m.getNSols() == 0:
         return None, h
     g = m.getVal
@@ -100,6 +107,64 @@ def solve_monolith(inst, model, seed=276989655, time_limit=None):
         "duration": {k: g(v) for k, v in h["duration"].items()},
     }
     return traj, h
+
+
+def traj_from_rates(run_name: str):
+    """Build a reference trajectory from a run's committed rates.yaml instead of
+    re-solving the monolith (deterministic; sidesteps the flaky/slow fishminer
+    primal). count_start is the value at tier i, count_end at tier i+1.
+    Assignment building names are `base@key` (e.g. electric-mining-drill@coal)."""
+    d = yaml.safe_load((EX / "runs" / run_name / "rates.yaml").read_text())
+    steps = d["steps"]
+    n = len(steps)
+    item: dict = {}
+    drill: dict = {}
+    furnace: dict = {}
+    asm: dict = {}
+    duration: dict = {}
+    for i, s in enumerate(steps):
+        duration[i] = s.get("duration_s", 0.0)
+        for it in s.get("items", []):
+            item[(it["name"], i)] = it["count_start"]
+            if i == n - 1:
+                item[(it["name"], i + 1)] = it["count_end"]
+        for rec in s.get("mining_assignment", []) or []:
+            base = rec["building"].split("@", 1)[0]
+            drill[(base, rec["ore"], i)] = rec["count_start"]
+            if i == n - 1:
+                drill[(base, rec["ore"], i + 1)] = rec["count_end"]
+        for rec in s.get("smelting_assignment", []) or []:
+            base = rec["building"].split("@", 1)[0]
+            furnace[(base, rec["output"], i)] = rec["count_start"]
+            if i == n - 1:
+                furnace[(base, rec["output"], i + 1)] = rec["count_end"]
+        for rec in s.get("assembler_assignment", []) or []:
+            base = rec["building"].split("@", 1)[0]
+            asm[(base, rec["recipe"], i)] = rec["count_start"]
+            if i == n - 1:
+                asm[(base, rec["recipe"], i + 1)] = rec["count_end"]
+    # also fill tier i+1 from the next step's count_start (== this step's end)
+    for i in range(n - 1):
+        for it in steps[i + 1].get("items", []):
+            item.setdefault((it["name"], i + 1), it["count_start"])
+        for rec in steps[i + 1].get("mining_assignment", []) or []:
+            base = rec["building"].split("@", 1)[0]
+            drill.setdefault((base, rec["ore"], i + 1), rec["count_start"])
+        for rec in steps[i + 1].get("smelting_assignment", []) or []:
+            base = rec["building"].split("@", 1)[0]
+            furnace.setdefault((base, rec["output"], i + 1), rec["count_start"])
+        for rec in steps[i + 1].get("assembler_assignment", []) or []:
+            base = rec["building"].split("@", 1)[0]
+            asm.setdefault((base, rec["recipe"], i + 1), rec["count_start"])
+    return {
+        "obj": float(d.get("solver", {}).get("objective_s", sum(duration.values()))),
+        "status": "from-rates",
+        "item": item,
+        "drill": drill,
+        "furnace": furnace,
+        "asm": asm,
+        "duration": duration,
+    }
 
 
 # --- one-step sub-instance for stage i ---
