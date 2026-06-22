@@ -175,18 +175,23 @@ def _lab_speed_mult(inst, model) -> dict[int, float]:
     """Per-step lab speed multiplier from completed research-speed techs.
     A tech's `laboratory-speed` bonus (research-speed-N: +0.2, +0.3, …)
     applies to FUTURE steps, after it completes, so step i's labs run at
-    base × (1 + Σ bonuses of research-speed techs researched in steps < i).
-    Used by the lab capacity constraint, the research cycle-time floor, and
-    the post-solve lab-utilization report so all three stay consistent."""
+    base × (1 + Σ bonuses of research-speed techs ALREADY researched at the
+    step's start). Used by the lab capacity constraint, the research cycle-time
+    floor, and the post-solve lab-utilization report so all three stay
+    consistent.
+
+    Derived from each step's `techs_researched_at_start` (not positional
+    accumulation over inst.steps) so it is correct for a decomposed one-step
+    sub-instance, whose step 0 inherits all prior research via that set. For a
+    full instance the two are equivalent."""
     mult: dict[int, float] = {}
-    bonus = 0.0
     for i, step in enumerate(inst.steps):
-        mult[i] = 1.0 + bonus
-        r = step.research
-        if r is not None and r.name.startswith("research/"):
-            tech = model.technologies.get(r.name.split("/", 1)[1])
+        bonus = 0.0
+        for tech_name in step.techs_researched_at_start:
+            tech = model.technologies.get(tech_name)
             if tech is not None:
                 bonus += tech.lab_speed_bonus
+        mult[i] = 1.0 + bonus
     return mult
 
 
@@ -339,8 +344,22 @@ def build_lp(
     node_limit: int | None = None,
     seed: int | None = None,
     lp_algorithm: str | None = None,
+    decomposed: bool = False,
 ) -> tuple[Model, dict]:
     """Construct the v2 SCIP model for `inst` (energy-aware).
+
+    ``decomposed`` (default False — no effect on a normal solve) builds the model
+    as a per-stage subproblem of a temporal decomposition, where tier 0 is a
+    *handoff* from the previous stage rather than the scenario's initial state.
+    It changes two classes of assumption that only hold for the true t₀:
+      * the two genuinely cross-step couplings are dropped (launch equality
+        Σ launches == required; whole-campaign wood budget) — a decomposition
+        carries these as state (launches via the tracked LAUNCH_EVENT_ITEM
+        inventory + final floor; wood via a cumulative counter);
+      * the initial-assignment assumption is dropped (``asm_init0``: assemblers
+        start unassigned) so the caller can pin tier-0 assignment buckets to the
+        incoming handoff split.
+    See experiments/l2_decompose.py.
 
     Returns (scip_model, handles). `handles` exposes variable refs
     for post-solve extraction:
@@ -827,15 +846,20 @@ def build_lp(
                     name=_safe(f"research_cycle_floor_{i}"),
                 )
 
-    # Launch equality: total cycles across all steps.
-    for L in inst.launches:
-        m.addCons(
-            quicksum(
-                x_pseudo[(L.name, i)] for i in range(n_steps) if (L.name, i) in x_pseudo
+    # Launch equality: total cycles across all steps. This is one of the two
+    # genuinely cross-step (non-adjacent) couplings; a decomposition carries it
+    # via the LAUNCH_EVENT_ITEM inventory + final floor instead (skip flag).
+    if not decomposed:
+        for L in inst.launches:
+            m.addCons(
+                quicksum(
+                    x_pseudo[(L.name, i)]
+                    for i in range(n_steps)
+                    if (L.name, i) in x_pseudo
+                )
+                == (L.cycles_required or 0.0),
+                name=_safe(f"launch_{L.name}"),
             )
-            == (L.cycles_required or 0.0),
-            name=_safe(f"launch_{L.name}"),
-        )
 
     # --- capacity constraints (one per (building, step)) ---
 
@@ -1335,12 +1359,15 @@ def build_lp(
                         vtype="C",
                     )
             # Initial assemblers are unassigned (scenarios carry no assignment).
-            for r in split_recipes:
-                if (b_name, r, 0) in assembler_assign:
-                    m.addCons(
-                        assembler_assign[(b_name, r, 0)] == 0.0,
-                        name=_safe(f"asm_init0_{b_name}_{r}"),
-                    )
+            # Skipped under `decomposed`: a stage's tier 0 is a handoff whose
+            # assignment split the caller pins, not the scenario's t₀.
+            if not decomposed:
+                for r in split_recipes:
+                    if (b_name, r, 0) in assembler_assign:
+                        m.addCons(
+                            assembler_assign[(b_name, r, 0)] == 0.0,
+                            name=_safe(f"asm_init0_{b_name}_{r}"),
+                        )
             # Linking: pool + Σ assigned == item[b] at every tier, so the split
             # never inflates the count that drives area / infra / player-time.
             for tier in range(n_tiers):
@@ -1567,8 +1594,10 @@ def build_lp(
     # (real recipes + pseudo-recipes) ≤ the wood standing on the map
     # (tree_count × WOOD_PER_TREE). Wood is an excluded item — no per-step
     # balance constraint — but its finite map supply still bounds the
-    # cumulative draw. One global linear constraint over the activity vars.
-    if inst.wood_budget > 0:
+    # cumulative draw. One global linear constraint over the activity vars —
+    # the second cross-step coupling, carried as a cumulative counter under a
+    # decomposition (skip flag).
+    if inst.wood_budget > 0 and not decomposed:
         wood_terms = []
         for (r_name, _b, _i), var in x_real.items():
             amt = _ingredient_amount(r_name, "wood", model, pseudo_by_name)

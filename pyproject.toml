@@ -70,6 +70,9 @@ select = ["E", "F", "I", "UP", "B"]
 # inside a triple-quoted string. The module's actual Python stays formatted.
 [tool.ruff.lint.per-file-ignores]
 "src/fplan/l2/viz.py" = ["E501"]
+# Exploratory decomposition prototypes (issue #56): formatted table-print
+# f-strings where line length is meaningless, same rationale as viz.py.
+"experiments/*" = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"
