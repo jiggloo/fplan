@@ -351,3 +351,76 @@ def test_load_map_data(tmp_path: Path) -> None:
     assert md.oil_spot_count == 2 and md.wood_budget == 200.0
     assert md.water_pump_cap == 4.0 * 8.0 and md.oil_yield_multiplier == 2.0
     assert instance.load_tile_pool(p)["iron-ore"] == 100.0
+
+
+# --------------------------------------------------------------------------- #
+# durable solver/model fixes (issue #61, extracted from the #56 exploration)
+# --------------------------------------------------------------------------- #
+
+
+def test_refine_subtiers_inserts_research_free_steps(
+    model: GameModel, tmp_path: Path
+) -> None:
+    # `refine_subtiers={i: k}` replaces step i with k sub-steps: k-1 leading
+    # research-free sub-tiers (free duration, no tech advance) + the original.
+    l1 = _l1(tmp_path, [["automation"], ["steel-processing"]])
+    s = _scenario(tmp_path)
+    base = instance.build_instance(s, l1, model)
+    ref = instance.build_instance(s, l1, model, refine_subtiers={0: 3})
+    assert len(ref.steps) == len(base.steps) + 2  # 2 sub-tiers inserted
+    # indices stay contiguous after insertion
+    assert [st.index for st in ref.steps] == list(range(len(ref.steps)))
+    # the two leading sub-steps research nothing and don't advance the tech set
+    for st in ref.steps[:2]:
+        assert st.research is None and st.research_tech is None
+        assert st.techs_researched_at_start == st.techs_researched_at_end
+    # the original research step survives, now at index 2
+    assert ref.steps[2].research_tech == "automation"
+    # zero splits is a no-op
+    same = instance.build_instance(s, l1, model, refine_subtiers={0: 1})
+    assert len(same.steps) == len(base.steps)
+
+
+def test_lab_speed_mult_matches_positional(model: GameModel, tmp_path: Path) -> None:
+    # The fix derives the research-speed bonus from each step's
+    # techs_researched_at_start; on a full instance it must match the old
+    # positional accumulation (regression guard).
+    from fplan.l2 import solve as l2_solve
+
+    l1 = _l1(tmp_path, [["automation"], ["steel-processing"], ["engine"]])
+    inst = instance.build_instance(_scenario(tmp_path), l1, model)
+    new = l2_solve._lab_speed_mult(inst, model)
+    positional: dict[int, float] = {}
+    bonus = 0.0
+    for i, step in enumerate(inst.steps):
+        positional[i] = 1.0 + bonus
+        r = step.research
+        if r is not None and r.name.startswith("research/"):
+            t = model.technologies.get(r.name.split("/", 1)[1])
+            if t is not None:
+                bonus += t.lab_speed_bonus
+    assert new == positional
+
+
+def test_building_count_ub_respects_hard_caps(model: GameModel, tmp_path: Path) -> None:
+    # The conditioning fix folds the existing transition caps into the variable
+    # box (previously ignored). With no map, the area bound is inactive so the
+    # ub is exactly the hard cap.
+    from fplan.l2 import solve as l2_solve
+
+    s = _scenario(
+        tmp_path,
+        initial_state={"items": {"burner-mining-drill": 1, "stone-furnace": 1}},
+    )
+    inst = instance.build_instance(s, _l1(tmp_path, [["automation"]]), model)
+    _m, h = l2_solve.build_lp(inst, model)
+    caps = {
+        "burner-mining-drill": inst.cfg.burner_drill_cap,
+        "stone-furnace": inst.cfg.stone_furnace_cap,
+    }
+    seen = set()
+    for (n, t), v in h["item"].items():
+        if t == 0 and n in caps:
+            assert v.getUbOriginal() == caps[n]
+            seen.add(n)
+    assert seen == set(caps)  # both buildings had a bounded tier-0 var
