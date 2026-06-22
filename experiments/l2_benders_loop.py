@@ -65,14 +65,24 @@ def _tier_vars(h, tier):
     return out
 
 
-def build_stage(inst, model, i, incoming_state, cuts, is_last, seed=1):
+STAGE_TIME_LIMIT = 10.0  # per-stage cap; the forward primal needs a feasible
+# point, not proven-optimal B&B (whose dual-simplex node resolves flood HiGHS).
+
+
+def build_stage(inst, model, i, incoming_state, cuts, is_last, seed=1, time_limit=None):
     """Build stage i: incoming inventory via the sub-instance initial items;
     incoming assignment pinned on the built model; θ floored by cuts on the
     outgoing (tier-1) state vars."""
     incoming_inv = {n: v for (fam, n), v in incoming_state.items() if fam == "item"}
     sub = D.make_stage_instance(inst, i, incoming_inv, is_last)
     m, h = l2_solve.build_lp(
-        sub, model, verbose=False, seed=seed, lp_algorithm="barrier", decomposed=True
+        sub,
+        model,
+        verbose=False,
+        seed=seed,
+        time_limit_s=time_limit,
+        lp_algorithm="barrier",
+        decomposed=True,
     )
     # pin incoming assignment buckets (tier 0) to the handoff state
     in_vars = _tier_vars(h, 0)
@@ -96,46 +106,104 @@ def build_stage(inst, model, i, incoming_state, cuts, is_last, seed=1):
 
 
 def solve_stage_robust(inst, model, i, state, cuts, is_last, root_only=False):
-    """Build + optimize a stage, retrying seeds on the HiGHS LP error (the
-    recurring environment numerical instability). Returns (m, h) or (None, None).
+    """Build + optimize a stage, retrying seeds on the HiGHS LP error. Returns
+    (m, h, info) where info records what happened: seeds_tried, lp_errored (all
+    seeds raised), status, time. (m, h) are None if every seed raised.
 
-    root_only=True caps the search at the root node, so the LP relaxation solved
-    is the McCormick (convex) relaxation of the bilinear stage — its dual bound
-    and reduced costs are a VALID lower bound + subgradient (the convex-relaxed
-    cut the nonconvex value function requires). The full (root + B&B) solve is
-    used for the forward PRIMAL."""
+    root_only=True caps the search at the root node (the McCormick relaxation),
+    used for the valid backward cut; the full solve is the forward primal."""
+    import time as _t
+
+    t0 = _t.time()
+    seeds_tried = 0
+    last_exc = "n/a"
+    tl = None if root_only else STAGE_TIME_LIMIT
     for seed in (1, 2, 3):
-        m, h, _theta = build_stage(inst, model, i, state, cuts, is_last, seed=seed)
+        seeds_tried += 1
+        m, h, _theta = build_stage(
+            inst, model, i, state, cuts, is_last, seed=seed, time_limit=tl
+        )
         if root_only:
             m.setParam("limits/nodes", 1)
         try:
             m.optimize()
-        except Exception:
+        except Exception as exc:
+            last_exc = str(exc)
             continue
-        return m, h
-    return None, None
+        info = {
+            "seeds_tried": seeds_tried,
+            "lp_errored": False,
+            "status": m.getStatus(),
+            "nsols": m.getNSols(),
+            "time": _t.time() - t0,
+        }
+        return m, h, info
+    return (
+        None,
+        None,
+        {
+            "seeds_tried": seeds_tried,
+            "lp_errored": True,
+            "status": f"lp_error: {last_exc}",
+            "nsols": 0,
+            "time": _t.time() - t0,
+        },
+    )
 
 
 def solve_forward(inst, model, cuts_by_stage, n, init_state):
-    """Forward pass: feasible primal + per-stage outgoing states."""
+    """Forward pass: feasible primal + per-stage outgoing states + per-stage
+    instrumentation records."""
     s = init_state
     states = [s]
     realized = 0.0
     stage0_val = None
     feasible = True
-    fail_stage = None
+    fail = None
+    records = []
     for i in range(n):
-        m, h = solve_stage_robust(inst, model, i, s, cuts_by_stage[i], i == n - 1)
-        if m is None or m.getNSols() == 0:
+        m, h, info = solve_stage_robust(inst, model, i, s, cuts_by_stage[i], i == n - 1)
+        dur = m.getVal(h["duration"][0]) if (m is not None and info["nsols"]) else None
+        records.append((i, info["status"], info["seeds_tried"], info["time"], dur))
+        # live progress (so a hang/flood is visible without waiting for the pass)
+        lbl = inst.steps[i].label or inst.steps[i].research_tech or "FINAL"
+        dur_str = f"{dur:.1f}" if dur is not None else "—"
+        print(
+            f"    stage {i:2d} {lbl:28.28} status={info['status']:<12.12} "
+            f"seeds={info['seeds_tried']} t={info['time']:.2f}s dur={dur_str}",
+            flush=True,
+        )
+        if m is None or info["nsols"] == 0:
             feasible = False
-            fail_stage = i
+            reason = "lp_error" if (info.get("lp_errored")) else info["status"]
+            fail = (i, reason)
             break
         if i == 0:
             stage0_val = m.getObjVal()  # with cost-to-go => global lower bound
-        realized += m.getVal(h["duration"][0])
+        realized += dur
         s = _state_at(h, m, 1)
         states.append(s)
-    return feasible, realized, stage0_val, states, fail_stage
+    return feasible, realized, stage0_val, states, fail, records
+
+
+def diagnose_failure(inst, model, i, incoming_state, cuts, is_last):
+    """When a forward stage is infeasible, isolate the cause: is it the cuts
+    (cost-to-go cut conflict), the goal floor (last stage), or genuinely the
+    stage given its incoming state? Re-solve with pieces removed."""
+    label = inst.steps[i].label or inst.steps[i].research_tech or "FINAL"
+    lines = [f"  diagnose stage {i} ({label}):"]
+    # (a) without cuts
+    m, h, info = solve_stage_robust(inst, model, i, incoming_state, [], is_last)
+    lines.append(f"    without cuts: status={info['status']} nsols={info['nsols']}")
+    # (b) without the goal floor (only meaningful on the last stage)
+    if is_last and inst.final_floors:
+        m2, h2, info2 = solve_stage_robust(
+            inst, model, i, incoming_state, cuts, is_last=False
+        )
+        lines.append(
+            f"    without goal floor: status={info2['status']} nsols={info2['nsols']}"
+        )
+    return "\n".join(lines)
 
 
 def backward_cut(inst, model, i, incoming_state, cuts, is_last):
@@ -144,7 +212,7 @@ def backward_cut(inst, model, i, incoming_state, cuts, is_last):
     bound is a valid lower bound on the stage value and the tier-0 reduced costs
     are a valid subgradient — a sound Benders cut (vs the invalid reduced costs
     of the nonconvex full solve)."""
-    m, h = solve_stage_robust(
+    m, h, _info = solve_stage_robust(
         inst, model, i, incoming_state, cuts, is_last, root_only=True
     )
     if m is None:
@@ -187,20 +255,36 @@ def main():
     best_primal = float("inf")
     for it in range(iters):
         t0 = time.time()
-        feasible, realized, lb, states, fail_stage = solve_forward(
+        feasible, realized, lb, states, fail, records = solve_forward(
             inst, model, cuts_by_stage, n, init_state
         )
+        # instrumentation: per-stage solve summary (always, so a failure has data)
+        n_done = len(records)
+        n_lperr = sum(1 for r in records if str(r[1]).startswith("lp_error"))
+        n_retry = sum(1 for r in records if r[2] > 1)
+        times = sorted(r[3] for r in records)
+        tmed = times[len(times) // 2] if times else 0.0
+        print(
+            f"iter {it + 1}: forward solved {n_done}/{n} stages "
+            f"(lp_errors={n_lperr}, multi-seed-retries={n_retry}, "
+            f"median stage {tmed:.2f}s, max {max(times, default=0):.2f}s)",
+            flush=True,
+        )
         if not feasible:
-            lbl = (
-                inst.steps[fail_stage].label
-                or inst.steps[fail_stage].research_tech
-                or "FINAL"
-            )
+            fi, reason = fail
+            lbl = inst.steps[fi].label or inst.steps[fi].research_tech or "FINAL"
             print(
-                f"iter {it + 1}: forward INFEASIBLE at stage {fail_stage} "
-                f"({lbl}) — incomplete recourse; needs feasibility cuts",
+                f"  -> FORWARD STOPPED at stage {fi} ({lbl}): {reason}",
                 flush=True,
             )
+            if not str(reason).startswith("lp_error"):
+                # algorithmic (infeasible) — isolate the cause
+                print(
+                    diagnose_failure(
+                        inst, model, fi, states[fi], cuts_by_stage[fi], fi == n - 1
+                    ),
+                    flush=True,
+                )
             break
         best_primal = min(best_primal, realized)
         fwd_t = time.time() - t0
