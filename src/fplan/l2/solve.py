@@ -170,6 +170,24 @@ HAND_CRAFT_CATEGORIES = frozenset({"crafting"})
 # research-speed would otherwise shorten the real cycle.
 ENFORCE_RESEARCH_CYCLE_FLOOR = True
 
+# Ceiling on the area-derived building-count upper bound (numerical hygiene).
+# The area bound (area_budget / footprint) is the whole map filled with ONE
+# building type — up to ~52,000 for a small-footprint building. That feeds the
+# bilinear capacity term `count × duration`, whose McCormick envelope has
+# coefficients ~ count_ub × MAX_STEP_DURATION; an ub of 52,000 makes those ~3e7,
+# pushing the relaxed LP HiGHS solves to a ~1e10 coefficient span and triggering
+# numerical failures. No realistic plan builds thousands of one building (the
+# total-area constraint enforces the real limit), so we cap the per-variable box
+# here. Measured on default-victory: the loose ub found NO primal in 150 s, this
+# ceiling found the incumbent; tighter (500) re-broke the IPOPT subsolve (the
+# §4.5 cliff). Kept above the rocket-silo's working area-ub (~2558).
+MAX_BUILDING_COUNT_UB = 3000.0
+
+# Per-step duration cap (seconds). Bounds the bilinear `count × duration`
+# McCormick envelope; 600 s is the proven-tractable value (3600/900 loosened the
+# relaxation enough that SCIP found no primal once the drill split landed).
+MAX_STEP_DURATION = 600.0
+
 
 def _lab_speed_mult(inst, model) -> dict[int, float]:
     """Per-step lab speed multiplier from completed research-speed techs.
@@ -592,6 +610,15 @@ def build_lp(
             hard_cap = float(inst.oil_spot_count)
         elif b_name == "offshore-pump" and inst.water_pump_cap > 0:
             hard_cap = float(inst.water_pump_cap)
+        # Buildings with a real transition cap (enforced as a constraint below)
+        # ignored that cap in their variable box — burner-mining-drill's ub was
+        # ~52,000 vs a cap of 50, stone-furnace ~20,000 vs 200. Folding the cap
+        # into the box shrinks the bilinear McCormick envelope for free (the cap
+        # is already enforced, so this can't break the IPOPT subsolve).
+        elif b_name == "burner-mining-drill":
+            hard_cap = float(inst.cfg.burner_drill_cap)
+        elif b_name == "stone-furnace":
+            hard_cap = float(inst.cfg.stone_furnace_cap)
         # Area-derived ceiling — only when map data is present.
         #
         # NB: this stays *loose* on purpose. The bound's job is to give
@@ -615,6 +642,11 @@ def build_lp(
                 ):
                     # Can't pack more drills than the combined patches hold.
                     area_ub = min(area_ub, total_tile_pool / fp)
+            # Numerical-hygiene ceiling on the (whole-map-loose) area bound, so
+            # the bilinear McCormick envelope stays conditioned (see
+            # MAX_BUILDING_COUNT_UB). The total-area constraint still enforces
+            # the real joint limit.
+            area_ub = min(area_ub, MAX_BUILDING_COUNT_UB)
         cands = [c for c in (hard_cap, area_ub) if c is not None]
         return min(cands) if cands else None
 
@@ -638,7 +670,6 @@ def build_lp(
     # 900s were both measured to loosen the relaxation enough that SCIP found
     # zero primals on default-victory once the ore-specific drill split (more
     # bilinear terms) landed. 600s is the proven-tractable value.
-    MAX_STEP_DURATION = 600.0
     duration_vars: dict[int, object] = {
         i: m.addVar(name=f"duration_{i}", lb=0.0, ub=MAX_STEP_DURATION, vtype="C")
         for i in range(n_steps)
@@ -2373,6 +2404,55 @@ def _dump_constraint_stats(m: Model, verbose: bool = False) -> dict:
     }
 
 
+def _dump_bilinear_conditioning(
+    m: Model, handles: dict, model: GameModel, coef_min_abs: float
+) -> None:
+    """Report the conditioning of the BILINEAR (`count × duration`) terms, which
+    `_dump_constraint_stats` cannot see (it only walks linear rows). SCIP relaxes
+    each product with a McCormick envelope whose coefficients/constants scale as
+    `count_ub × MAX_STEP_DURATION`; a loose count box therefore dominates the
+    coefficient span the LP solver actually faces. Reports the widest envelopes
+    and the implied effective range against the smallest linear coefficient — the
+    number that actually governs HiGHS's numerical health.
+    """
+    widths: list[tuple[str, float, float]] = []  # (var, ub, mccormick_width)
+    seen: set[str] = set()
+    families = ("item", "drill_assign", "furnace_assign", "assembler_assign")
+    for fam in families:
+        for key, v in handles.get(fam, {}).items():
+            name = key[0]
+            if fam == "item" and name not in model.buildings:
+                continue
+            label = f"{fam}:{name}" if fam != "item" else name
+            if label in seen:
+                continue
+            try:
+                ub = v.getUbOriginal()
+            except Exception:
+                continue
+            if ub is None or ub >= 1e19:
+                continue
+            seen.add(label)
+            widths.append((label, ub, ub * MAX_STEP_DURATION))
+    if not widths:
+        return
+    widths.sort(key=lambda r: -r[2])
+    max_w = widths[0][2]
+    eff_range = (max_w / coef_min_abs) if coef_min_abs > 0 else float("inf")
+    print(
+        f"[bilinear-cond] {len(widths)} bilinear count-boxes; widest McCormick "
+        f"const ~ count_ub × {MAX_STEP_DURATION:g} = {max_w:.2e}",
+        flush=True,
+    )
+    print(
+        f"[bilinear-cond] effective LP coef span incl. McCormick ~ {eff_range:.1e} "
+        f"(smallest linear coef {coef_min_abs:.2e}); the linear-only stats miss this",
+        flush=True,
+    )
+    for label, ub, w in widths[:5]:
+        print(f"    {label:34} count_ub={ub:10.1f}  McCormick~{w:.2e}", flush=True)
+
+
 def solve(
     inst: L2Instance,
     model: GameModel,
@@ -2395,7 +2475,8 @@ def solve(
         seed=seed,
         lp_algorithm=lp_algorithm,
     )
-    _dump_constraint_stats(m, verbose=verbose)
+    _stats = _dump_constraint_stats(m, verbose=verbose)
+    _dump_bilinear_conditioning(m, handles, model, _stats["coef_min_abs"])
     m.optimize()
     if verbose:
         # Full SCIP statistics dump (timing, LP iters, primal-heur table,
