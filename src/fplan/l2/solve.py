@@ -170,19 +170,6 @@ HAND_CRAFT_CATEGORIES = frozenset({"crafting"})
 # research-speed would otherwise shorten the real cycle.
 ENFORCE_RESEARCH_CYCLE_FLOOR = True
 
-# Ceiling on the area-derived building-count upper bound (numerical hygiene).
-# The area bound (area_budget / footprint) is the whole map filled with ONE
-# building type — up to ~52,000 for a small-footprint building. That feeds the
-# bilinear capacity term `count × duration`, whose McCormick envelope has
-# coefficients ~ count_ub × MAX_STEP_DURATION; an ub of 52,000 makes those ~3e7,
-# pushing the relaxed LP HiGHS solves to a ~1e10 coefficient span and triggering
-# numerical failures. No realistic plan builds thousands of one building (the
-# total-area constraint enforces the real limit), so we cap the per-variable box
-# here. Measured on default-victory: the loose ub found NO primal in 150 s, this
-# ceiling found the incumbent; tighter (500) re-broke the IPOPT subsolve (the
-# §4.5 cliff). Kept above the rocket-silo's working area-ub (~2558).
-MAX_BUILDING_COUNT_UB = 3000.0
-
 # Per-step duration cap (seconds). Bounds the bilinear `count × duration`
 # McCormick envelope; 600 s is the proven-tractable value (3600/900 loosened the
 # relaxation enough that SCIP found no primal once the drill split landed).
@@ -589,33 +576,24 @@ def build_lp(
         b = model.buildings.get(b_name)
         if b is None:
             return None
-        # Pumpjacks are per-spot, not per-tile — independent of map area.
-        # Offshore-pumps are per-water-perimeter, likewise area-independent.
+        # Physical, map-derived caps: pumpjacks are per-oil-spot, offshore-pumps
+        # per-water-perimeter (independent of the configured count cap).
         hard_cap: float | None = None
         if b_name == "pumpjack" and inst.oil_spot_count > 0:
             hard_cap = float(inst.oil_spot_count)
         elif b_name == "offshore-pump" and inst.water_pump_cap > 0:
             hard_cap = float(inst.water_pump_cap)
-        # Buildings with a real transition cap (enforced as a constraint below)
-        # ignored that cap in their variable box — burner-mining-drill's ub was
-        # ~52,000 vs a cap of 50, stone-furnace ~20,000 vs 200. Folding the cap
-        # into the box shrinks the bilinear McCormick envelope for free (the cap
-        # is already enforced, so this can't break the IPOPT subsolve).
-        elif b_name == "burner-mining-drill":
-            hard_cap = float(inst.cfg.burner_drill_cap)
-        elif b_name == "stone-furnace":
-            hard_cap = float(inst.cfg.stone_furnace_cap)
-        # Area-derived ceiling — only when map data is present.
-        #
-        # NB: this stays *loose* on purpose. The bound's job is to give
-        # the NLP subsolver a finite box, not to encode policy. A tight
-        # cap on a building the min-time relaxation wants to over-build
-        # (e.g. forcing rocket-silo ≤ 2, which is physically true) pushes
-        # the feasible region to a spot subnlp's IPOPT solve can't reach
-        # an interior point of, and SCIP then returns NO incumbent at all
-        # within the time limit. Measured: silo ub ∈ {2, 20} → 0 primals;
-        # area-derived (~2558) → the ~2818s plan, reliably. So we cap only
-        # by what physically fits, and let the objective pick the count.
+        # Configured per-building count cap (default + per-building overrides; see
+        # L2Config.building_count_ub). Mainly numerical hygiene — it keeps the box
+        # below the whole-map area value that would wreck the bilinear McCormick
+        # conditioning — and where set tighter (burner/stone) it forces the
+        # transition. Applies to every building, so even a map-less instance gets
+        # a finite McCormick box.
+        count_cap = inst.cfg.building_count_ub(b_name)
+        # Area-derived ceiling — only when map data is present. Kept loose; the
+        # real joint limit is the total-area constraint, and the count cap above
+        # provides the conditioning ceiling. The per-resource tile pool further
+        # caps drills (can't pack more than the patches hold).
         area_ub: float | None = None
         if area_budget > 0:
             fp = inst.deployed_facility(model, b).tile_footprint
@@ -626,14 +604,8 @@ def build_lp(
                     and b_name != "burner-mining-drill"
                     and total_tile_pool > 0
                 ):
-                    # Can't pack more drills than the combined patches hold.
                     area_ub = min(area_ub, total_tile_pool / fp)
-            # Numerical-hygiene ceiling on the (whole-map-loose) area bound, so
-            # the bilinear McCormick envelope stays conditioned (see
-            # MAX_BUILDING_COUNT_UB). The total-area constraint still enforces
-            # the real joint limit.
-            area_ub = min(area_ub, MAX_BUILDING_COUNT_UB)
-        cands = [c for c in (hard_cap, area_ub) if c is not None]
+        cands = [c for c in (hard_cap, count_cap, area_ub) if c is not None]
         return min(cands) if cands else None
 
     item_vars: dict[tuple[str, int], object] = {}
@@ -1723,8 +1695,10 @@ def build_lp(
     # drills. Player conventionally bootstraps with hand-placed burner
     # drills then switches; without this cap the LP can keep stacking
     # burners (which have no infrastructure overhead and 0 power draw
-    # in the LP's electric-balance) indefinitely.
-    BURNER_DRILL_CAP = inst.cfg.burner_drill_cap
+    # in the LP's electric-balance) indefinitely. The value is the building's
+    # configured count cap (also its variable upper bound, which makes this an
+    # explicit-but-redundant statement of the intent).
+    BURNER_DRILL_CAP = inst.cfg.building_count_ub("burner-mining-drill")
     if "burner-mining-drill" in inst.reachable_buildings:
         for i in range(n_tiers):
             if ("burner-mining-drill", i) not in item_vars:
@@ -1736,13 +1710,14 @@ def build_lp(
 
     # Cap on pooled stone furnaces (the unsplit smelting building), forcing
     # the transition to per-output-committed steel furnaces — mirrors the
-    # burner-drill cap. See inst.cfg.stone_furnace_cap.
+    # burner-drill cap (its configured count cap).
+    stone_cap = inst.cfg.building_count_ub("stone-furnace")
     if "stone-furnace" in inst.reachable_buildings:
         for i in range(n_tiers):
             if ("stone-furnace", i) not in item_vars:
                 continue
             m.addCons(
-                item_vars[("stone-furnace", i)] <= inst.cfg.stone_furnace_cap,
+                item_vars[("stone-furnace", i)] <= stone_cap,
                 name=_safe(f"stone_furnace_cap_{i}"),
             )
 
@@ -2120,8 +2095,9 @@ STONE_FURNACE = "stone-furnace"
 # Electric-furnace smelting is disabled outright (smelting served by the split
 # stone + steel furnaces) to keep the per-output bilinear-term count bounded.
 # Stone furnaces are split per-output like steel (config-driven, see
-# inst.assignment.smelting_buildings) but stay capped (inst.cfg.stone_furnace_cap)
-# to force the bootstrap transition to steel, and — being consumed by boilers /
+# inst.assignment.smelting_buildings) but stay capped (the configured
+# building_count for stone-furnace) to force the bootstrap transition to steel,
+# and — being consumed by boilers /
 # burner drills — carry the consumable `destroy` drain (see the furnace block).
 # Cap on pooled (unsplit) stone-furnace count, forcing transition to the
 # split steel furnaces — the smelting analogue of BURNER_DRILL_CAP. Stone

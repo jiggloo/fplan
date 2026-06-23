@@ -132,6 +132,23 @@ def _recipe_detail(r: Recipe, model: GameModel) -> str:
     )
 
 
+def _building_detail(name: str, model: GameModel) -> str:
+    b = model.buildings[name]
+    makes = sorted(
+        r.name
+        for r in model.recipes.values()
+        if any(bb.name == name for bb in model.buildings_for(r))
+    )
+    lines = [f"{b.name}  *({b.kind})*"]
+    lines.append(_row("crafting speed", f"{b.base_speed:g}"))
+    lines.append(_row("power", f"{b.base_power_w:g} W ({b.energy_source_type})"))
+    lines.append(_row("footprint", f"{b.base_tile_footprint:g} tiles"))
+    if b.categories:
+        lines.append(_row("categories", ", ".join(b.categories)))
+    lines.append(_row("makes", ", ".join(makes) or "(nothing)"))
+    return "\n".join(lines)
+
+
 def _model(ctx: typer.Context) -> GameModel:
     from fplan.cli import main as cli_main
 
@@ -178,4 +195,23 @@ def recipe(ctx: typer.Context, name: NameArg = None, pattern: FilterOpt = None) 
         pattern=pattern,
         singular="recipe",
         plural="recipes",
+    )
+
+
+@group.command()
+def building(
+    ctx: typer.Context, name: NameArg = None, pattern: FilterOpt = None
+) -> None:
+    """Show a building's detail, list buildings, or --filter to details.
+
+    The names listed here are what `caps.building_count` in an L2 config keys on
+    (per-building count limits)."""
+    model = _model(ctx)
+    _query(
+        entities=model.buildings,
+        detail=lambda n: _building_detail(n, model),
+        name=name,
+        pattern=pattern,
+        singular="building",
+        plural="buildings",
     )

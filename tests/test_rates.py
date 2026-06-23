@@ -375,7 +375,7 @@ def test_solve_lp_algorithm_invalid_is_usage_error(tmp_path, monkeypatch) -> Non
 def test_solve_records_config_ref(tmp_path, monkeypatch, use_fixture_model) -> None:
     monkeypatch.chdir(tmp_path)
     _make_run(tmp_path)
-    (tmp_path / "tune.yaml").write_text("caps: {burner_drill: 9.0}\n")
+    (tmp_path / "tune.yaml").write_text("caps: {building_count_default: 9.0}\n")
     from fplan.l2 import solve as l2_solve
 
     monkeypatch.setattr(l2_solve, "solve", _fake_solve())

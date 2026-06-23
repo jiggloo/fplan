@@ -80,8 +80,15 @@ class L2Config:
     tree_mining_rate_steelaxe: float
     wood_per_tree: float
     # Spatial / count caps.
-    burner_drill_cap: float
-    stone_furnace_cap: float
+    # Per-building upper bound on the count. Primarily numerical hygiene — it
+    # bounds the bilinear `count × duration` McCormick envelope (a loose box
+    # makes the relaxed LP ill-conditioned) — but where set tighter than the map
+    # allows it is also a modeling cap that forces a transition (e.g. off burner
+    # drills / stone furnaces). `building_count_default` applies to every
+    # building; `building_count` holds per-building overrides. Read via
+    # `building_count_ub(name)`.
+    building_count_default: float
+    building_count: dict[str, float]
     chest_inserter_per: float
     chest_tile_footprint: float
     max_area_fraction: float
@@ -136,6 +143,13 @@ class L2Config:
         """The deployment pattern for a building, or an empty one (no infra,
         zero footprint → no spatial cap) if none is registered."""
         return self.deployment.get(building_name, _EMPTY_PATTERN)
+
+    def building_count_ub(self, building_name: str) -> float:
+        """Configured upper bound on a building's count: a per-building override
+        from `building_count` if present, else `building_count_default`. Bounds
+        the bilinear McCormick envelope and, where tighter than the map allows,
+        forces a transition (e.g. burner → electric drills)."""
+        return self.building_count.get(building_name, self.building_count_default)
 
 
 _EMPTY_PATTERN = DeploymentPattern(infrastructure_items={}, tile_footprint=0.0)
@@ -243,8 +257,10 @@ def _from_dict(d: dict) -> L2Config:
             tree_mining_rate_base=float(physics["tree_mining_rate_base"]),
             tree_mining_rate_steelaxe=float(physics["tree_mining_rate_steelaxe"]),
             wood_per_tree=float(physics["wood_per_tree"]),
-            burner_drill_cap=float(caps["burner_drill"]),
-            stone_furnace_cap=float(caps["stone_furnace"]),
+            building_count_default=float(caps["building_count_default"]),
+            building_count={
+                str(k): float(v) for k, v in (caps.get("building_count") or {}).items()
+            },
             chest_inserter_per=float(caps["chest_inserter_per"]),
             chest_tile_footprint=float(caps["chest_tile_footprint"]),
             max_area_fraction=float(caps["max_area_fraction"]),

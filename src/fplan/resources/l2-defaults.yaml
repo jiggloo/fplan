@@ -53,8 +53,16 @@ physics:
 
 # Spatial / count caps.
 caps:
-  burner_drill: 50.0          # forces transition to electric drills
-  stone_furnace: 200.0        # forces transition to split steel furnaces
+  # Per-building upper bound on the count. Mainly numerical hygiene: it bounds the
+  # bilinear count*duration McCormick envelope, so a loose bound (the whole map
+  # filled with one building) makes the relaxed LP ill-conditioned. Where set
+  # tighter than the map allows, it doubles as a modeling cap that forces a
+  # transition. `building_count_default` applies to every building; entries under
+  # `building_count` override it per building (names match `fplan inspect building`).
+  building_count_default: 3000.0
+  building_count:
+    burner-mining-drill: 50.0   # forces transition to electric drills
+    stone-furnace: 200.0        # forces transition to split steel furnaces
   chest_inserter_per: 1.0     # +1 inserter infra per storage chest
   chest_tile_footprint: 1.0   # 1×1 chest selection box, for placement player-time
   max_area_fraction: 0.75     # max fraction of map area filled by buildings

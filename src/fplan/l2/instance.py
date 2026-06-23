@@ -1049,52 +1049,6 @@ def _assignment_note(
     return "facility assignment: " + "; ".join(parts)
 
 
-def _insert_optional_subtiers(
-    steps: list[L2Step], subtiers: dict[int, int]
-) -> list[L2Step]:
-    """Refine the time mesh by inserting *optional, research-free* sub-tiers.
-
-    For each ``(original_step_index, k)`` in ``subtiers`` with ``k >= 2``, that
-    step is replaced by ``k`` sub-steps: ``k-1`` leading research-free sub-steps
-    plus the original step last. The leading sub-steps carry no research (so the
-    ``research_cycle_floor_`` constraint does not apply to them) and share the
-    original's *start-of-step* tech snapshot, so recipe enablement and the
-    tech-availability timeline are unchanged — the technology still completes at
-    the end of the (now-last) original sub-step.
-
-    Each inserted sub-step adds a free ``duration`` variable (>= 0) and an extra
-    machine-count / inventory tier, letting capacity ramp *within* a phase
-    instead of only at tech-completion boundaries. Because every inserted
-    sub-step can collapse to zero duration and reproduce the coarse plan exactly,
-    this strictly enlarges the feasible set: the refined optimum is no worse than
-    the coarse optimum (monotone — modulo the solver returning a global, or
-    no-worse-than-warm-start, point on the nonconvex model).
-
-    Keys index the step list as given. Steps are reindexed contiguously on
-    return; ``research.bound_step`` is left as-is (the solver keys research on the
-    enumerate position, not ``bound_step``).
-    """
-    out: list[L2Step] = []
-    for orig in steps:
-        k = subtiers.get(orig.index, 1)
-        base = orig.research_tech or orig.label or "final"
-        for n in range(max(0, k - 1)):
-            out.append(
-                L2Step(
-                    index=-1,  # reindexed below
-                    research_tech=None,
-                    techs_researched_at_start=orig.techs_researched_at_start,
-                    techs_researched_at_end=orig.techs_researched_at_start,
-                    research=None,
-                    available_buildings_at_start=orig.available_buildings_at_start,
-                    forbidden_real_recipes=orig.forbidden_real_recipes,
-                    label=f"{base}-sub{n + 1}",
-                )
-            )
-        out.append(orig)
-    return [replace(s, index=j) for j, s in enumerate(out)]
-
-
 def build_instance(
     scenario_obj: scenario_mod.Scenario,
     l1_output_path: str | Path,
@@ -1106,7 +1060,6 @@ def build_instance(
     max_area_fraction: float | None = None,
     l2_config: L2Config | None = None,
     patch_selection_path: str | Path | None = None,
-    refine_subtiers: dict[int, int] | None = None,
 ) -> L2Instance:
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
@@ -1228,12 +1181,6 @@ def build_instance(
             ),
         )
     )
-
-    # Optional time-mesh refinement: insert research-free sub-tiers so capacity
-    # can ramp within a phase (see _insert_optional_subtiers). Applied before
-    # checkpoint resolution / producible-item scan so they see the refined mesh.
-    if refine_subtiers:
-        steps = _insert_optional_subtiers(steps, refine_subtiers)
 
     launches = tuple(_launch_pseudo_recipes(scenario_obj.goal.rocket_launches))
     producible = _producible_items(steps, effective_initial_items, model)

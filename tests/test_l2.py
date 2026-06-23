@@ -35,7 +35,9 @@ def model() -> GameModel:
 def test_config_defaults_load() -> None:
     c = l2config.load_config()
     assert c.version == l2config.VERSION
-    assert c.walking_speed_tps == 8.9 and c.burner_drill_cap == 50.0
+    assert c.walking_speed_tps == 8.9 and c.building_count_default == 3000.0
+    assert c.building_count_ub("burner-mining-drill") == 50.0  # per-building override
+    assert c.building_count_ub("lab") == 3000.0  # falls back to the default
     assert "pistol" in c.pruned_items and "wood" in c.fuel_excluded
     assert c.deployment_for("pumpjack").tile_footprint == 20.0
     # Unregistered building → empty pattern (no spatial cap).
@@ -46,11 +48,15 @@ def test_config_defaults_load() -> None:
 def test_config_deep_merge_override(tmp_path: Path) -> None:
     over = tmp_path / "tune.yaml"
     over.write_text(
-        "caps: {burner_drill: 7.0}\ndeployment: {pumpjack: {tile_footprint: 9.0}}\n"
+        "caps: {building_count: {burner-mining-drill: 7.0}}\n"
+        "deployment: {pumpjack: {tile_footprint: 9.0}}\n"
     )
     c = l2config.load_config(over)
-    assert c.burner_drill_cap == 7.0  # overridden
-    assert c.stone_furnace_cap == 200.0  # untouched default survives
+    # Nested deep-merge into building_count: the override replaces one entry,
+    # the other default entries (and the default fallback) survive.
+    assert c.building_count_ub("burner-mining-drill") == 7.0  # overridden
+    assert c.building_count_ub("stone-furnace") == 200.0  # untouched default survives
+    assert c.building_count_ub("lab") == 3000.0  # still the default
     # Nested deep-merge: footprint overridden, infrastructure kept from default.
     p = c.deployment_for("pumpjack")
     assert p.tile_footprint == 9.0 and p.infrastructure_items["pipe"] == 10.0
@@ -58,7 +64,7 @@ def test_config_deep_merge_override(tmp_path: Path) -> None:
 
 def test_config_version_mismatch_warns(tmp_path: Path, capsys) -> None:
     over = tmp_path / "tune.yaml"
-    over.write_text('version: "0.0.1"\ncaps: {burner_drill: 7.0}\n')
+    over.write_text('version: "0.0.1"\ncaps: {building_count_default: 7.0}\n')
     l2config.load_config(over)
     assert "declares version" in capsys.readouterr().out
 
@@ -358,29 +364,6 @@ def test_load_map_data(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_refine_subtiers_inserts_research_free_steps(
-    model: GameModel, tmp_path: Path
-) -> None:
-    # `refine_subtiers={i: k}` replaces step i with k sub-steps: k-1 leading
-    # research-free sub-tiers (free duration, no tech advance) + the original.
-    l1 = _l1(tmp_path, [["automation"], ["steel-processing"]])
-    s = _scenario(tmp_path)
-    base = instance.build_instance(s, l1, model)
-    ref = instance.build_instance(s, l1, model, refine_subtiers={0: 3})
-    assert len(ref.steps) == len(base.steps) + 2  # 2 sub-tiers inserted
-    # indices stay contiguous after insertion
-    assert [st.index for st in ref.steps] == list(range(len(ref.steps)))
-    # the two leading sub-steps research nothing and don't advance the tech set
-    for st in ref.steps[:2]:
-        assert st.research is None and st.research_tech is None
-        assert st.techs_researched_at_start == st.techs_researched_at_end
-    # the original research step survives, now at index 2
-    assert ref.steps[2].research_tech == "automation"
-    # zero splits is a no-op
-    same = instance.build_instance(s, l1, model, refine_subtiers={0: 1})
-    assert len(same.steps) == len(base.steps)
-
-
 def test_lab_speed_mult_matches_positional(model: GameModel, tmp_path: Path) -> None:
     # The fix derives the research-speed bonus from each step's
     # techs_researched_at_start; on a full instance it must match the old
@@ -402,25 +385,34 @@ def test_lab_speed_mult_matches_positional(model: GameModel, tmp_path: Path) -> 
     assert new == positional
 
 
-def test_building_count_ub_respects_hard_caps(model: GameModel, tmp_path: Path) -> None:
-    # The conditioning fix folds the existing transition caps into the variable
-    # box (previously ignored). With no map, the area bound is inactive so the
-    # ub is exactly the hard cap.
+def test_building_count_ub_caps_variable_box(model: GameModel, tmp_path: Path) -> None:
+    # The conditioning fix folds the configured per-building count cap into the
+    # variable box. With no map, the area bound is inactive, so each building's
+    # tier-0 ub is exactly its building_count_ub — the per-building override for
+    # burner/stone, the default (3000) for anything else (e.g. assembler).
     from fplan.l2 import solve as l2_solve
 
     s = _scenario(
         tmp_path,
-        initial_state={"items": {"burner-mining-drill": 1, "stone-furnace": 1}},
+        initial_state={
+            "items": {
+                "burner-mining-drill": 1,
+                "stone-furnace": 1,
+                "assembling-machine-1": 1,
+            }
+        },
     )
     inst = instance.build_instance(s, _l1(tmp_path, [["automation"]]), model)
     _m, h = l2_solve.build_lp(inst, model)
-    caps = {
-        "burner-mining-drill": inst.cfg.burner_drill_cap,
-        "stone-furnace": inst.cfg.stone_furnace_cap,
+    expected = {
+        "burner-mining-drill": 50.0,  # per-building override
+        "stone-furnace": 200.0,  # per-building override
+        "assembling-machine-1": inst.cfg.building_count_default,  # 3000 default
     }
+    assert inst.cfg.building_count_ub("assembling-machine-1") == 3000.0
     seen = set()
     for (n, t), v in h["item"].items():
-        if t == 0 and n in caps:
-            assert v.getUbOriginal() == caps[n]
+        if t == 0 and n in expected:
+            assert v.getUbOriginal() == expected[n]
             seen.add(n)
-    assert seen == set(caps)  # both buildings had a bounded tier-0 var
+    assert seen == set(expected)  # all three had a bounded tier-0 var
