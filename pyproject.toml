@@ -84,6 +84,18 @@ no_implicit_optional = true
 module = ["lupa", "toposort", "pyscipopt"]
 ignore_missing_imports = true
 
+# numpy >= 2.5 dropped Python 3.11 and writes its stubs with PEP 695 `type`
+# statements (3.12+ syntax). The type-check CI job runs on 3.12 and installs that
+# newer numpy, but mypy targets python_version 3.11 (our floor) and so can't parse
+# the 3.12-only stub ("Type statement is only supported in Python 3.12 and
+# greater"). We use numpy lightly (one module, basic array ops), so skip following
+# into its stubs — numpy becomes Any, like the other untyped deps above — rather
+# than raise the mypy target or cap the numpy version.
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
+
 # l2.solve is the SCIP layer: ~2400 lines built against pyscipopt's untyped
 # Var objects (every model variable is effectively `Any`, so arithmetic on them
 # can't be meaningfully checked). Like its coverage omission, it's verified by
