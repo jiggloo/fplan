@@ -170,23 +170,33 @@ HAND_CRAFT_CATEGORIES = frozenset({"crafting"})
 # research-speed would otherwise shorten the real cycle.
 ENFORCE_RESEARCH_CYCLE_FLOOR = True
 
+# Per-step duration cap (seconds). Bounds the bilinear `count × duration`
+# McCormick envelope; 600 s is the proven-tractable value (3600/900 loosened the
+# relaxation enough that SCIP found no primal once the drill split landed).
+MAX_STEP_DURATION = 600.0
+
 
 def _lab_speed_mult(inst, model) -> dict[int, float]:
     """Per-step lab speed multiplier from completed research-speed techs.
     A tech's `laboratory-speed` bonus (research-speed-N: +0.2, +0.3, …)
     applies to FUTURE steps, after it completes, so step i's labs run at
-    base × (1 + Σ bonuses of research-speed techs researched in steps < i).
-    Used by the lab capacity constraint, the research cycle-time floor, and
-    the post-solve lab-utilization report so all three stay consistent."""
+    base × (1 + Σ bonuses of research-speed techs ALREADY researched at the
+    step's start). Used by the lab capacity constraint, the research cycle-time
+    floor, and the post-solve lab-utilization report so all three stay
+    consistent.
+
+    Derived from each step's `techs_researched_at_start` (the techs actually
+    completed before the step), not positional accumulation over inst.steps — so
+    it also reflects research-speed techs already done in the scenario's initial
+    state, and stays correct for any step solved in isolation."""
     mult: dict[int, float] = {}
-    bonus = 0.0
     for i, step in enumerate(inst.steps):
-        mult[i] = 1.0 + bonus
-        r = step.research
-        if r is not None and r.name.startswith("research/"):
-            tech = model.technologies.get(r.name.split("/", 1)[1])
+        bonus = 0.0
+        for tech_name in step.techs_researched_at_start:
+            tech = model.technologies.get(tech_name)
             if tech is not None:
                 bonus += tech.lab_speed_bonus
+        mult[i] = 1.0 + bonus
     return mult
 
 
@@ -566,24 +576,24 @@ def build_lp(
         b = model.buildings.get(b_name)
         if b is None:
             return None
-        # Pumpjacks are per-spot, not per-tile — independent of map area.
-        # Offshore-pumps are per-water-perimeter, likewise area-independent.
+        # Physical, map-derived caps: pumpjacks are per-oil-spot, offshore-pumps
+        # per-water-perimeter (independent of the configured count cap).
         hard_cap: float | None = None
         if b_name == "pumpjack" and inst.oil_spot_count > 0:
             hard_cap = float(inst.oil_spot_count)
         elif b_name == "offshore-pump" and inst.water_pump_cap > 0:
             hard_cap = float(inst.water_pump_cap)
-        # Area-derived ceiling — only when map data is present.
-        #
-        # NB: this stays *loose* on purpose. The bound's job is to give
-        # the NLP subsolver a finite box, not to encode policy. A tight
-        # cap on a building the min-time relaxation wants to over-build
-        # (e.g. forcing rocket-silo ≤ 2, which is physically true) pushes
-        # the feasible region to a spot subnlp's IPOPT solve can't reach
-        # an interior point of, and SCIP then returns NO incumbent at all
-        # within the time limit. Measured: silo ub ∈ {2, 20} → 0 primals;
-        # area-derived (~2558) → the ~2818s plan, reliably. So we cap only
-        # by what physically fits, and let the objective pick the count.
+        # Configured per-building count cap (default + per-building overrides; see
+        # L2Config.building_count_ub). Mainly numerical hygiene — it keeps the box
+        # below the whole-map area value that would wreck the bilinear McCormick
+        # conditioning — and where set tighter (burner/stone) it forces the
+        # transition. Applies to every building, so even a map-less instance gets
+        # a finite McCormick box.
+        count_cap = inst.cfg.building_count_ub(b_name)
+        # Area-derived ceiling — only when map data is present. Kept loose; the
+        # real joint limit is the total-area constraint, and the count cap above
+        # provides the conditioning ceiling. The per-resource tile pool further
+        # caps drills (can't pack more than the patches hold).
         area_ub: float | None = None
         if area_budget > 0:
             fp = inst.deployed_facility(model, b).tile_footprint
@@ -594,9 +604,8 @@ def build_lp(
                     and b_name != "burner-mining-drill"
                     and total_tile_pool > 0
                 ):
-                    # Can't pack more drills than the combined patches hold.
                     area_ub = min(area_ub, total_tile_pool / fp)
-        cands = [c for c in (hard_cap, area_ub) if c is not None]
+        cands = [c for c in (hard_cap, count_cap, area_ub) if c is not None]
         return min(cands) if cands else None
 
     item_vars: dict[tuple[str, int], object] = {}
@@ -619,7 +628,6 @@ def build_lp(
     # 900s were both measured to loosen the relaxation enough that SCIP found
     # zero primals on default-victory once the ore-specific drill split (more
     # bilinear terms) landed. 600s is the proven-tractable value.
-    MAX_STEP_DURATION = 600.0
     duration_vars: dict[int, object] = {
         i: m.addVar(name=f"duration_{i}", lb=0.0, ub=MAX_STEP_DURATION, vtype="C")
         for i in range(n_steps)
@@ -1683,32 +1691,14 @@ def build_lp(
                     quicksum(terms) <= duration_vars[i], name=_safe(f"player_time_{i}")
                 )
 
-    # Hard cap on burner-mining-drills to force transition to electric
-    # drills. Player conventionally bootstraps with hand-placed burner
-    # drills then switches; without this cap the LP can keep stacking
-    # burners (which have no infrastructure overhead and 0 power draw
-    # in the LP's electric-balance) indefinitely.
-    BURNER_DRILL_CAP = inst.cfg.burner_drill_cap
-    if "burner-mining-drill" in inst.reachable_buildings:
-        for i in range(n_tiers):
-            if ("burner-mining-drill", i) not in item_vars:
-                continue
-            m.addCons(
-                item_vars[("burner-mining-drill", i)] <= BURNER_DRILL_CAP,
-                name=_safe(f"burner_cap_{i}"),
-            )
-
-    # Cap on pooled stone furnaces (the unsplit smelting building), forcing
-    # the transition to per-output-committed steel furnaces — mirrors the
-    # burner-drill cap. See inst.cfg.stone_furnace_cap.
-    if "stone-furnace" in inst.reachable_buildings:
-        for i in range(n_tiers):
-            if ("stone-furnace", i) not in item_vars:
-                continue
-            m.addCons(
-                item_vars[("stone-furnace", i)] <= inst.cfg.stone_furnace_cap,
-                name=_safe(f"stone_furnace_cap_{i}"),
-            )
+    # Transition caps that force the player off the bootstrap buildings — burner
+    # drills onto electric drills, pooled stone furnaces onto split steel furnaces
+    # (without a cap the LP keeps stacking burners, which carry no infra overhead
+    # and 0 power draw in the electric balance) — are the per-building count caps
+    # in `caps.building_count` (burner-mining-drill: 50, stone-furnace: 200). They
+    # are applied directly as the item variable's upper bound at every tier (see
+    # `_building_count_ub` / item-var creation above), so no separate constraint
+    # is needed.
 
     # Fluid-buffer cap. Surplus fluid held at any tier boundary must fit in
     # built fluid storage. A pipe/tank holds one fluid type at a time, so the
@@ -2084,14 +2074,12 @@ STONE_FURNACE = "stone-furnace"
 # Electric-furnace smelting is disabled outright (smelting served by the split
 # stone + steel furnaces) to keep the per-output bilinear-term count bounded.
 # Stone furnaces are split per-output like steel (config-driven, see
-# inst.assignment.smelting_buildings) but stay capped (inst.cfg.stone_furnace_cap)
-# to force the bootstrap transition to steel, and — being consumed by boilers /
-# burner drills — carry the consumable `destroy` drain (see the furnace block).
-# Cap on pooled (unsplit) stone-furnace count, forcing transition to the
-# split steel furnaces — the smelting analogue of BURNER_DRILL_CAP. Stone
-# furnaces are transitional bootstrap smelters; without a cap the LP would
-# lean on their pooled flexibility instead of committing steel furnaces to
-# specific products.
+# inst.assignment.smelting_buildings) but stay capped (the per-building
+# `caps.building_count` for stone-furnace, applied as the item variable's upper
+# bound) to force the bootstrap transition to steel — without a cap the LP leans
+# on their pooled flexibility instead of committing steel furnaces to specific
+# products — and, being consumed by boilers / burner drills, carry the consumable
+# `destroy` drain (see the furnace block).
 
 
 # --- Player-time model (single character, serial actions per step) ---------
@@ -2344,6 +2332,55 @@ def _dump_constraint_stats(m: Model, verbose: bool = False) -> dict:
     }
 
 
+def _dump_bilinear_conditioning(
+    m: Model, handles: dict, model: GameModel, coef_min_abs: float
+) -> None:
+    """Report the conditioning of the BILINEAR (`count × duration`) terms, which
+    `_dump_constraint_stats` cannot see (it only walks linear rows). SCIP relaxes
+    each product with a McCormick envelope whose coefficients/constants scale as
+    `count_ub × MAX_STEP_DURATION`; a loose count box therefore dominates the
+    coefficient span the LP solver actually faces. Reports the widest envelopes
+    and the implied effective range against the smallest linear coefficient — the
+    number that actually governs HiGHS's numerical health.
+    """
+    widths: list[tuple[str, float, float]] = []  # (var, ub, mccormick_width)
+    seen: set[str] = set()
+    families = ("item", "drill_assign", "furnace_assign", "assembler_assign")
+    for fam in families:
+        for key, v in handles.get(fam, {}).items():
+            name = key[0]
+            if fam == "item" and name not in model.buildings:
+                continue
+            label = f"{fam}:{name}" if fam != "item" else name
+            if label in seen:
+                continue
+            try:
+                ub = v.getUbOriginal()
+            except Exception:
+                continue
+            if ub is None or ub >= 1e19:
+                continue
+            seen.add(label)
+            widths.append((label, ub, ub * MAX_STEP_DURATION))
+    if not widths:
+        return
+    widths.sort(key=lambda r: -r[2])
+    max_w = widths[0][2]
+    eff_range = (max_w / coef_min_abs) if coef_min_abs > 0 else float("inf")
+    print(
+        f"[bilinear-cond] {len(widths)} bilinear count-boxes; widest McCormick "
+        f"const ~ count_ub × {MAX_STEP_DURATION:g} = {max_w:.2e}",
+        flush=True,
+    )
+    print(
+        f"[bilinear-cond] effective LP coef span incl. McCormick ~ {eff_range:.1e} "
+        f"(smallest linear coef {coef_min_abs:.2e}); the linear-only stats miss this",
+        flush=True,
+    )
+    for label, ub, w in widths[:5]:
+        print(f"    {label:34} count_ub={ub:10.1f}  McCormick~{w:.2e}", flush=True)
+
+
 def solve(
     inst: L2Instance,
     model: GameModel,
@@ -2366,7 +2403,8 @@ def solve(
         seed=seed,
         lp_algorithm=lp_algorithm,
     )
-    _dump_constraint_stats(m, verbose=verbose)
+    _stats = _dump_constraint_stats(m, verbose=verbose)
+    _dump_bilinear_conditioning(m, handles, model, _stats["coef_min_abs"])
     m.optimize()
     if verbose:
         # Full SCIP statistics dump (timing, LP iters, primal-heur table,

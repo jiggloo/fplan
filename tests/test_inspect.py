@@ -142,3 +142,36 @@ def test_inspect_recipe_filter_shows_details(use_fixture_model) -> None:
     assert "ingredients:" in out  # detail rows for each oil recipe
     names = [ln for ln in out.splitlines() if ln and not ln.startswith(" ")]
     assert names and all("oil" in ln for ln in names)
+
+
+def test_inspect_building_detail(use_fixture_model) -> None:
+    result = runner.invoke(app, ["inspect", "building", "assembling-machine-1"])
+    assert result.exit_code == 0
+    out = result.stdout
+    assert "assembling-machine-1" in out
+    assert "crafting speed:" in out
+    assert "power:" in out
+    assert "footprint:" in out
+    assert "makes:" in out  # the recipes it can craft
+
+
+def test_inspect_building_unknown_is_fatal(use_fixture_model) -> None:
+    result = runner.invoke(app, ["inspect", "building", "no-such-building"])
+    assert result.exit_code == 1
+
+
+def test_inspect_building_bare_lists_all(use_fixture_model) -> None:
+    # The discovery index: the names a user puts under caps.building_count.
+    result = runner.invoke(app, ["inspect", "building"])
+    assert result.exit_code == 0
+    names = result.stdout.split()
+    assert "burner-mining-drill" in names and "stone-furnace" in names
+
+
+def test_inspect_building_filter_shows_details(use_fixture_model) -> None:
+    result = runner.invoke(app, ["inspect", "building", "--filter", "furnace"])
+    assert result.exit_code == 0
+    out = result.stdout
+    assert "crafting speed:" in out  # detail rows, not a bare name list
+    names = [ln for ln in out.splitlines() if ln and not ln.startswith(" ")]
+    assert names and all("furnace" in ln for ln in names)
