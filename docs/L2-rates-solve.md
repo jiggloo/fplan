@@ -557,12 +557,13 @@ rules. The result is a feasible / time-limited primal, not a proven optimum.
 ## 5. Extending the solve (asking your own questions)
 
 [§4](#4-how-the-solve-works-under-the-hood) described the model; here you change
-things to ask a question of your own. There are two levers: edit the **problem** —
-the scenario, no code ([§5.3](#53-example-adding-a-checkpoint-a-scenario-change)) —
-or edit the **model** — the solver code
-([§5.2](#52-example-capping-the-number-of-labs) and the references that follow).
-This section walks one example of each, then the reference you reach into for
-changes of your own.
+things to ask a question of your own. There are three levers, in rising order of
+effort: tune a **config** knob — no code
+([§5.2](#52-example-capping-the-number-of-labs)); edit the **problem** — the
+scenario, no code ([§5.3](#53-example-adding-a-checkpoint-a-scenario-change)); or
+edit the **model** — the solver code (the reference that follows). This section
+walks one example of each lever, then the reference you reach into for changes of
+your own.
 
 This section is also the **code map** that
 [§4](#4-how-the-solve-works-under-the-hood) points into. The split is
@@ -606,43 +607,37 @@ burn recipes.
 
 ### 5.2 Example: capping the number of labs
 
-This is a **code** change — a new constraint in the model. (It illustrates the
-shape; the specific outcome below hasn't been measured on a solved run.) Suppose
-you want to ask: *what if I never have more than N labs?* — does the plan
-still reach the goal, how much later, and what reshapes to compensate?
+This is a **config** change — no code edit. (It illustrates the loop; the specific
+outcome below hasn't been measured on a solved run.) Suppose you want to ask:
+*what if I never have more than N labs?* — does the plan still reach the goal,
+how much later, and what reshapes to compensate?
 
-You don't need anything new. The model already has constraints of exactly this
-shape — the burner-drill and stone-furnace transition caps are each just
-`item[building, tier] ≤ cap`. Copy the stone-furnace one and point it at `lab`,
-placing it beside the others in the spatial-caps section (the `*_cap` block):
+Every building's count is bounded by `caps.building_count` — the same knob that
+forces the burner→electric and stone→steel transitions
+([§4.3](#43-the-constraints)). It applies the limit directly as the count's
+variable upper bound at every tier, so capping a new building is just an entry in
+a tuning file (discover names with `fplan inspect building`):
 
-```python
-# Example extension: cap labs at N at every tier.
-LAB_CAP = 10.0
-if "lab" in inst.reachable_buildings:
-    for i in range(n_tiers):
-        if ("lab", i) not in item_vars:
-            continue
-        m.addCons(
-            item_vars[("lab", i)] <= LAB_CAP,
-            name=_safe(f"lab_cap_{i}"),
-        )
+```yaml
+# tune.yaml — cap labs at 10; the default (building_count_default) still
+# applies to every other building.
+caps:
+  building_count:
+    lab: 10
 ```
 
-Then re-solve and read the result against a baseline:
-
 ```bash
-fplan rates solve <run>          # re-solve with the cap in place
-fplan rates viz <run> --open     # read what changed (§2, §3)
+fplan rates solve <run> --l2-config tune.yaml   # re-solve with the cap in place
+fplan rates viz <run> --open                     # read what changed (§2, §3)
 ```
 
 What to look for, using [§3](#3-reading-ratesyaml): the tiers where `item[lab]`
-now presses against `LAB_CAP`; research steps that lean on labs stretching their
+now presses against the cap; research steps that lean on labs stretching their
 `duration_s` (the capacity rule has less machine to work with); and other
 buildings picking up `utilization` as the plan compensates. That's the loop —
-**hypothesis → constraint → re-solve → diff** — and it's the whole method for
-probing new solutions. (Pick `N` by reading a baseline first: capping something
-that isn't binding changes nothing.)
+**hypothesis → cap → re-solve → diff** — and it's the whole method for probing
+new solutions. (Pick `N` by reading a baseline first: capping something that
+isn't binding changes nothing.)
 
 ### 5.3 Example: adding a checkpoint (a scenario change)
 
@@ -754,7 +749,7 @@ Factorio's mechanics, and the `name=` prefix to grep for it in `build_lp`:
   the lone rocket-silo is assembled over one full craft — you can't halve the time
   with "twice the machines." (Written as a *linear* constraint to dodge a bilinear
   term — [§4.5](#45-solver-specific-choices-and-tractability-hacks-scip).)
-- **Transition caps** (`burner_cap_`, `stone_furnace_cap_`) — Caps on burner
+- **Transition caps** (per-building `caps.building_count`) — Caps on burner
   mining drills and stone furnaces that stand in for a mechanic L2 doesn't model:
   **hand-feeding**. Early on the player carries items from producer to consumer by
   hand rather than laying belts; because L2 models no placement or location
@@ -762,9 +757,12 @@ Factorio's mechanics, and the `name=` prefix to grep for it in `build_lp`:
   burner-drill cap sits around the crossover where building belt infrastructure
   becomes more efficient than hand-feeding — past it the plan must move to electric
   drills (and, for smelting, steel furnaces). *In game:* you can't hand-feed an
-  unbounded number of burner drills; beyond a point you'd lay belts.
-  (Mechanically the same `item ≤ cap` shape as the lab cap in
-  [§5.2](#52-example-capping-the-number-of-labs).)
+  unbounded number of burner drills; beyond a point you'd lay belts. These caps
+  are configured per building (`caps.building_count`, e.g. burner-mining-drill: 50,
+  stone-furnace: 200; discover names with `fplan inspect building`) and applied
+  directly as the building's count **variable upper bound** at every tier — the
+  same box that bounds the bilinear McCormick envelope ([§4.5](#45-solver-specific-choices-and-tractability-hacks-scip)),
+  so no separate constraint is emitted.
 - **Space** (`space_`, `map_area_`, `oil_spots_`, `water_pumps_`) — With a map
   loaded, density is bounded by terrain: drills by ore tiles, pumpjacks by oil
   spots, offshore pumps by water edge, all buildings by buildable area, wood by

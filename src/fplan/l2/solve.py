@@ -1691,35 +1691,14 @@ def build_lp(
                     quicksum(terms) <= duration_vars[i], name=_safe(f"player_time_{i}")
                 )
 
-    # Hard cap on burner-mining-drills to force transition to electric
-    # drills. Player conventionally bootstraps with hand-placed burner
-    # drills then switches; without this cap the LP can keep stacking
-    # burners (which have no infrastructure overhead and 0 power draw
-    # in the LP's electric-balance) indefinitely. The value is the building's
-    # configured count cap (also its variable upper bound, which makes this an
-    # explicit-but-redundant statement of the intent).
-    BURNER_DRILL_CAP = inst.cfg.building_count_ub("burner-mining-drill")
-    if "burner-mining-drill" in inst.reachable_buildings:
-        for i in range(n_tiers):
-            if ("burner-mining-drill", i) not in item_vars:
-                continue
-            m.addCons(
-                item_vars[("burner-mining-drill", i)] <= BURNER_DRILL_CAP,
-                name=_safe(f"burner_cap_{i}"),
-            )
-
-    # Cap on pooled stone furnaces (the unsplit smelting building), forcing
-    # the transition to per-output-committed steel furnaces — mirrors the
-    # burner-drill cap (its configured count cap).
-    stone_cap = inst.cfg.building_count_ub("stone-furnace")
-    if "stone-furnace" in inst.reachable_buildings:
-        for i in range(n_tiers):
-            if ("stone-furnace", i) not in item_vars:
-                continue
-            m.addCons(
-                item_vars[("stone-furnace", i)] <= stone_cap,
-                name=_safe(f"stone_furnace_cap_{i}"),
-            )
+    # Transition caps that force the player off the bootstrap buildings — burner
+    # drills onto electric drills, pooled stone furnaces onto split steel furnaces
+    # (without a cap the LP keeps stacking burners, which carry no infra overhead
+    # and 0 power draw in the electric balance) — are the per-building count caps
+    # in `caps.building_count` (burner-mining-drill: 50, stone-furnace: 200). They
+    # are applied directly as the item variable's upper bound at every tier (see
+    # `_building_count_ub` / item-var creation above), so no separate constraint
+    # is needed.
 
     # Fluid-buffer cap. Surplus fluid held at any tier boundary must fit in
     # built fluid storage. A pipe/tank holds one fluid type at a time, so the
@@ -2095,15 +2074,12 @@ STONE_FURNACE = "stone-furnace"
 # Electric-furnace smelting is disabled outright (smelting served by the split
 # stone + steel furnaces) to keep the per-output bilinear-term count bounded.
 # Stone furnaces are split per-output like steel (config-driven, see
-# inst.assignment.smelting_buildings) but stay capped (the configured
-# building_count for stone-furnace) to force the bootstrap transition to steel,
-# and — being consumed by boilers /
-# burner drills — carry the consumable `destroy` drain (see the furnace block).
-# Cap on pooled (unsplit) stone-furnace count, forcing transition to the
-# split steel furnaces — the smelting analogue of BURNER_DRILL_CAP. Stone
-# furnaces are transitional bootstrap smelters; without a cap the LP would
-# lean on their pooled flexibility instead of committing steel furnaces to
-# specific products.
+# inst.assignment.smelting_buildings) but stay capped (the per-building
+# `caps.building_count` for stone-furnace, applied as the item variable's upper
+# bound) to force the bootstrap transition to steel — without a cap the LP leans
+# on their pooled flexibility instead of committing steel furnaces to specific
+# products — and, being consumed by boilers / burner drills, carry the consumable
+# `destroy` drain (see the furnace block).
 
 
 # --- Player-time model (single character, serial actions per step) ---------
